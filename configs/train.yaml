@@ -1,0 +1,17 @@
+seed: 42
+image_size: 64
+batch_size: 64
+epochs: 20
+learning_rate: 0.001
+weight_decay: 0.0001
+num_workers: 0
+train_dir: data/processed/train
+val_dir: data/processed/val
+test_dir: data/processed/test
+checkpoint: models/best.pt
+onnx_output: models/drowsyguard.onnx
+subject_split:
+  train: 0.70
+  val: 0.15
+  test: 0.15
+class_names: [alert, drowsy]
