@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+models/*.pt
+models/*.onnx
+models/*.espdl
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+firmware/esp32s3/build/
+firmware/esp32s3/sdkconfig

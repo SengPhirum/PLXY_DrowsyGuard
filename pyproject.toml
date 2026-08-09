@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "drowsyguard"
+version = "0.1.0"
+description = "Microcontroller-first driver drowsiness detection research toolkit"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.26",
+  "Pillow>=10.0",
+  "PyYAML>=6.0",
+  "torch>=2.2",
+  "torchvision>=0.17",
+  "scikit-learn>=1.4",
+  "onnx>=1.16",
+  "onnxruntime>=1.18",
+  "tqdm>=4.66",
+]
+
+[project.scripts]
+drowsyguard = "drowsyguard.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
