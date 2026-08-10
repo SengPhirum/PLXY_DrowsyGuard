@@ -2,12 +2,16 @@
 __pycache__/
 .pytest_cache/
 *.pyc
+*.egg-info/
 models/*.pt
 models/*.onnx
 models/*.espdl
 data/raw/*
 data/processed/*
+# Downloaded corpora live outside version control; import them into data/raw.
+Driver Drowsiness Dataset (DDD)/
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 firmware/esp32s3/build/
 firmware/esp32s3/sdkconfig
+models/detectors/

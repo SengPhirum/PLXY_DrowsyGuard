@@ -1,0 +1,18 @@
+seed: 42
+image_size: 64
+batch_size: 128
+epochs: 15
+learning_rate: 0.001
+weight_decay: 0.0001
+# DDD is ~42k PNGs; decoding dominates on CPU, so use workers.
+num_workers: 8
+train_dir: data/processed/train
+val_dir: data/processed/val
+test_dir: data/processed/test
+checkpoint: models/ddd_best.pt
+onnx_output: models/drowsyguard_ddd.onnx
+subject_split:
+  train: 0.70
+  val: 0.15
+  test: 0.15
+class_names: [alert, drowsy]

@@ -17,6 +17,13 @@ dependencies = [
   "onnx>=1.16",
   "onnxruntime>=1.18",
   "tqdm>=4.66",
+  "opencv-python>=4.9",
+]
+
+[project.optional-dependencies]
+live = [
+  "fastapi>=0.110",
+  "uvicorn>=0.29",
 ]
 
 [project.scripts]
@@ -24,3 +31,6 @@ drowsyguard = "drowsyguard.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+drowsyguard = ["static/*"]

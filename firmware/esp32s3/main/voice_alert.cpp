@@ -42,7 +42,34 @@ void voice_alert_set_language(AlertLanguage language) {
     g_config.language = language;
 }
 
-bool voice_alert_trigger(uint32_t now_ms) {
+const char* voice_alert_banner_text(AlertReason reason) {
+    switch (reason) {
+        case AlertReason::Microsleep: return "WAKE UP";
+        case AlertReason::Yawning:    return "TAKE A BREAK";
+        case AlertReason::HeadNod:    return "STAY ALERT";
+        case AlertReason::Drowsy:
+        default:                      return "DROWSY";
+    }
+}
+
+const char* voice_alert_clip_name(AlertReason reason) {
+    switch (reason) {
+        case AlertReason::Microsleep: return "microsleep";
+        case AlertReason::Yawning:    return "yawning";
+        case AlertReason::HeadNod:    return "head_nod";
+        case AlertReason::Drowsy:
+        default:                      return "drowsy";
+    }
+}
+
+// Roughly how long a spoken clip occupies the speaker; used only for the UI banner.
+static constexpr uint32_t ANNOUNCE_MS = 2500;
+
+bool voice_alert_is_active(uint32_t now_ms) {
+    return g_repeat_count > 0 && (now_ms - g_last_alert_ms) < ANNOUNCE_MS;
+}
+
+bool voice_alert_trigger(uint32_t now_ms, AlertReason reason) {
     if (!g_initialized) return false;
     if (g_repeat_count > 0 && (now_ms - g_last_alert_ms) < g_config.cooldown_ms) {
         return false;
@@ -58,8 +85,10 @@ bool voice_alert_trigger(uint32_t now_ms) {
     // exact board pins and amplifier are validated. Keeping recorded speech in
     // flash is intentionally preferred over MCU text-to-speech for predictable
     // latency, memory use and multilingual output.
-    ESP_LOGW(TAG, "DROWSINESS ALERT: play assets/audio/%s_warning.wav",
-             g_config.language == AlertLanguage::Khmer ? "km" : "en");
+    ESP_LOGW(TAG, "ALERT (%s): play assets/audio/%s_%s.wav",
+             voice_alert_banner_text(reason),
+             g_config.language == AlertLanguage::Khmer ? "km" : "en",
+             voice_alert_clip_name(reason));
     buzzer_pulse();
     return true;
 }
