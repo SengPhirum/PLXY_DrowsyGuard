@@ -120,12 +120,16 @@ DIN 40 - leaving 1 and 3 spare.
 Use the offline installer rather than a manual git clone: it brings the matching
 Python, CMake, Ninja and Xtensa toolchain, and registers the USB drivers.
 
-1. Download the **ESP-IDF Windows Installer** from
-   <https://dl.espressif.com/dl/esp-idf/> and pick **v5.4.x**. v5.3 is the minimum for
-   the ESP-DL 3.x components used in stage 3.
+1. Go to <https://dl.espressif.com/dl/esp-idf/> and download the **offline installer
+   for ESP-IDF v5.4.4** (~1.56 GB). Not the 4.6 MB "Universal Online Installer" - the
+   offline one bundles its own Python 3.11, which matters if the machine's system
+   Python is 3.13 (ESP-IDF v5.4 supports 3.9-3.12).
+   v5.3 is the minimum for the ESP-DL 3.x components used in stage 3.
 2. Install to a path with **no spaces and no non-ASCII characters**. `C:\Espressif`
    is the default and is correct; a path like `C:\Users\Phirum Seng\...` breaks CMake.
 3. Tick the driver components (CP210x / FTDI / WCH-CH34x) when offered.
+4. Let it finish completely. It unpacks the Xtensa toolchain, CMake, Ninja and a
+   Python virtualenv, which takes a while after the progress bar looks done.
 
 Alternative, if you prefer to stay in the editor: the **VS Code ESP-IDF extension**
 (`espressif.esp-idf-extension`), *Configure > Express*, v5.4. Same result; the commands
@@ -145,11 +149,25 @@ Then reboot.
 
 ### 3.3 Open an ESP-IDF shell
 
-Start menu > **ESP-IDF 5.4 PowerShell**. Everything below assumes that shell:
+`idf.py` is **not** a global command and never appears on the system PATH. It lives
+inside the ESP-IDF install and only works in a shell where `export.ps1` has run. An
+ordinary PowerShell or VS Code terminal will always say `idf.py not found`.
+
+Start menu > **ESP-IDF 5.4 PowerShell** (the installer creates this shortcut; it runs
+`export.ps1` for you). Everything below assumes that shell:
 
 ```powershell
-idf.py --version    # expect: ESP-IDF v5.4.x
+idf.py --version    # expect: ESP-IDF v5.4.4
 ```
+
+To get the same environment in a terminal you already have open, dot-source the export
+script once per session:
+
+```powershell
+. C:\Espressif\frameworks\esp-idf-v5.4.4\export.ps1
+```
+
+Adjust the version in that path to whatever you installed.
 
 ---
 
@@ -301,6 +319,8 @@ eventual fix, and it also matches the base model's training domain.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
+| `idf.py not found` / `not recognized` | ESP-IDF not installed, or a plain terminal | install per section 3; use the **ESP-IDF PowerShell** shortcut, or dot-source `export.ps1` |
+| `idf.py` works in one terminal, not another | `export.ps1` is per-session, not permanent | re-run it in each new terminal; do not add it to your profile |
 | No COM port | charge-only cable, or missing CH34x driver | data cable; install driver; try the other USB-C port |
 | `Failed to connect ... Wrong boot mode` | not in download mode | hold BOOT, tap RESET, release BOOT, reflash |
 | `esp_camera_init failed: 0x105` (`ESP_ERR_NOT_FOUND`) | ribbon half-seated, PSRAM off, or wrong pin map | reseat the ribbon; check the 8 MB PSRAM boot line; check `CONFIG_OV3660_SUPPORT` |
