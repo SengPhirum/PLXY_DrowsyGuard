@@ -1,5 +1,35 @@
 # Changelog
 
+## 2026-08-11 — real hardware selected, firmware wired to it
+- Board bought: **ESP32-S3-WROOM-1 N16R8 CAM + OV3660** (16 MB flash, 8 MB octal PSRAM)
+  and a 1.8" **128x160 ST7735S** SPI panel. The board's DVP pin map turned out to be
+  byte-for-byte the ESP32-S3-EYE map, cross-checked against keyestudio's pin table for
+  the same board and arduino-esp32's `camera_pins.h`, so the frame budget and the
+  ESP-DL model choice in `docs/FIRMWARE_PIPELINE.md` carry over unchanged.
+- `main/board_camera.h`: the verified pin map, a 240x240 RGB565 `camera_config_t`, and
+  driver-facing sensor tuning (hmirror, AGC/AEC on, brightness lifted for a backlit
+  windscreen). Also records which GPIOs an N16R8 module makes unusable - 33-37 are
+  flash/PSRAM, and reaching for them is the classic way to hang this board.
+- `main/board_display.h/.cpp`: ST7735S bring-up over SPI2 and a chunked blit that
+  byte-swaps RGB565 on the way out, since the panel latches high byte first. Pins
+  chosen from what the camera leaves free: SCK 14, MOSI 21, CS 47, DC 41, RST 42.
+- `main/main.cpp`: capture loop enabled end to end. It now runs **preview-only** when
+  `model_init()` fails instead of returning, so the camera, panel, PSRAM and power
+  supply can be validated before ESP-DL exists. A missing camera is drawn on screen
+  rather than only logged.
+- `model_adapter` reshaped to what the pipeline actually needs - `model_detect_face()`
+  and `model_eye_closed_prob()` - replacing the stale whole-face
+  `model_predict_drowsy(gray64x64)` left over from the abandoned classifier design.
+- `display_ui` adapts to panels under 200 px wide: shorter PERCLOS label, computed
+  right-alignment instead of hardcoded offsets, single-size banner text, and a shorter
+  preview so all seven status rows still fit in 160 px.
+- Added `sdkconfig.defaults`, `partitions.csv` (6 MB app for FLASH_RODATA models) and
+  `main/idf_component.yml`.
+- New `docs/HARDWARE_SETUP.md`: wiring tables, Windows toolchain install, which of the
+  two USB-C ports to use, the three-stage bring-up, and a troubleshooting table keyed
+  to the symptoms these two parts actually produce.
+- Still not compiled or flashed: no board exists in this environment.
+
 ## 2026-08-10 — on-device pipeline, driver screen and reason-specific alerts
 - Ported the behaviour logic to firmware: `behavior.h/.cpp` mirrors
   `src/drowsyguard/behavior.py` (geometry, rolling baselines, event state machines,

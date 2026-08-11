@@ -46,12 +46,17 @@ Build and scientifically evaluate an affordable retrofit driver-drowsiness warni
 - [x] Board decision: ESP32-S3-EYE; ESP32-S2 ruled out (no ESP-DL/vector support)
 - [x] Driver-facing on-screen UI (preview, face box, eye state, PERCLOS, risk, events)
 - [x] Reason-specific spoken alerts (drowsy / microsleep / yawning / head nod)
-- [ ] Implement the LCD panel init + blit for the chosen board
+- [x] Board bought: ESP32-S3-WROOM-1 N16R8 CAM + OV3660, EYE-compatible DVP pin map
+- [x] Camera pin map, build config and partition table committed
+- [x] LCD panel init + blit for the 1.8" 128x160 ST7735S
+- [x] Capture loop wired end to end, with a preview-only bring-up mode
+- [x] Setup/flash guide (`docs/HARDWARE_SETUP.md`)
+- [ ] First flash: confirm 8 MB PSRAM, camera init, preview on panel
 - [ ] Measure the real eye-model latency on hardware (budget uses an estimate)
-- [ ] Wire ESP-DL `human_face_detect` call sites in `main.cpp`
-- [ ] Pin ESP-IDF + ESP-DL + ESP-PPQ versions
+- [ ] Wire ESP-DL `human_face_detect` call sites in `model_adapter.cpp`
+- [ ] Pin ESP-IDF + ESP-DL + ESP-PPQ versions from `dependencies.lock`
 - [ ] Implement exact `.espdl` model adapter against pinned release
-- [ ] Validate camera and I2S audio GPIO map on selected board
+- [ ] Validate the I2S audio GPIO map (38/39/40) once the amplifier arrives
 - [ ] Embed and validate approved English/Khmer PCM recordings
 - [ ] Flash and profile RAM/latency/power
 - [ ] Verify INT8 accuracy drop <= agreed threshold

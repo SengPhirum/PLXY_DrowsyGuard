@@ -37,6 +37,9 @@ struct DisplayInput {
     const uint16_t *preview = nullptr;
     int preview_w = 0;
     int preview_h = 0;
+    // Camera and framebuffer disagree on RGB565 byte order on some sensors; see
+    // CAM_RGB565_BYTE_SWAP in board_camera.h.
+    bool preview_swap_bytes = false;
 
     bool face_found = false;
     bool face_held = false;
@@ -49,6 +52,10 @@ struct DisplayInput {
     bool alerting = false;      // an alert is currently being annunciated
     const char *alert_text = nullptr;
     float fps = 0.0f;
+    // True during hardware bring-up, before the ESP-DL adapter is bound. Says so on
+    // screen rather than showing a permanently zero risk bar that looks like a
+    // driver who never blinks.
+    bool no_model = false;
 };
 
 // Blit callback: copy a full RGB565 framebuffer to the panel.

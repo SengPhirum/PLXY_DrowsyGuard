@@ -77,6 +77,18 @@ void display_ui_draw_text(const char *s, int x, int y, uint16_t colour, int scal
     }
 }
 
+// Text width in pixels, so labels can be right-aligned instead of pinned to a
+// hardcoded offset. On a 128 px panel a hardcoded offset overlaps the left label.
+static inline int text_w(const char *s, int scale) {
+    int n = 0;
+    for (const char *p = s; *p; ++p) ++n;
+    return n * 6 * scale;
+}
+
+static void draw_text_right(const char *s, int right_x, int y, uint16_t colour, int scale) {
+    display_ui_draw_text(s, right_x - text_w(s, scale), y, colour, scale);
+}
+
 static void draw_bar(int x, int y, int w, int h, float frac, uint16_t colour) {
     if (frac < 0.0f) frac = 0.0f;
     if (frac > 1.0f) frac = 1.0f;
@@ -98,14 +110,21 @@ void display_ui_render(const DisplayInput &in) {
     if (g_fb == nullptr) return;
     fill_rect(0, 0, g_w, g_h, kTheme.bg);
 
+    // A 128x160 panel has to fit the same seven rows of status into 88 fewer pixels
+    // than a 240x240 one, so the preview gives up ten percentage points of height
+    // and the banner drops to single-size text. Everything else is width-relative.
+    const bool narrow = g_w < 200;
+
     // --- camera preview, nearest-neighbour scaled into the top area ---
-    const int preview_h = (g_h * 55) / 100;
+    const int preview_h = (g_h * (narrow ? 45 : 55)) / 100;
     if (in.preview != nullptr && in.preview_w > 0 && in.preview_h > 0) {
         for (int y = 0; y < preview_h; ++y) {
             const int sy = y * in.preview_h / preview_h;
             for (int x = 0; x < g_w; ++x) {
                 const int sx = x * in.preview_w / g_w;
-                px(x, y, in.preview[sy * in.preview_w + sx]);
+                uint16_t v = in.preview[sy * in.preview_w + sx];
+                if (in.preview_swap_bytes) v = static_cast<uint16_t>((v >> 8) | (v << 8));
+                px(x, y, v);
             }
         }
     } else {
@@ -134,10 +153,11 @@ void display_ui_render(const DisplayInput &in) {
     display_ui_draw_text(closed ? "EYES CLOSED" : "EYES OPEN", 4, y,
                          closed ? kTheme.danger : kTheme.ok, 1);
     char buf[24];
-    // PERCLOS as a percentage.
+    // PERCLOS as a percentage. The label shortens on a narrow panel so it cannot
+    // collide with "EYES CLOSED" on the same row.
     const int pc = static_cast<int>(in.state.perclos * 100.0f + 0.5f);
-    std::snprintf(buf, sizeof(buf), "PERCLOS %d%%", pc);
-    display_ui_draw_text(buf, g_w - 78, y, kTheme.text, 1);
+    std::snprintf(buf, sizeof(buf), narrow ? "PC %d%%" : "PERCLOS %d%%", pc);
+    draw_text_right(buf, g_w - 4, y, kTheme.text, 1);
     y += 10;
     draw_bar(4, y, g_w - 8, 6, in.state.perclos,
              in.state.perclos > 0.5f ? kTheme.danger : kTheme.warn);
@@ -145,7 +165,7 @@ void display_ui_render(const DisplayInput &in) {
 
     display_ui_draw_text("RISK", 4, y, kTheme.dim, 1);
     std::snprintf(buf, sizeof(buf), "%d%%", static_cast<int>(in.state.score * 100.0f + 0.5f));
-    display_ui_draw_text(buf, g_w - 30, y, kTheme.text, 1);
+    draw_text_right(buf, g_w - 4, y, kTheme.text, 1);
     y += 10;
     draw_bar(4, y, g_w - 8, 8, in.state.score,
              in.state.score >= in.trigger ? kTheme.danger : kTheme.ok);
@@ -159,7 +179,7 @@ void display_ui_render(const DisplayInput &in) {
                   static_cast<int>(in.state.yawn_rate + 0.5f),
                   static_cast<int>(in.state.nod_rate + 0.5f));
     display_ui_draw_text(buf, 4, y, kTheme.dim, 1);
-    if (in.state.mouth_open) display_ui_draw_text("MOUTH", g_w - 40, y, kTheme.warn, 1);
+    if (in.state.mouth_open) draw_text_right("MOUTH", g_w - 4, y, kTheme.warn, 1);
     y += 10;
     if (in.state.head_down) display_ui_draw_text("HEAD DOWN", 4, y, kTheme.warn, 1);
     else if (!in.state.baselines_ready) display_ui_draw_text("CALIBRATING", 4, y, kTheme.dim, 1);
@@ -171,7 +191,8 @@ void display_ui_render(const DisplayInput &in) {
 
     // --- most recent event, named, so a warning is explainable ---
     const char *ev = nullptr;
-    if (in.state.events & EVENT_SNEEZE) ev = "SNEEZE IGNORED";
+    if (in.no_model) ev = "NO MODEL - PREVIEW";
+    else if (in.state.events & EVENT_SNEEZE) ev = "SNEEZE IGNORED";
     else if (in.state.events & EVENT_MICROSLEEP) ev = "MICROSLEEP";
     else if (in.state.events & EVENT_YAWN) ev = "YAWN";
     else if (in.state.events & EVENT_NOD) ev = "NOD";
@@ -180,11 +201,12 @@ void display_ui_render(const DisplayInput &in) {
 
     // --- alert banner ---
     if (in.alerting) {
-        const int bh = 34;
+        const int scale = narrow ? 1 : 2;
+        const int bh = narrow ? 22 : 34;
         fill_rect(0, g_h - bh, g_w, bh, kTheme.danger);
         const char *msg = (in.alert_text != nullptr) ? in.alert_text : "WAKE UP";
-        const int len = static_cast<int>(std::strlen(msg));
-        display_ui_draw_text(msg, (g_w - len * 12) / 2, g_h - bh + 10, rgb565(255, 255, 255), 2);
+        display_ui_draw_text(msg, (g_w - text_w(msg, scale)) / 2,
+                             g_h - bh + (bh - 7 * scale) / 2, rgb565(255, 255, 255), scale);
     }
 
     if (g_blit != nullptr) g_blit(g_fb, g_w, g_h);

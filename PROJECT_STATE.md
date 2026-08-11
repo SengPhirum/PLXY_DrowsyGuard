@@ -10,8 +10,13 @@ behaviour thresholds are untuned; hardware validation pending.
 ## Locked design decisions
 - Target platform: ESP32-S3 with PSRAM and camera. **ESP32-S2 is ruled out**: it has no
   AI vector instructions and ESP-DL's face detection models do not support it, so the
-  detector + two eye inferences per frame is not achievable. Recommended board is
-  ESP32-S3-EYE (camera + 240x240 LCD + mic + 8 MB PSRAM). See `docs/FIRMWARE_PIPELINE.md`.
+  detector + two eye inferences per frame is not achievable. See
+  `docs/FIRMWARE_PIPELINE.md`.
+- **Hardware bought 2026-08-11**: ESP32-S3-WROOM-1 **N16R8** CAM board with an **OV3660**
+  (16 MB flash, 8 MB octal PSRAM) plus a 1.8" **128x160 ST7735S** SPI panel. Its DVP
+  camera pin map is byte-for-byte the ESP32-S3-EYE map, so ESP-DL's vision examples and
+  the published frame budget carry over unchanged. Wiring, toolchain and flashing:
+  `docs/HARDWARE_SETUP.md`.
 - Device frame budget: detect the face every 3rd frame and track between, run eye state
   every frame, target 15 fps (~23 ms/frame). 15 fps is sufficient because PERCLOS needs
   temporal coverage, not frame rate.
@@ -50,9 +55,15 @@ behaviour thresholds are untuned; hardware validation pending.
   that split assignment stays per-subject.
 
 ## Known gaps
-1. No physical ESP32-S3 board has been flashed in this environment.
+1. No physical ESP32-S3 board has been flashed in this environment. The firmware now
+   compiles against real pin maps but has never been built or run; the camera, LCD and
+   ESP-DL call sites are all unverified.
 2. ESP-PPQ export API must be pinned to a specific version before model conversion code can be finalized.
-3. Camera pin configuration depends on the exact development board selected.
+3. Camera pin map is settled (ESP32-S3-EYE-compatible, in `main/board_camera.h`). Still
+   unverified on the bench, as is the ST7735S panel bring-up in `main/board_display.cpp`
+   - in particular the RGB565 byte order, the BGR element order and the window offset,
+   which vary between panel batches. Each has a one-line fix documented in
+   `docs/HARDWARE_SETUP.md`.
 4. Night performance likely requires an IR-capable sensor/illumination design.
 5. Real-road drowsiness data collection requires careful ethics/safety planning.
 6. The eye-state base model is IR-trained and does not transfer to DDD's visible-light
@@ -84,4 +95,7 @@ its filenames but is infrared and needs Kaggle credentials, which are not config
 here. Confirm any result per-driver on held-out subjects, and note for the write-up
 that the highest-accuracy public drowsiness models (70-343 MB, 224x224) cannot run on
 an ESP32-S3, which is why the eye-closure route was chosen.
-Hardware: select one exact board (recommended: ESP32-S3-EYE-compatible board with PSRAM, or another supported ESP32-S3 camera board), then pin ESP-IDF/ESP-DL versions and complete hardware-in-the-loop validation.
+Hardware: the board and panel are now in hand. Work stage 1 of `docs/HARDWARE_SETUP.md`
+- install ESP-IDF 5.4, wire the ST7735S, flash, and confirm 8 MB PSRAM plus a live
+preview on the panel. Only then bind ESP-DL and pin the resolved versions into
+`docs/DEPLOYMENT.md`.

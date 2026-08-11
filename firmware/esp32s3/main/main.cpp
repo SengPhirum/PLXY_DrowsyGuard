@@ -1,8 +1,13 @@
+#include "esp_camera.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include "behavior.h"
 #include "board_camera.h"
+#include "board_display.h"
 #include "display_ui.h"
 #include "model_adapter.h"
 #include "risk_filter.h"
@@ -24,13 +29,9 @@ static constexpr float TARGET_FPS = 15.0f;
 // PERCLOS window in frames. At 15 fps, 45 frames is a 3 s window.
 static constexpr int PERCLOS_WINDOW = 45;
 
-static uint16_t s_framebuffer[240 * 240];
-
-static void lcd_blit(const uint16_t *fb, int w, int h) {
-    // TODO(HW): esp_lcd_panel_draw_bitmap(panel, 0, 0, w, h, fb) once the board's
-    // LCD controller and pins are known. Left unimplemented rather than guessed.
-    (void)fb; (void)w; (void)h;
-}
+// Sized to the panel, not to the camera: display_ui composes at panel resolution and
+// scales the preview down on the way in. 128x160x2 = 40 KB, internal RAM.
+static uint16_t s_framebuffer[LCD_H_RES * LCD_V_RES];
 
 extern "C" void app_main(void) {
     ESP_LOGI(TAG, "DrowsyGuard ESP32-S3 research firmware starting");
@@ -44,99 +45,133 @@ extern "C" void app_main(void) {
         ESP_LOGE(TAG, "Alert subsystem initialization failed");
     }
 
-    if (!display_ui_init(s_framebuffer, 240, 240, lcd_blit)) {
-        ESP_LOGE(TAG, "Display init failed");
+    if (!board_display_init()) {
+        ESP_LOGE(TAG, "LCD init failed; check the wiring in board_display.h");
+    }
+    if (!display_ui_init(s_framebuffer, LCD_H_RES, LCD_V_RES, board_display_blit)) {
+        ESP_LOGE(TAG, "Display UI init failed");
     }
 
-    if (!model_init()) {
-        ESP_LOGE(TAG, "Model adapter is not configured. See firmware/esp32s3/README.md");
+    const camera_config_t cam = board_camera_config();
+    const esp_err_t cam_err = esp_camera_init(&cam);
+    if (cam_err != ESP_OK) {
+        // Almost always one of: PSRAM not enabled, ribbon not seated, or a pin map
+        // from a different board. See the troubleshooting table in
+        // docs/HARDWARE_SETUP.md before touching board_camera.h.
+        ESP_LOGE(TAG, "esp_camera_init failed: 0x%x (%s)", cam_err, esp_err_to_name(cam_err));
+        DisplayInput ui{};
+        ui.alerting = true;
+        ui.alert_text = "NO CAMERA";
+        display_ui_render(ui);
         return;
     }
+    board_camera_tune();
+    ESP_LOGI(TAG, "camera up: %dx%d RGB565, PSRAM free %u B", CAM_FRAME_W, CAM_FRAME_H,
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+
+    // Not fatal: without the models this still proves the camera, the panel and the
+    // power supply, which is the whole point of stage 1.
+    const bool models = model_init();
 
     // Risk is the fused behaviour score, so the trigger is a risk level rather than a
     // raw probability. Tune these on the desktop dashboard and paste them here.
-    RiskFilter filter(0.55f, 8, static_cast<int>(TARGET_FPS * 4));
+    static constexpr float RISK_TRIGGER = 0.55f;
+    RiskFilter filter(RISK_TRIGGER, 8, static_cast<int>(TARGET_FPS * 4));
     Perclos perclos(PERCLOS_WINDOW, 0.5f);
     BehaviorAnalyzer behavior(0.5f, TARGET_FPS);
 
     Landmarks last_lm{};
-    int face_x = 0, face_y = 0, face_side = 0;
+    FaceDetection det{};
     int frame_no = 0;
     int misses = 0;
-    uint32_t last_us = static_cast<uint32_t>(esp_timer_get_time());
+    AlertReason last_reason = AlertReason::Drowsy;
+    int64_t last_us = esp_timer_get_time();
 
-    // Camera capture + crop/resize is integrated only after selecting the exact
-    // board, because ESP32-S3 camera pin maps differ by module/revision.
-    //
-    // for (;;) {
-    //     camera_fb_t *fb = esp_camera_fb_get();
-    //     const uint32_t now_us = static_cast<uint32_t>(esp_timer_get_time());
-    //     const float dt = (now_us - last_us) / 1e6f;
-    //     last_us = now_us;
-    //
-    //     // 1. Face + landmarks, only every DETECT_EVERY frames; hold the last box
-    //     //    in between. Holding matters: detectors tend to drop the face exactly
-    //     //    when the eyes close, which is the moment of interest.
-    //     bool found = false;
-    //     if (frame_no % DETECT_EVERY == 0) {
-    //         auto &results = detect_faces(fb);          // ESP-DL msr + mnp
-    //         if (!results.empty()) {
-    //             const auto &r = results.front();
-    //             last_lm = behavior_from_espdl_keypoints(r.keypoint.data());
-    //             face_x = r.box[0];
-    //             face_y = r.box[1];
-    //             face_side = r.box[2] - r.box[0];
-    //             found = true;
-    //             misses = 0;
-    //         } else if (++misses < DETECT_EVERY * 5) {
-    //             found = last_lm.valid;                 // hold
-    //         } else {
-    //             last_lm.valid = false;
-    //         }
-    //     } else {
-    //         found = last_lm.valid;
-    //     }
-    //
-    //     // 2. Eye state on both eyes, every frame (cheap: 11.3k-parameter model).
-    //     float p_closed = 0.0f;
-    //     if (found) {
-    //         p_closed = 0.5f * (eye_closed_prob(fb, last_lm, /*eye=*/0) +
-    //                            eye_closed_prob(fb, last_lm, /*eye=*/1));
-    //     }
-    //
-    //     // 3. Behaviour fusion: PERCLOS + long blinks + yawn + nod, sneeze-suppressed.
-    //     const float pc = perclos.update(p_closed);
-    //     const FaceGeometry geom = behavior_face_geometry(last_lm);
-    //     const BehaviorState st = behavior.update(p_closed, geom, pc, dt);
-    //
-    //     // 4. Alert, naming the reason so the spoken message is actionable.
-    //     const uint32_t now_ms = now_us / 1000u;
-    //     if (filter.update(st.score)) {
-    //         AlertReason reason = AlertReason::Drowsy;
-    //         if (st.events & EVENT_MICROSLEEP)   reason = AlertReason::Microsleep;
-    //         else if (st.events & EVENT_NOD)     reason = AlertReason::HeadNod;
-    //         else if (st.events & EVENT_YAWN)    reason = AlertReason::Yawning;
-    //         voice_alert_trigger(now_ms, reason);
-    //     }
-    //
-    //     // 5. Show the driver what it saw.
-    //     DisplayInput ui{};
-    //     ui.preview = reinterpret_cast<const uint16_t *>(fb->buf);
-    //     ui.preview_w = fb->width;
-    //     ui.preview_h = fb->height;
-    //     ui.face_found = found;
-    //     ui.face_held = found && (frame_no % DETECT_EVERY != 0);
-    //     ui.face_x = face_x; ui.face_y = face_y; ui.face_side = face_side;
-    //     ui.state = st;
-    //     ui.trigger = 0.55f;
-    //     ui.alerting = voice_alert_is_active(now_ms);
-    //     ui.alert_text = voice_alert_banner_text(AlertReason::Drowsy);
-    //     ui.fps = (dt > 0.0f) ? (1.0f / dt) : 0.0f;
-    //     display_ui_render(ui);
-    //
-    //     esp_camera_fb_return(fb);
-    //     ++frame_no;
-    // }
-    (void)filter; (void)perclos; (void)behavior;
-    (void)face_x; (void)face_y; (void)face_side; (void)frame_no; (void)misses; (void)last_us;
+    for (;;) {
+        camera_fb_t *fb = esp_camera_fb_get();
+        if (fb == nullptr) {
+            ESP_LOGW(TAG, "frame grab failed");
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+        const int64_t now_us = esp_timer_get_time();
+        const float dt = static_cast<float>(now_us - last_us) / 1e6f;
+        last_us = now_us;
+
+        bool found = false;
+        float p_closed = 0.0f;
+        BehaviorState st{};
+
+        if (models) {
+            // 1. Face + landmarks, only every DETECT_EVERY frames; hold the last box
+            //    in between. Holding matters: detectors tend to drop the face exactly
+            //    when the eyes close, which is the moment of interest.
+            if (frame_no % DETECT_EVERY == 0) {
+                FaceDetection d{};
+                if (model_detect_face(fb->buf, fb->width, fb->height, &d)) {
+                    det = d;
+                    last_lm = behavior_from_espdl_keypoints(d.keypoint);
+                    found = true;
+                    misses = 0;
+                } else if (++misses < DETECT_EVERY * 5) {
+                    found = last_lm.valid;                 // hold
+                } else {
+                    last_lm.valid = false;
+                    det.valid = false;
+                }
+            } else {
+                found = last_lm.valid;
+            }
+
+            // 2. Eye state on both eyes, every frame (cheap: 11.3k-parameter model).
+            if (found) {
+                p_closed = 0.5f * (model_eye_closed_prob(fb->buf, fb->width, fb->height, last_lm, 0) +
+                                   model_eye_closed_prob(fb->buf, fb->width, fb->height, last_lm, 1));
+            }
+
+            // 3. Behaviour fusion: PERCLOS + long blinks + yawn + nod, sneeze-suppressed.
+            const float pc = perclos.update(p_closed);
+            const FaceGeometry geom = behavior_face_geometry(last_lm);
+            st = behavior.update(p_closed, geom, pc, dt);
+
+            // 4. Alert, naming the reason so the spoken message is actionable.
+            const uint32_t now_ms = static_cast<uint32_t>(now_us / 1000);
+            if (filter.update(st.score)) {
+                last_reason = AlertReason::Drowsy;
+                if (st.events & EVENT_MICROSLEEP)   last_reason = AlertReason::Microsleep;
+                else if (st.events & EVENT_NOD)     last_reason = AlertReason::HeadNod;
+                else if (st.events & EVENT_YAWN)    last_reason = AlertReason::Yawning;
+                voice_alert_trigger(now_ms, last_reason);
+            }
+        }
+
+        // 5. Show the driver what it saw. In preview-only mode this still renders the
+        //    camera feed and an empty risk bar, which is what validates the panel.
+        DisplayInput ui{};
+        ui.preview = reinterpret_cast<const uint16_t *>(fb->buf);
+        ui.preview_w = fb->width;
+        ui.preview_h = fb->height;
+        ui.preview_swap_bytes = CAM_RGB565_BYTE_SWAP;
+        ui.face_found = found;
+        ui.face_held = found && (frame_no % DETECT_EVERY != 0);
+        ui.face_x = det.x; ui.face_y = det.y; ui.face_side = found ? det.w : 0;
+        ui.state = st;
+        ui.trigger = RISK_TRIGGER;
+        ui.alerting = voice_alert_is_active(static_cast<uint32_t>(now_us / 1000));
+        ui.alert_text = voice_alert_banner_text(last_reason);
+        ui.fps = (dt > 0.0f) ? (1.0f / dt) : 0.0f;
+        ui.no_model = !models;
+        display_ui_render(ui);
+
+        esp_camera_fb_return(fb);
+
+        // One line a second is enough to record the numbers the acceptance tests in
+        // docs/DEPLOYMENT.md ask for, without flooding the monitor.
+        if (++frame_no % 60 == 0) {
+            ESP_LOGI(TAG, "fps %.1f  risk %.2f  perclos %.2f  heap %u  psram %u",
+                     ui.fps, st.score, st.perclos,
+                     static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+                     static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+        }
+    }
 }

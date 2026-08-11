@@ -14,4 +14,9 @@ Driver Drowsiness Dataset (DDD)/
 !data/processed/.gitkeep
 firmware/esp32s3/build/
 firmware/esp32s3/sdkconfig
+firmware/esp32s3/sdkconfig.old
+# Fetched by `idf.py reconfigure`; sdkconfig.defaults and idf_component.yml are the
+# tracked inputs. dependencies.lock is deliberately NOT ignored - it is the record of
+# the exact component versions docs/DEPLOYMENT.md has to cite.
+firmware/esp32s3/managed_components/
 models/detectors/

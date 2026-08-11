@@ -1,0 +1,26 @@
+## Managed dependencies.
+##
+## `idf.py reconfigure` resolves these and writes the exact versions to
+## dependencies.lock. Copy those into docs/DEPLOYMENT.md - the thesis needs the
+## pinned numbers, not the ranges.
+dependencies:
+  idf:
+    version: ">=5.3"
+
+  ## DVP camera driver. Supports the OV3660 on this board; enable
+  ## CONFIG_OV3660_SUPPORT in menuconfig (set in sdkconfig.defaults).
+  espressif/esp32-camera:
+    version: "^2.1.7"
+
+  ## ST7735S panel driver. ESP-IDF ships ST7789/ILI9341/GC9A01 in-tree but not
+  ## ST7735S, so this comes from the component registry.
+  waveshare/esp_lcd_st7735:
+    version: "^1.0.1"
+
+  ## Stage 3 (models). Uncomment together with the ESP-DL binding in
+  ## model_adapter.cpp - they add ~1 MB to the image, so leave them out until the
+  ## camera and panel are proven.
+  # espressif/esp-dl:
+  #   version: "^3.1.2"
+  # espressif/human_face_detect:
+  #   version: "^0.3.0"
