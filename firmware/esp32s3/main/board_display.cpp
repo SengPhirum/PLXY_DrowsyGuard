@@ -42,7 +42,7 @@ bool board_display_init() {
     io_cfg.lcd_param_bits = 8;
     io_cfg.spi_mode = 0;
     io_cfg.trans_queue_depth = 10;
-    if (esp_lcd_new_panel_io_spi(reinterpret_cast<esp_lcd_spi_bus_handle_t>(SPI2_HOST),
+    if (esp_lcd_new_panel_io_spi(static_cast<esp_lcd_spi_bus_handle_t>(SPI2_HOST),
                                  &io_cfg, &io) != ESP_OK) {
         ESP_LOGE(TAG, "panel IO init failed");
         return false;
