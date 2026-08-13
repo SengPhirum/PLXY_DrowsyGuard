@@ -51,22 +51,31 @@ Build and scientifically evaluate an affordable retrofit driver-drowsiness warni
 - [x] LCD panel init + blit for the 1.8" 128x160 ST7735S
 - [x] Capture loop wired end to end, with a preview-only bring-up mode
 - [x] Setup/flash guide (`docs/HARDWARE_SETUP.md`)
-- [ ] First flash: confirm 8 MB PSRAM, camera init, preview on panel
+- [x] Audio parts bought: MAX98357A amplifier (item 2724) + 4 ohm/3 W speaker (2554)
+- [x] I2S audio driver implemented (`main/board_audio.h/.cpp`), pins 39/38/40
+- [x] Alert playback moved off the capture loop onto its own FreeRTOS task
+- [x] Reason-specific tone patterns, so the alert path is testable before speech exists
+- [x] Beginner setup tutorial with generated wiring diagrams (`docs/tutorials/hardware-setup/`)
+- [ ] **First build**: `idf.py build` has never been run; the firmware is uncompiled
+- [ ] First flash: confirm 8 MB PSRAM, camera init, preview on panel, boot chirp
 - [ ] Measure the real eye-model latency on hardware (budget uses an estimate)
 - [ ] Wire ESP-DL `human_face_detect` call sites in `model_adapter.cpp`
 - [ ] Pin ESP-IDF + ESP-DL + ESP-PPQ versions from `dependencies.lock`
 - [ ] Implement exact `.espdl` model adapter against pinned release
-- [ ] Validate the I2S audio GPIO map (38/39/40) once the amplifier arrives
+- [ ] Validate the I2S audio GPIO map (38/39/40) on the bench
+- [ ] Measure detection-to-audio-start latency on hardware
 - [ ] Embed and validate approved English/Khmer PCM recordings
 - [ ] Flash and profile RAM/latency/power
 - [ ] Verify INT8 accuracy drop <= agreed threshold
 - [ ] Confirm dashboard-tuned trigger/required/cooldown on-device against the desktop run
 
 ## Phase 4 — Hardware prototype
+- [x] MAX98357A I2S amplifier + 4 ohm/3 W speaker acquired and driven by firmware
+- [x] MB102 breadboard for the shared 5 V / 3.3 V / ground rails
 - [ ] Camera mount for dashboard/windscreen
 - [ ] IR illumination option for night driving
-- [ ] MAX98357A-class I2S amplifier + 4 ohm/3 W speaker
-- [ ] Buzzer/vibration fallback alert
+- [ ] Solder header strips to the display and amplifier modules
+- [ ] Buzzer/vibration fallback alert (buzzer not yet purchased)
 - [ ] 12V-to-5V automotive-safe regulated power stage
 - [ ] Enclosure and heat testing
 
