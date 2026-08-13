@@ -1,5 +1,73 @@
 # Changelog
 
+## 2026-08-13 — audio hardware wired, beginner setup tutorial, repo cleanup
+
+**Hardware.** The remaining three parts of the order were identified and are now
+first-class in the project: a **MAX98357A** I2S filterless class-D amplifier
+(khmeres item 2724), a **4 ohm / 3 W** speaker (2554) and an **MB102** 830-point
+breadboard (371). Together with the board (2991) and panel (1885) that is the whole
+five-item bill of materials, $15.25.
+
+**Firmware — the alert path is real.**
+- New `main/board_audio.h/.cpp`: ESP-IDF v5 `i2s_std` bring-up on **BCLK 39,
+  LRCLK 38, DIN 40** - the microSD pins, which are what the DVP camera and the octal
+  PSRAM leave free. 16-bit stereo at 16 kHz, matching the recording format in
+  `assets/audio/README.md`. Provides PCM playback, a ramped tone generator and a
+  silence flush.
+- Mono samples are written into **both** I2S slots on purpose. The MAX98357A's `SD`
+  pin selects left / right / (L+R)/2 depending on what a given breakout pulls it to;
+  duplicating the sample makes every non-shutdown variant sound identical, so the
+  board revision stops mattering.
+- `voice_alert.cpp`: playback moved onto its own FreeRTOS task behind a queue.
+  Previously `voice_alert_trigger()` was called straight from the capture loop, whose
+  frame budget is ~23 ms - inline playback would have dropped roughly twenty frames
+  and frozen the preview at the exact moment the driver needed it.
+- Each alert reason now plays a distinct tone pattern (microsleep highest and
+  fastest), so the amplifier is testable on the bench before any speech is recorded.
+  This replaces a `TODO(HW)` that only wrote a log line.
+- Fixed the buzzer fallback: `buzzer_pulse()` set the GPIO high and immediately low
+  with no delay in between, so the "fallback alert" was silent. It now holds for
+  120 ms.
+- `main.cpp` plays an 880 Hz chirp at boot. It costs 120 ms and it is the only way to
+  distinguish an amplifier that is wired but silent from one that never initialized.
+
+**Documentation — `docs/tutorials/hardware-setup/`.**
+- A complete beginner tutorial: what is being built, the five parts, required
+  software, component identification, power architecture, a 15-row wiring table,
+  toolchain install, project configuration, first power-on, per-component tests, a
+  full system test, and a troubleshooting section split by subsystem.
+- **Eleven generated wiring diagrams**, produced by
+  `scripts/generate_tutorial_diagrams.py` from the same constants the firmware uses.
+  `tests/test_tutorial_diagrams.py` fails if a drawing and a firmware header ever
+  disagree, so the images cannot silently drift.
+- The diagrams deliberately do **not** draw the physical top-to-bottom order of the
+  board's header pins: it varies between batches of this board and could not be
+  verified against a datasheet. Every connection is keyed to the printed silkscreen
+  label instead.
+- Recorded that the item-1885 listing calls the panel an "OLED" when it is a TFT LCD
+  (its own silkscreen reads `RGB_TFT`), which is why it needs the `BLK` backlight pin.
+
+**Cleanup.**
+- `eyestate.py`: `max(face_box[2], face_box[2])` took the maximum of one value with
+  itself - a leftover from when the box was `(x, y, w, h)`. Simplified to the single
+  side, which is what `FaceTracker` actually returns.
+- `.vscode/settings.json` pointed `cmake.sourceDirectory` at an absolute
+  `E:/Personal/Project/...` path, so it was wrong for every other machine. Now
+  `${workspaceFolder}`-relative.
+- `docs/HARDWARE_SETUP.md` had the same absolute path hardcoded in a build command.
+- `requirements.txt` duplicated the dependency list in `pyproject.toml`; it now
+  defers to it, so the two cannot drift.
+- Root `README.md` still advertised "OV2640/OV5640 class camera" as the target; the
+  actual hardware is an OV3660. Added the target display and audio parts, a link to
+  the new tutorial, and a repository layout section.
+- `docs/VOICE_ALERT_HARDWARE.md` still said "OV2640 camera for the initial prototype"
+  and left the I2S GPIO numbers to be decided later. Both are now settled.
+- Stored the task brief this work was done against in `docs/prompts/`.
+
+**Not done.** The firmware still has never been compiled - no ESP-IDF toolchain has
+existed in any environment this project has been worked in, so `idf.py build` remains
+unrun and the I2S code is reviewed-but-unbuilt. See `PROJECT_STATE.md` gap 1.
+
 ## 2026-08-11 — real hardware selected, firmware wired to it
 - Board bought: **ESP32-S3-WROOM-1 N16R8 CAM + OV3660** (16 MB flash, 8 MB octal PSRAM)
   and a 1.8" **128x160 ST7735S** SPI panel. The board's DVP pin map turned out to be

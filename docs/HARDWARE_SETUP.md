@@ -1,11 +1,19 @@
 # Hardware setup and firmware install guide
 
-For the two parts bought on 2026-08-11:
+> **New here?** This page is the toolchain and bring-up reference. If you are
+> assembling the hardware for the first time, start with the step-by-step
+> [Hardware Setup Tutorial](./tutorials/hardware-setup/README.md), which covers all
+> five parts with wiring diagrams, then come back here for the ESP-DL stages.
+
+For the five parts bought on 2026-08-11:
 
 | Part | Listing | Price |
 | --- | --- | --- |
 | ESP32-S3-WROOM-1 **N16R8** dev board with **OV3660** camera | [khmeres.com item 2991](https://khmeres.com/product_detail/2991) | $7.50 |
 | 1.8" **128x160 ST7735S** 65K colour SPI TFT | [khmeres.com item 1885](https://khmeres.com/product_detail/1885) | $3.50 |
+| **MAX98357A** I2S filterless class-D amplifier | [khmeres.com item 2724](https://khmeres.com/product_detail/2724) | $2.00 |
+| 4 ohm / 3 W 40x22 mm speaker | [khmeres.com item 2554](https://khmeres.com/product_detail/2554) | $0.75 |
+| MB102 830-point solderless breadboard | [khmeres.com item 371](https://khmeres.com/product_detail/371) | $1.50 |
 
 Written for Windows 11 / PowerShell. Nothing in this guide has been run against real
 hardware - no board existed in the development environment - so treat every "you
@@ -36,16 +44,22 @@ driven over plain SPI on GPIOs you choose. `display_ui.cpp` was written against 
 caller-supplied framebuffer with a blit callback precisely so the panel could be
 swapped; it now adapts its layout when the panel is under 200 px wide.
 
+**The audio path.** The MAX98357A and the 4 ohm / 3 W speaker are now in hand, and
+`main/board_audio.h/.cpp` drives them over I2S on GPIO 39 (BCLK), 38 (LRCLK) and
+40 (DIN). The buzzer on GPIO 2 remains the automatic fallback when I2S fails to
+initialize. Wiring and the `SD`/`GAIN` configuration pins: see the
+[tutorial, section 6](./tutorials/hardware-setup/README.md#6-wiring).
+
 **Still missing** for the full build:
 
 - A **USB-C data cable**. Charge-only cables are the single most common cause of
   "the board doesn't appear".
-- **6-8 female-female dupont jumper wires** for the display.
-- A **MAX98357A I2S amplifier + small speaker** for spoken alerts (`voice_alert.cpp`).
-  Until then the firmware falls back to a buzzer on GPIO 2, so a **buzzer** is worth
-  having now.
-- Optionally a **microSD card** - but the SD slot's GPIOs are earmarked for the I2S
-  amplifier below, so you cannot have both without re-planning pins.
+- **~15 dupont jumper wires** - 8 for the display, 5 for the amplifier, 2 spare.
+- A **soldering iron**. The display and amplifier ship with loose header strips.
+- Approved English/Khmer voice recordings. Until they exist each alert reason
+  plays its own tone pattern, which is audible and testable but is not speech.
+- Optionally a **microSD card** - but the SD slot's GPIOs are now the I2S amplifier's,
+  so you cannot have both without re-planning pins.
 
 ---
 
@@ -104,12 +118,41 @@ expect:
 | 48 | on-board RGB LED on most units |
 
 That leaves **1, 2, 3, 14, 21, 38, 39, 40, 41, 42, 47**. The display takes five; GPIO 2
-is the buzzer already coded in `voice_alert.cpp`; **38/39/40** (the microSD slot, unused
-by this project) are the natural home for the I2S amplifier - BCLK 39, LRCLK/WS 38,
-DIN 40 - leaving 1 and 3 spare.
+is the buzzer in `voice_alert.cpp`; **38/39/40** (the microSD slot, unused by this
+project) are now the I2S amplifier's, assigned in `board_audio.h`. **Only GPIO 1 and
+GPIO 3 remain free.**
 
 > If one of these is not broken out on your particular board's header, pick another
-> from the free list and update `board_display.h`. Do not reach for 33-37.
+> from the free list and update `board_display.h` or `board_audio.h`. Do not reach
+> for 33-37.
+
+### 2.4 I2S amplifier
+
+Five wires, plus two from the amplifier's screw terminal to the speaker.
+
+| Amplifier pin | Also labelled | Wire to | Why this pin |
+| --- | --- | --- | --- |
+| GND | - | GND | common ground; connect first |
+| VIN | - | **5V** | 2.5-5.5 V accepted; 3.2 W into 4 ohm is a 5 V figure |
+| BCLK | BLCK | **GPIO 39** | I2S bit clock |
+| LRC | LRCLK, WS | **GPIO 38** | I2S word select |
+| DIN | - | **GPIO 40** | I2S data, ESP32-S3 to amplifier |
+| GAIN | - | *leave floating* | floating = 9 dB, which is already loud here |
+| SD | SD_MODE | *leave alone* | see below |
+
+There is no MCLK: the MAX98357A recovers its own clock, which is why three signal
+wires suffice. BCLK/LRC/DIN are driven at 3.3 V directly from the ESP32-S3 - no
+level shifter is needed or wanted.
+
+`SD` selects the channel as well as shutting the part down (`<0.16 V` shutdown,
+`0.16-0.77 V` (L+R)/2, `0.77-1.4 V` right, `>1.4 V` left). `board_audio.cpp` writes
+the same sample into **both** I2S slots, so every non-shutdown setting sounds
+identical and the breakout variant stops mattering. If there is no sound at all,
+measure `SD`: near 0 V means the part is shut down, and a 100 kohm resistor from
+`SD` to `VIN` forces left-channel mode.
+
+Change these in one place only: `AUDIO_PIN_*` in
+[board_audio.h](../firmware/esp32s3/main/board_audio.h).
 
 ---
 
@@ -219,7 +262,7 @@ Expect a chip banner and a countdown. `Ctrl+]` exits the monitor.
 Everything the board needs is committed. From the project root:
 
 ```powershell
-cd e:\Personal\Project\PLXY_DrowsyGuard\firmware\esp32s3
+cd <path-to-this-repo>\firmware\esp32s3
 idf.py set-target esp32s3          # seeds sdkconfig from sdkconfig.defaults
 idf.py reconfigure                 # fetches managed components, writes dependencies.lock
 idf.py build
@@ -252,13 +295,24 @@ If it reports 2 MB, or nothing, stop and fix `SPIRAM_MODE_OCT` before anything e
 This is **stage 1: preview-only**. The ESP-DL models are not bound yet, so
 `model_init()` returns false and the firmware says so rather than pretending:
 
+- **one short 880 Hz beep at boot** - the audio self-test in `main.cpp`,
 - the live camera feed in the top 45 % of the panel,
 - `NO FACE`, `EYES OPEN`, `PC 0%`, `RISK 0%` and an `FPS` readout below it,
 - `NO MODEL - PREVIEW` on the bottom line,
 - one log line a second: `fps 24.3  risk 0.00  perclos 0.00  heap ...  psram ...`
 
 That one screen validates the camera ribbon, the pin map, PSRAM, the SPI panel, the
-RGB565 byte order and the power supply. Do not move on until it is clean.
+RGB565 byte order and the power supply; the beep validates the I2S pins, the
+amplifier and the speaker. Do not move on until both are clean.
+
+The boot banner also states which output path is live:
+
+```
+I (xxx) audio: I2S up: BCLK=39 LRCLK=38 DIN=40 @ 16000 Hz 16-bit stereo
+I (xxx) voice_alert: Alert controller initialized; ... output=I2S/MAX98357A
+```
+
+`output=buzzer` there means I2S did not come up and the fallback is in use.
 
 ---
 
@@ -335,6 +389,12 @@ eventual fix, and it also matches the base model's training domain.
 | Preview mirrored the wrong way | mounting orientation | `set_hmirror` / `set_vflip` in `board_camera_tune()` |
 | CMake path errors or `filename too long` | IDF or project in a path with spaces, or long paths disabled | reinstall IDF to `C:\Espressif`; enable `LongPathsEnabled` |
 | `fps` far below 15 | CPU at 160 MHz, or SPI at 20 MHz | check `CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240`; raise `LCD_SPI_HZ` |
+| No boot beep, log says `output=buzzer` | I2S channel failed to initialize | check `AUDIO_PIN_*` against the reserved list in section 2.3 |
+| No boot beep, log says `output=I2S/MAX98357A` | wiring, or the amplifier is shut down | check GND and VIN, then measure `SD` - below 0.16 V is shutdown |
+| Loud hiss or buzz instead of a tone | no common ground between board and amplifier | tie every module GND to one net |
+| Audio very quiet | `VIN` on 3V3 rather than 5V | move `VIN` to `5V` |
+| Tone plays but the preview freezes | playback running inline instead of on its task | confirm `voice_alert_init()` returned true |
+| `driver/i2s_std.h: No such file` | ESP-IDF older than v5.0 | install v5.4.x; the legacy `i2s.h` API is not used |
 
 ---
 

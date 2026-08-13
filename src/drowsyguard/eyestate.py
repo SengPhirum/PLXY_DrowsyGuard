@@ -57,7 +57,9 @@ def eye_patch_boxes(face_box, landmarks, scale=EYE_PATCH_SCALE):
     """Square crop boxes around each eye landmark, as (x0, y0, side) pairs."""
     if not landmarks or len(landmarks) < 2:
         return []
-    side = max(8, int(max(face_box[2], face_box[2]) * scale))
+    # face_box is (x, y, side) from FaceTracker._square - already square, so the
+    # patch size is a fraction of that one side.
+    side = max(8, int(face_box[2] * scale))
     half = side // 2
     boxes = []
     for idx in (RIGHT_EYE, LEFT_EYE):

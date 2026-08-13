@@ -1,10 +1,7 @@
-numpy>=1.26
-Pillow>=10.0
-PyYAML>=6.0
-torch>=2.2
-torchvision>=0.17
-scikit-learn>=1.4
-onnx>=1.16
-onnxruntime>=1.18
-tqdm>=4.66
-opencv-python>=4.9
+# Runtime dependencies are declared once, in pyproject.toml, so the two cannot
+# drift apart. This file stays so that `pip install -r requirements.txt` keeps
+# working for anyone who reaches for it out of habit.
+#
+#   pip install -e .            # runtime
+#   pip install -e ".[live]"    # runtime + the webcam dashboard
+-e .

@@ -6,6 +6,7 @@
 #include "freertos/task.h"
 
 #include "behavior.h"
+#include "board_audio.h"
 #include "board_camera.h"
 #include "board_display.h"
 #include "display_ui.h"
@@ -43,6 +44,13 @@ extern "C" void app_main(void) {
     alert_config.buzzer_fallback = true;
     if (!voice_alert_init(alert_config)) {
         ESP_LOGE(TAG, "Alert subsystem initialization failed");
+    }
+    // One short chirp at boot. It costs 120 ms and it is the only way to tell an
+    // amplifier that is wired but silent from one that was never initialized -
+    // the difference between a wiring fault and a firmware fault during bring-up.
+    if (board_audio_ready()) {
+        board_audio_play_tone(880, 120);
+        board_audio_silence();
     }
 
     if (!board_display_init()) {

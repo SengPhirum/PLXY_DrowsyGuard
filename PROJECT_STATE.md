@@ -1,22 +1,38 @@
 # Project State
 
-Last updated: 2026-08-10
+Last updated: 2026-08-13
 Status: Scaffold and live dashboard complete. Detection reworked from whole-face
 classification to multi-cue behaviour analysis (PERCLOS + long blinks + yawn + nod,
 with sneeze suppression) after the face CNN was found to key on driver identity. The
 eye-state base model is integrated but not yet accurate in visible light, and the
-behaviour thresholds are untuned; hardware validation pending.
+behaviour thresholds are untuned. All five hardware parts are now bought and the
+firmware drives every one of them (camera, panel, I2S amplifier); nothing has been
+flashed to a physical board yet, so hardware validation is still pending.
 
 ## Locked design decisions
 - Target platform: ESP32-S3 with PSRAM and camera. **ESP32-S2 is ruled out**: it has no
   AI vector instructions and ESP-DL's face detection models do not support it, so the
   detector + two eye inferences per frame is not achievable. See
   `docs/FIRMWARE_PIPELINE.md`.
-- **Hardware bought 2026-08-11**: ESP32-S3-WROOM-1 **N16R8** CAM board with an **OV3660**
-  (16 MB flash, 8 MB octal PSRAM) plus a 1.8" **128x160 ST7735S** SPI panel. Its DVP
-  camera pin map is byte-for-byte the ESP32-S3-EYE map, so ESP-DL's vision examples and
-  the published frame budget carry over unchanged. Wiring, toolchain and flashing:
-  `docs/HARDWARE_SETUP.md`.
+- **Hardware bought 2026-08-11** (five khmeres.com items, $15.25 total):
+  ESP32-S3-WROOM-1 **N16R8** CAM board with an **OV3660** (item 2991), a 1.8"
+  **128x160 ST7735S** SPI panel (1885), a **MAX98357A** I2S class-D amplifier (2724),
+  a **4 ohm / 3 W** speaker (2554) and an **MB102** breadboard (371). The board's DVP
+  camera pin map is byte-for-byte the ESP32-S3-EYE map, so ESP-DL's vision examples
+  and the published frame budget carry over unchanged. Toolchain and bring-up stages:
+  `docs/HARDWARE_SETUP.md`; full beginner walkthrough with wiring diagrams:
+  `docs/tutorials/hardware-setup/`.
+  Note the 1885 listing calls the panel an "OLED"; it is a TFT LCD (the module's own
+  silkscreen reads `RGB_TFT`), which is why it needs the `BLK` backlight pin.
+- **GPIO budget is now fully spent.** Camera 4-13/15-18, flash+PSRAM 33-37, USB 19/20,
+  console 43/44, display 14/21/41/42/47, I2S audio 38/39/40, buzzer 2. Only GPIO 1 and
+  GPIO 3 remain free. Any new peripheral has to take one of those or displace something.
+- **Audio output is mono duplicated into both I2S slots**, deliberately. The MAX98357A's
+  `SD` pin selects left / right / (L+R)/2 depending on what a given breakout pulls it
+  to, and duplicating the sample makes every non-shutdown variant behave identically.
+- **Alert playback runs on its own FreeRTOS task.** The capture loop has a ~23 ms frame
+  budget, so inline playback would drop roughly twenty frames and freeze the preview at
+  the exact moment the driver needs it.
 - Device frame budget: detect the face every 3rd frame and track between, run eye state
   every frame, target 15 fps (~23 ms/frame). 15 fps is sufficient because PERCLOS needs
   temporal coverage, not frame rate.
@@ -55,9 +71,13 @@ behaviour thresholds are untuned; hardware validation pending.
   that split assignment stays per-subject.
 
 ## Known gaps
-1. No physical ESP32-S3 board has been flashed in this environment. The firmware now
-   compiles against real pin maps but has never been built or run; the camera, LCD and
-   ESP-DL call sites are all unverified.
+1. No physical ESP32-S3 board has been flashed in this environment, and no ESP-IDF
+   toolchain has ever been present, so **the firmware has never been compiled** - not
+   by CI, not locally. The camera, LCD, I2S and ESP-DL call sites are all unverified.
+   The ESP-IDF-independent C++ (`behavior.cpp`, `risk_filter.cpp`) does compile on a
+   host g++ and is covered by `tests/test_firmware_parity.py`; everything else is
+   reviewed-but-unbuilt code. Treat a first `idf.py build` as expected to surface
+   ordinary compile errors.
 2. ESP-PPQ export API must be pinned to a specific version before model conversion code can be finalized.
 3. Camera pin map is settled (ESP32-S3-EYE-compatible, in `main/board_camera.h`). Still
    unverified on the bench, as is the ST7735S panel bring-up in `main/board_display.cpp`
@@ -95,7 +115,10 @@ its filenames but is infrared and needs Kaggle credentials, which are not config
 here. Confirm any result per-driver on held-out subjects, and note for the write-up
 that the highest-accuracy public drowsiness models (70-343 MB, 224x224) cannot run on
 an ESP32-S3, which is why the eye-closure route was chosen.
-Hardware: the board and panel are now in hand. Work stage 1 of `docs/HARDWARE_SETUP.md`
-- install ESP-IDF 5.4, wire the ST7735S, flash, and confirm 8 MB PSRAM plus a live
-preview on the panel. Only then bind ESP-DL and pin the resolved versions into
+Hardware: all five parts are in hand. Follow
+`docs/tutorials/hardware-setup/README.md` end to end - install ESP-IDF 5.4, solder the
+two header strips, wire the 15 connections, flash, and confirm four things in one boot:
+8 MB PSRAM, a live preview on the panel, one 880 Hz chirp from the speaker, and `fps`
+above 15. Expect the first `idf.py build` to need fixes; nothing in `firmware/` has
+ever been compiled. Only then bind ESP-DL and pin the resolved versions into
 `docs/DEPLOYMENT.md`.

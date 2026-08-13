@@ -3,18 +3,31 @@
 Low-cost, camera-based driver drowsiness detection research project designed for retrofit use in older vehicles.
 
 ## Target
-- MCU: ESP32-S3 with PSRAM
-- Camera: OV2640/OV5640 class camera
+- MCU: ESP32-S3-WROOM-1 **N16R8** (16 MB flash, 8 MB octal PSRAM)
+- Camera: **OV3660** on the board's DVP/FPC connector
+- Display: 1.8" 128x160 **ST7735S** SPI TFT
+- Audio: **MAX98357A** I2S class-D amplifier + 4 ohm / 3 W speaker
 - Runtime: ESP-IDF + ESP-DL
 - Model: tiny grayscale CNN, INT8 quantized to `.espdl`
 - Safety logic: temporal smoothing + sustained-risk trigger + cooldown
+
+## Hardware setup
+
+For the complete assembly, wiring, installation and testing guide — starting from
+unopened parts and ending at a working system — see:
+
+**[Hardware Setup Tutorial](./docs/tutorials/hardware-setup/README.md)**
+
+It covers all five purchased components, a full wiring table, eleven labelled
+wiring diagrams, first power-on, per-component tests and troubleshooting.
+[`docs/HARDWARE_SETUP.md`](./docs/HARDWARE_SETUP.md) is the shorter reference for
+the toolchain and the ESP-DL binding stages.
 
 ## Workflow
 ```bash
 python -m venv .venv
 source .venv/bin/activate      # Windows: .venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-pip install -e .               # installs the `drowsyguard` command
+pip install -e .               # runtime deps + the `drowsyguard` command
 
 drowsyguard doctor
 drowsyguard prepare --input data/raw --output data/processed
@@ -184,6 +197,18 @@ Use subject-independent train/validation/test splits. Never leak neighboring fra
 
 ## Project memory
 Read `PROJECT_STATE.md`, `ROADMAP.md`, `CHANGELOG.md`, and `docs/AI_HANDOFF.md` before major changes.
+
+## Repository layout
+```
+src/drowsyguard/     desktop toolkit: dataset prep, training, export, live dashboard
+firmware/esp32s3/    ESP-IDF application for the target board
+  main/board_*.h     the only files that hold pin assignments
+configs/             training configurations
+scripts/             one-off tooling (ESP-DL quantization, tutorial diagrams)
+tests/               pytest suite, including firmware/Python parity checks
+docs/                architecture, deployment, hardware and tutorials
+docs/prompts/        the task briefs this repository has been worked against
+```
 
 ## Safety
 Research prototype only; not a certified automotive safety device.
