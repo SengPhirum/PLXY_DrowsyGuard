@@ -115,10 +115,21 @@ def test_gpio_roles_agree_with_the_wiring_tables():
 def test_every_generated_image_exists_and_is_a_real_png():
     gen = _diagram_module()
     names = [fn.__name__ for fn in gen.FIGURES]
-    assert len(names) == 11, 'the tutorial refers to eleven figures'
+    assert len(names) == 11, 'the tutorial refers to eleven reference figures'
+    # 11 reference figures plus the one-page poster. glob is non-recursive, so the
+    # step-by-step sequence under images/steps/ is counted separately below.
     pngs = sorted(IMAGES.glob('*.png'))
-    assert len(pngs) == 11, f'expected 11 diagrams, found {len(pngs)}'
+    assert len(pngs) == 12, f'expected 11 figures + 1 poster, found {len(pngs)}'
     for p in pngs:
+        assert p.stat().st_size > 20_000, f'{p.name} looks like a placeholder'
+        with p.open('rb') as fh:
+            assert fh.read(8) == b'\x89PNG\r\n\x1a\n', f'{p.name} is not a PNG'
+
+
+def test_step_diagrams_are_real_pngs():
+    steps = sorted((IMAGES / 'steps').glob('*.png'))
+    assert steps, 'the step-by-step sequence is missing'
+    for p in steps:
         assert p.stat().st_size > 20_000, f'{p.name} looks like a placeholder'
         with p.open('rb') as fh:
             assert fh.read(8) == b'\x89PNG\r\n\x1a\n', f'{p.name} is not a PNG'
@@ -148,3 +159,72 @@ def test_tutorial_wiring_table_matches_the_firmware():
 def test_root_readme_links_to_the_tutorial():
     text = (ROOT / 'README.md').read_text(encoding='utf-8')
     assert 'docs/tutorials/hardware-setup' in text
+
+
+# --------------------------------------------------------------------------- #
+# scripts/pinmap.py - the single source every artefact reads
+# --------------------------------------------------------------------------- #
+
+def _pinmap():
+    import importlib.util
+    import sys
+
+    spec = importlib.util.spec_from_file_location(
+        'pinmap', ROOT / 'scripts/pinmap.py')
+    mod = importlib.util.module_from_spec(spec)
+    # @dataclass resolves annotations through sys.modules, so the module has to be
+    # registered before exec_module or the Wire definition raises.
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_pinmap_reads_the_firmware_headers():
+    pm = _pinmap()
+    d = _defines(FIRMWARE / 'board_display.h')
+    a = _defines(FIRMWARE / 'board_audio.h')
+    by_module = {w.module: w.esp for w in pm.DISPLAY_WIRING}
+    assert by_module['SCL'] == f"GPIO {d['LCD_PIN_SCK']}"
+    assert by_module['SDA'] == f"GPIO {d['LCD_PIN_MOSI']}"
+    assert by_module['CS'] == f"GPIO {d['LCD_PIN_CS']}"
+    assert by_module['DC'] == f"GPIO {d['LCD_PIN_DC']}"
+    assert by_module['RST'] == f"GPIO {d['LCD_PIN_RST']}"
+    amp = {w.module: w.esp for w in pm.AMP_WIRING}
+    assert amp['BCLK'] == f"GPIO {a['AUDIO_PIN_BCLK']}"
+    assert amp['LRC'] == f"GPIO {a['AUDIO_PIN_LRCLK']}"
+    assert amp['DIN'] == f"GPIO {a['AUDIO_PIN_DIN']}"
+
+
+def test_backlight_goes_to_3v3_not_ground():
+    """BLK is the backlight enable. Grounding it is a common tutorial error that
+    leaves the panel dark and reads as a dead display."""
+    pm = _pinmap()
+    blk = next(w for w in pm.DISPLAY_WIRING if w.module == 'BLK')
+    assert blk.esp == '3V3', 'BLK must go to 3V3; grounding it kills the backlight'
+    vdd = next(w for w in pm.DISPLAY_WIRING if w.module == 'VDD')
+    assert vdd.esp == '3V3', 'VDD is a 3.3 V input; 5 V can destroy the panel'
+
+
+def test_amplifier_sd_and_gain_are_never_wired():
+    """SD below 0.16 V puts the MAX98357A in shutdown, so tying it to GND silences
+    the amplifier rather than enabling it. Neither pin belongs in the wiring table."""
+    pm = _pinmap()
+    wired = {w.module for w in pm.AMP_WIRING}
+    assert 'SD' not in wired, 'SD must be left floating, not wired'
+    assert 'GAIN' not in wired, 'GAIN must be left floating for the default 9 dB'
+    assert {name for name, _ in pm.AMP_LEAVE_ALONE} == {'SD', 'GAIN'}
+
+
+def test_no_gpio_is_double_booked_and_none_land_on_reserved_pins():
+    pm = _pinmap()
+    wired = pm.wired_gpios()
+    for group, pins in pm.RESERVED.items():
+        clash = set(wired) & set(pins)
+        assert not clash, f'GPIO {clash} is wired but reserved for {group}'
+    assert len(wired) == len(set(wired))
+
+
+def test_free_gpio_list_is_what_the_docs_claim():
+    pm = _pinmap()
+    assert pm.FREE_GPIOS == [1, 3], (
+        f'docs say only GPIO 1 and 3 are spare; pinmap computes {pm.FREE_GPIOS}')

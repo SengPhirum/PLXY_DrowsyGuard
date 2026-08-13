@@ -16,6 +16,28 @@ parts permanently.
 
 ---
 
+## 0. The one-page version
+
+If you want a single sheet to prop up next to the bench, this is the whole build on
+one page. Everything on it is generated from the firmware headers, so the GPIO
+numbers cannot drift away from what the board is actually told to drive.
+
+![DrowsyGuard wiring poster](./images/wiring-poster.png)
+
+*Print at A3 if you can. The rest of this document is the same information with the
+reasoning attached — read section 5 (power) and section 6.4 (the amplifier's `SD`
+pin) before you connect anything, because those are the two places where a
+plausible-looking wiring choice destroys a part or silences the system.*
+
+> **Two corrections worth calling out**, because both appear in tutorials for this
+> exact hardware and both are backwards:
+>
+> - **`SD` to GND does not enable the amplifier — it shuts it down.** Below 0.16 V
+>   the MAX98357A is in shutdown. Leave `SD` unconnected.
+> - **`BLK` to GND turns the display's backlight off.** `BLK` goes to `3V3`.
+
+---
+
 ## 1. What we are building
 
 A dashboard-mounted camera that watches the driver's eyes, measures how long they

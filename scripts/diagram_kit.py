@@ -256,39 +256,64 @@ class Breadboard:
     ROWS = 63
     RAIL_HOLES = 50
 
-    def __init__(self, canvas: Canvas, x: float, y: float, pitch: float = 16):
+    def __init__(self, canvas: Canvas, x: float, y: float, pitch: float = 16,
+                 orient: str = 'portrait', rows: int | None = None):
+        """orient 'portrait' runs rows top-to-bottom; 'landscape' runs them
+        left-to-right with the power rails along the top and bottom edges, which
+        is how a breadboard is normally photographed for a wiring poster."""
         self.c = canvas
         self.x, self.y, self.p = x, y, pitch
+        self.orient = orient
+        if rows:
+            self.ROWS = rows
         self.rail_w = 3 * pitch          # +/- pair plus margin
-        self.field_x = x + self.rail_w + pitch
         self.head = pitch * 1.6          # column-letter strip
-        self.field_y = y + self.head
         self.trench = 3 * pitch
-        self.field_w = 10 * pitch + self.trench
-        self.field_h = self.ROWS * pitch
-        self.w = self.field_w + 2 * (self.rail_w + pitch)
-        self.h = self.field_h + 2 * self.head
+        self.across = 10 * pitch + self.trench      # A..J plus the trench
+        self.along = self.ROWS * pitch              # rows 1..63
+        if orient == 'portrait':
+            self.field_x = x + self.rail_w + pitch
+            self.field_y = y + self.head
+            self.field_w, self.field_h = self.across, self.along
+            self.w = self.across + 2 * (self.rail_w + pitch)
+            self.h = self.along + 2 * self.head
+        else:
+            self.field_x = x + self.head
+            self.field_y = y + self.rail_w + self.head
+            self.field_w, self.field_h = self.along, self.across
+            self.w = self.along + 2 * self.head
+            self.h = self.across + 2 * (self.rail_w + self.head)
 
     # -- coordinates --------------------------------------------------------- #
     def hole(self, col: str, row: int):
         """Centre of hole `col``row`, e.g. hole('E', 24). Rows are 1-based."""
         i = COLS.index(col.upper())
-        cx = self.field_x + (i + 0.5) * self.p + (self.trench if i >= 5 else 0)
-        cy = self.field_y + (row - 0.5) * self.p
-        return (cx, cy)
+        across = (i + 0.5) * self.p + (self.trench if i >= 5 else 0)
+        along = (row - 0.5) * self.p
+        if self.orient == 'portrait':
+            return (self.field_x + across, self.field_y + along)
+        return (self.field_x + along, self.field_y + across)
 
     def rail(self, side: str, polarity: str, row: int):
-        """A power-rail hole. side 'L'/'R', polarity '+'/'-', row 1..63."""
-        # On both edges the outer line is '+' (red) and the inner one is '-' (blue),
-        # which is how the MB102 in the owner's photograph is printed.
-        if side.upper() == 'L':
-            base = self.x + self.p * 0.5
+        """A power-rail hole.
+
+        side is 'L'/'R' in portrait and 'T'/'B' in landscape ('L' and 'T' are
+        accepted as synonyms for the first edge). On both edges the outer line is
+        '+' (red) and the inner one is '-' (blue), which is how the MB102 in the
+        owner's photograph is printed.
+        """
+        first = side.upper() in ('L', 'T')
+        along = (row - 0.5) * self.p
+        if first:
+            base = (self.x if self.orient == 'portrait' else self.y) + self.p * 0.5
             off = 0 if polarity == '+' else self.p * 1.5
         else:
-            base = self.x + self.w - self.rail_w + self.p * 0.5
+            far = (self.x + self.w) if self.orient == 'portrait' else (self.y + self.h)
+            base = far - self.rail_w + self.p * 0.5
             off = self.p * 1.5 if polarity == '+' else 0
-        cy = self.field_y + (row - 0.5) * self.p
-        return (base + off, cy)
+        if self.orient == 'portrait':
+            return (base + off, self.field_y + along)
+        return (self.field_x + along, base + off)
 
     def col_x(self, col: str):
         return self.hole(col, 1)[0]
@@ -297,72 +322,108 @@ class Breadboard:
         return self.hole('A', row)[1]
 
     # -- drawing ------------------------------------------------------------- #
-    def draw(self, label_every: int = 5):
+    def draw(self, label_every: int = 5, letters: bool = True, numbers: bool = True):
         c, p = self.c, self.p
+        port = self.orient == 'portrait'
         c.rect(self.x, self.y, self.w, self.h, fill=BOARD_CREAM,
                outline=BOARD_EDGE, width=2, radius=6)
 
-        # centre trench
-        tx = self.field_x + 5 * p
-        c.rect(tx, self.field_y, self.trench, self.field_h, fill=(206, 200, 186))
-        c.rect(tx + 2, self.field_y, self.trench - 4, self.field_h, fill=(190, 184, 170))
-        c.line([(tx, self.field_y), (tx, self.field_y + self.field_h)],
-               fill=(168, 162, 148), width=2)
-        c.line([(tx + self.trench, self.field_y),
-                (tx + self.trench, self.field_y + self.field_h)],
-               fill=(168, 162, 148), width=2)
+        # centre trench, between the E and F hole lines
+        e_end = self.hole('E', 1)[0 if port else 1] + p * 0.5
+        if port:
+            c.rect(e_end, self.field_y, self.trench, self.field_h, fill=(200, 194, 180))
+            c.rect(e_end + 2, self.field_y, self.trench - 4, self.field_h,
+                   fill=(186, 180, 166))
+        else:
+            c.rect(self.field_x, e_end, self.field_w, self.trench, fill=(200, 194, 180))
+            c.rect(self.field_x, e_end + 2, self.field_w, self.trench - 4,
+                   fill=(186, 180, 166))
 
         # main field holes
-        r = max(1.6, p * 0.17)
+        r = max(1.1, p * 0.17)
         for row in range(1, self.ROWS + 1):
             for col in COLS:
                 hx, hy = self.hole(col, row)
-                c.rect(hx - r * 1.5, hy - r * 1.5, r * 3, r * 3, fill=HOLE_DARK, radius=1)
+                c.rect(hx - r * 1.5, hy - r * 1.5, r * 3, r * 3, fill=HOLE_DARK,
+                       radius=1)
 
-        # column letters, top and bottom
-        for col in COLS:
-            cx = self.col_x(col)
-            c.text(cx, self.y + self.head * 0.5, col, size=int(p * 0.72),
-                   bold=True, fill=(90, 86, 78), anchor='mm')
-            c.text(cx, self.y + self.h - self.head * 0.5, col, size=int(p * 0.72),
-                   bold=True, fill=(90, 86, 78), anchor='mm')
+        # column letters A..J, on both sides of the across-axis
+        if letters:
+            for col in COLS:
+                hx, hy = self.hole(col, 1)
+                fs = max(6, int(p * 0.72))
+                if port:
+                    for yy in (self.y + self.head * 0.5,
+                               self.y + self.h - self.head * 0.5):
+                        c.text(hx, yy, col, size=fs, bold=True, fill=(90, 86, 78),
+                               anchor='mm')
+                else:
+                    for xx in (self.x + self.head * 0.5,
+                               self.x + self.w - self.head * 0.5):
+                        c.text(xx, hy, col, size=fs, bold=True, fill=(90, 86, 78),
+                               anchor='mm')
 
-        # row numbers, both sides of the field
-        for row in range(1, self.ROWS + 1):
-            if row % label_every and row != 1:
-                continue
-            ry = self.row_y(row)
-            c.text(self.field_x - p * 0.35, ry, str(row), size=int(p * 0.68),
-                   fill=(120, 114, 104), anchor='rm')
-            c.text(self.field_x + self.field_w + p * 0.35, ry, str(row),
-                   size=int(p * 0.68), fill=(120, 114, 104), anchor='lm')
+        # row numbers 1..63 along the along-axis
+        if numbers:
+            fs = max(6, int(p * 0.68))
+            for row in range(1, self.ROWS + 1):
+                if row % label_every and row != 1:
+                    continue
+                hx, hy = self.hole('A', row)
+                if port:
+                    c.text(self.field_x - p * 0.35, hy, str(row), size=fs,
+                           fill=(120, 114, 104), anchor='rm')
+                    c.text(self.field_x + self.field_w + p * 0.35, hy, str(row),
+                           size=fs, fill=(120, 114, 104), anchor='lm')
+                else:
+                    c.text(hx, self.field_y - p * 0.45, str(row), size=fs,
+                           fill=(120, 114, 104), anchor='mb')
+                    c.text(hx, self.field_y + self.field_h + p * 0.45, str(row),
+                           size=fs, fill=(120, 114, 104), anchor='mt')
 
         # power rails
-        for side in ('L', 'R'):
+        for side in (('L', 'R') if port else ('T', 'B')):
             for pol, colour in (('+', RED), ('-', BLUE)):
-                x0 = self.rail(side, pol, 1)[0]
-                c.line([(x0, self.field_y - p * 0.6),
-                        (x0, self.field_y + self.field_h + p * 0.6)],
-                       fill=colour, width=2)
+                a = self.rail(side, pol, 1)
+                b = self.rail(side, pol, self.ROWS)
+                if port:
+                    c.line([(a[0], a[1] - p * 0.6), (b[0], b[1] + p * 0.6)],
+                           fill=colour, width=2)
+                else:
+                    c.line([(a[0] - p * 0.6, a[1]), (b[0] + p * 0.6, b[1])],
+                           fill=colour, width=2)
                 for row in range(1, self.ROWS + 1):
-                    # 50 holes in 10 groups of 5: skip one row per group of six
+                    # 50 holes in 10 groups of 5: one row per group of six is blank
                     if row % 6 == 0:
                         continue
                     hx, hy = self.rail(side, pol, row)
                     c.rect(hx - r * 1.5, hy - r * 1.5, r * 3, r * 3,
                            fill=HOLE_DARK, radius=1)
-                for yy in (self.y + self.head * 0.5,
-                           self.y + self.h - self.head * 0.5):
-                    c.text(x0, yy, '+' if pol == '+' else '−',
-                           size=int(p * 0.9), bold=True, fill=colour, anchor='mm')
+                sym = '+' if pol == '+' else '−'
+                fs = max(7, int(p * 0.9))
+                if port:
+                    for yy in (self.y + self.head * 0.5,
+                               self.y + self.h - self.head * 0.5):
+                        c.text(a[0], yy, sym, size=fs, bold=True, fill=colour,
+                               anchor='mm')
+                else:
+                    for xx in (self.x + self.head * 0.5,
+                               self.x + self.w - self.head * 0.5):
+                        c.text(xx, a[1], sym, size=fs, bold=True, fill=colour,
+                               anchor='mm')
 
-        # side mounting clips, as on the real board
-        for fy in (0.16, 0.5, 0.84):
-            yy = self.y + self.h * fy
-            c.rect(self.x - p * 0.45, yy - p * 0.9, p * 0.5, p * 1.8,
-                   fill=(232, 228, 216), outline=BOARD_EDGE, width=1, radius=2)
-            c.rect(self.x + self.w - p * 0.05, yy - p * 0.9, p * 0.5, p * 1.8,
-                   fill=(232, 228, 216), outline=BOARD_EDGE, width=1, radius=2)
+        # mounting clips along the long edges, as on the real board
+        for f in (0.16, 0.5, 0.84):
+            if port:
+                yy = self.y + self.h * f
+                for xx in (self.x - p * 0.45, self.x + self.w - p * 0.05):
+                    c.rect(xx, yy - p * 0.9, p * 0.5, p * 1.8, fill=(232, 228, 216),
+                           outline=BOARD_EDGE, width=1, radius=2)
+            else:
+                xx = self.x + self.w * f
+                for yy in (self.y - p * 0.45, self.y + self.h - p * 0.05):
+                    c.rect(xx - p * 0.9, yy, p * 1.8, p * 0.5, fill=(232, 228, 216),
+                           outline=BOARD_EDGE, width=1, radius=2)
         return self
 
     def span_bracket(self, col: str, row_a: int, row_b: int, label: str,
