@@ -35,6 +35,19 @@ project does not use.
 #define LCD_GAP_X 0
 #define LCD_GAP_Y 0
 
+// Panel orientation. This module comes up rotated 180 degrees: the row order is
+// reversed (the event line lands at the top instead of the bottom) and the text
+// reads backwards.
+//
+// The rotation is applied in board_display_blit(), NOT via esp_lcd_panel_mirror().
+// MADCTL's MX/MY bits do rotate the image, but they also move which corner of the
+// ST7735S's 132x162 GRAM the visible 128x160 window starts from, so LCD_GAP_X/Y
+// would have to change with them - get that wrong and the panel goes white,
+// because every write lands outside the visible area. Rotating during the copy is
+// immune to that and costs nothing: those bytes are already being touched for the
+// endian swap. Set to 0 if you remount the panel the other way up.
+#define LCD_ROTATE_180 1
+
 // 40 MHz keeps a full 128x160 RGB565 frame (40 KB) under ~8 ms on the wire. At
 // 20 MHz it is ~16 ms, which eats most of the 23 ms frame budget in
 // docs/FIRMWARE_PIPELINE.md. Drop to 20 MHz if long dupont wires make it flicker.

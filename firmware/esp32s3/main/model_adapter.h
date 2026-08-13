@@ -27,8 +27,21 @@ struct FaceDetection {
 bool model_init();
 bool model_ready();
 
+// The two models bind independently, so they are reported independently. The face
+// detector is bound (espressif/human_face_detect); the eye model is not, because it
+// needs an .espdl that this repo cannot yet produce - see model_adapter.cpp.
+//
+// Callers MUST gate PERCLOS and alerting on this. model_eye_closed_prob() returns
+// 0.0 while unbound, and 0.0 fed into PERCLOS is indistinguishable from a driver
+// whose eyes are open forever: the risk score would sit at zero and the alarm would
+// simply never fire.
+bool model_eye_ready();
+
 // Largest face in one RGB565 frame. False if no face is found.
 bool model_detect_face(const uint8_t *rgb565, int width, int height, FaceDetection *out);
+
+// TEMP bring-up: same detector fed RGB888, to isolate RGB565 handling from content.
+bool model_detect_face_rgb888(const uint8_t *rgb888, int width, int height, FaceDetection *out);
 
 // Probability that one eye is closed. `eye`: 0 = right, 1 = left, in DrowsyGuard's
 // canonical landmark order.

@@ -90,8 +90,14 @@ inline camera_config_t board_camera_config() {
 inline void board_camera_tune() {
     sensor_t *s = esp_camera_sensor_get();
     if (s == nullptr) return;
+    // Leave the sensor upright. The panel is the thing mounted upside down, and
+    // LCD_ROTATE_180 in board_display.cpp already corrects for that on the way to
+    // the glass - rotating here as well would compose with it and, far worse, would
+    // hand ESP-DL an inverted frame. Face detectors do not detect upside-down faces,
+    // so that reads as "the camera is broken" when the image is in fact fine.
+    // Rotate the panel, never the sensor.
     s->set_hmirror(s, 1);        // selfie orientation
-    s->set_vflip(s, 0);          // flip to 1 if the module is mounted upside down
+    s->set_vflip(s, 0);          // flip to 1 only if the module itself is remounted
     s->set_gain_ctrl(s, 1);      // AGC on: cabin light swings hard
     s->set_exposure_ctrl(s, 1);  // AEC on
     s->set_whitebal(s, 1);

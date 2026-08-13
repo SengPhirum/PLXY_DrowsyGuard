@@ -17,10 +17,10 @@ dependencies:
   waveshare/esp_lcd_st7735:
     version: "^1.0.1"
 
-  ## Stage 3 (models). Uncomment together with the ESP-DL binding in
-  ## model_adapter.cpp - they add ~1 MB to the image, so leave them out until the
-  ## camera and panel are proven.
-  # espressif/esp-dl:
-  #   version: "^3.1.2"
-  # espressif/human_face_detect:
-  #   version: "^0.3.0"
+  ## Stage 3 (models). Camera and panel are proven on hardware, so these are in.
+  ## Model data lives in flash rodata (CONFIG_HUMAN_FACE_DETECT_MODEL_IN_FLASH_RODATA);
+  ## partitions.csv already gives the app 6 MB for it.
+  espressif/esp-dl:
+    version: "^3.1.2"
+  espressif/human_face_detect:
+    version: "^0.3.0"

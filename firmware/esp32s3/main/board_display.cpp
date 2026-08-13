@@ -62,6 +62,7 @@ bool board_display_init() {
     ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(s_panel, false));
+    // Deliberately NOT esp_lcd_panel_mirror(): see LCD_ROTATE_180 in board_display.h.
     ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, LCD_GAP_X, LCD_GAP_Y));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
 
@@ -89,12 +90,25 @@ void board_display_blit(const uint16_t *fb, int w, int h) {
 
     for (int y0 = 0; y0 < h; y0 += CHUNK_ROWS) {
         const int rows = (y0 + CHUNK_ROWS <= h) ? CHUNK_ROWS : (h - y0);
+#if LCD_ROTATE_180
+        // Panel rows [y0, y0+rows) come from framebuffer rows counted from the far
+        // end, each read right to left. Same byte count, same one swap per pixel.
+        for (int r = 0; r < rows; ++r) {
+            const uint16_t *src = fb + static_cast<size_t>(h - 1 - (y0 + r)) * w;
+            uint16_t *dst = s_chunk + r * w;
+            for (int x = 0; x < w; ++x) {
+                const uint16_t v = src[w - 1 - x];
+                dst[x] = static_cast<uint16_t>((v >> 8) | (v << 8));
+            }
+        }
+#else
         const uint16_t *src = fb + static_cast<size_t>(y0) * w;
         const int n = rows * w;
         for (int i = 0; i < n; ++i) {
             const uint16_t v = src[i];
             s_chunk[i] = static_cast<uint16_t>((v >> 8) | (v << 8));
         }
+#endif
         esp_lcd_panel_draw_bitmap(s_panel, 0, y0, w, y0 + rows, s_chunk);
     }
 }

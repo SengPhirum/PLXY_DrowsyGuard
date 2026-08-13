@@ -56,6 +56,10 @@ struct DisplayInput {
     // screen rather than showing a permanently zero risk bar that looks like a
     // driver who never blinks.
     bool no_model = false;
+    // Face detector bound but eye model not. The face box and the yawn/nod cues are
+    // live; PERCLOS is pinned at zero and alerting is off. Distinct from no_model
+    // because the two failure modes look identical on a risk bar and are not.
+    bool no_eye_model = false;
 };
 
 // Blit callback: copy a full RGB565 framebuffer to the panel.

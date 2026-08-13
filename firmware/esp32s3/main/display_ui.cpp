@@ -85,15 +85,48 @@ static inline int text_w(const char *s, int scale) {
     return n * 6 * scale;
 }
 
-static void draw_text_right(const char *s, int right_x, int y, uint16_t colour, int scale) {
-    display_ui_draw_text(s, right_x - text_w(s, scale), y, colour, scale);
-}
-
 static void draw_bar(int x, int y, int w, int h, float frac, uint16_t colour) {
     if (frac < 0.0f) frac = 0.0f;
     if (frac > 1.0f) frac = 1.0f;
     fill_rect(x, y, w, h, rgb565(24, 28, 34));
     fill_rect(x, y, static_cast<int>(w * frac), h, colour);
+}
+
+// --- overlay helpers -------------------------------------------------------
+// The readouts sit on top of the live frame now, so they have to stay legible
+// over whatever the camera happens to be pointing at - a white shirt or a
+// sunlit windscreen included.
+
+// 50% blend toward black, the standard RGB565 trick: shift each field down one
+// and mask the bit that fell in from the field above.
+static inline uint16_t half(uint16_t v) {
+    return static_cast<uint16_t>((v >> 1) & 0x7BEF);
+}
+
+// Darkens the video behind a band of text instead of hiding it. Two passes
+// would be cheaper to read but would black the frame out; one keeps the driver
+// visible underneath.
+static void scrim_rect(int x, int y, int w, int h) {
+    for (int j = y; j < y + h; ++j) {
+        if (j < 0 || j >= g_h) continue;
+        uint16_t *row = g_fb + j * g_w;
+        for (int i = x; i < x + w; ++i) {
+            if (i < 0 || i >= g_w) continue;
+            row[i] = half(row[i]);
+        }
+    }
+}
+
+// A one-pixel black drop shadow. Cheap, and it is what keeps thin 5x7 glyphs
+// off a busy background from dissolving into it.
+static void draw_text_shadow(const char *s, int x, int y, uint16_t colour, int scale) {
+    display_ui_draw_text(s, x + 1, y + 1, rgb565(0, 0, 0), scale);
+    display_ui_draw_text(s, x, y, colour, scale);
+}
+
+static void draw_text_right_shadow(const char *s, int right_x, int y, uint16_t colour,
+                                   int scale) {
+    draw_text_shadow(s, right_x - text_w(s, scale), y, colour, scale);
 }
 
 bool display_ui_init(uint16_t *framebuffer, int width, int height, DisplayBlit blit) {
@@ -108,86 +141,91 @@ bool display_ui_init(uint16_t *framebuffer, int width, int height, DisplayBlit b
 
 void display_ui_render(const DisplayInput &in) {
     if (g_fb == nullptr) return;
-    fill_rect(0, 0, g_w, g_h, kTheme.bg);
 
-    // A 128x160 panel has to fit the same seven rows of status into 88 fewer pixels
-    // than a 240x240 one, so the preview gives up ten percentage points of height
-    // and the banner drops to single-size text. Everything else is width-relative.
+    // Full-bleed layout: the camera frame covers the whole panel and every
+    // readout is drawn on top of it inside a darkened band. The driver gets the
+    // largest view of themselves the glass can give; the numbers ride along
+    // instead of taking half the screen. No full-screen background fill either -
+    // the preview writes every pixel anyway.
     const bool narrow = g_w < 200;
 
-    // --- camera preview, nearest-neighbour scaled into the top area ---
-    const int preview_h = (g_h * (narrow ? 45 : 55)) / 100;
+    // --- camera preview, scaled to cover the whole panel ---
+    // "Cover", not "stretch". The sensor frame is square (240x240) and the panel
+    // is portrait, so the source is centre-cropped to the panel's aspect ratio
+    // before scaling. Stretching would make every face look long, and face
+    // geometry is exactly what the yawn and nod thresholds are tuned on.
+    int cw = in.preview_w, ch = in.preview_h, cx0 = 0, cy0 = 0;
     if (in.preview != nullptr && in.preview_w > 0 && in.preview_h > 0) {
-        for (int y = 0; y < preview_h; ++y) {
-            const int sy = y * in.preview_h / preview_h;
+        if (cw * g_h > ch * g_w) cw = ch * g_w / g_h;   // too wide: trim the sides
+        else                     ch = cw * g_h / g_w;   // too tall: trim top and bottom
+        cx0 = (in.preview_w - cw) / 2;
+        cy0 = (in.preview_h - ch) / 2;
+
+        for (int y = 0; y < g_h; ++y) {
+            const uint16_t *src = in.preview + (cy0 + y * ch / g_h) * in.preview_w;
+            uint16_t *dst = g_fb + y * g_w;
             for (int x = 0; x < g_w; ++x) {
-                const int sx = x * in.preview_w / g_w;
-                uint16_t v = in.preview[sy * in.preview_w + sx];
-                if (in.preview_swap_bytes) v = static_cast<uint16_t>((v >> 8) | (v << 8));
-                px(x, y, v);
+                const uint16_t v = src[cx0 + x * cw / g_w];
+                dst[x] = in.preview_swap_bytes
+                             ? static_cast<uint16_t>((v >> 8) | (v << 8))
+                             : v;
             }
         }
     } else {
-        fill_rect(0, 0, g_w, preview_h, rgb565(20, 24, 30));
-        display_ui_draw_text("NO CAMERA", g_w / 2 - 27, preview_h / 2 - 4, kTheme.dim, 1);
+        fill_rect(0, 0, g_w, g_h, kTheme.bg);
+        const char *nc = "NO CAMERA";
+        display_ui_draw_text(nc, (g_w - text_w(nc, 1)) / 2, g_h / 2 - 4, kTheme.dim, 1);
     }
 
-    // --- tracked face box, so the driver can see it is locked on ---
-    if (in.face_side > 0 && in.preview_w > 0) {
-        const float sx = static_cast<float>(g_w) / in.preview_w;
-        const float sy = static_cast<float>(preview_h) / in.preview_h;
-        const int bx = static_cast<int>(in.face_x * sx);
-        const int by = static_cast<int>(in.face_y * sy);
-        const int bw = static_cast<int>(in.face_side * sx);
-        const int bh = static_cast<int>(in.face_side * sy);
-        const uint16_t c = in.face_held ? kTheme.warn : (in.state.eye_closed >= 0.5f ? kTheme.danger : kTheme.ok);
-        frame_rect(bx, by, bw, bh, c, 2);
-    } else {
-        display_ui_draw_text("NO FACE", 4, 4, kTheme.danger, 1);
-    }
-
-    int y = preview_h + 4;
-
-    // --- eye state + risk, the two things worth showing continuously ---
-    const bool closed = in.state.eye_closed >= 0.5f;
-    display_ui_draw_text(closed ? "EYES CLOSED" : "EYES OPEN", 4, y,
-                         closed ? kTheme.danger : kTheme.ok, 1);
     char buf[24];
-    // PERCLOS as a percentage. The label shortens on a narrow panel so it cannot
-    // collide with "EYES CLOSED" on the same row.
+
+    // --- top band: eye state and PERCLOS ---
+    // Band heights are absolute, not proportional: the text inside them is a
+    // fixed 7 px tall, so a percentage would only ever add slack or clip rows.
+    const int top_h = 21;
+    scrim_rect(0, 0, g_w, top_h);
+    const bool closed = in.state.eye_closed >= 0.5f;
+    draw_text_shadow(closed ? "EYES CLOSED" : "EYES OPEN", 3, 2,
+                     closed ? kTheme.danger : kTheme.ok, 1);
+    // The label shortens on a narrow panel so it cannot collide with
+    // "EYES CLOSED" on the same row.
     const int pc = static_cast<int>(in.state.perclos * 100.0f + 0.5f);
     std::snprintf(buf, sizeof(buf), narrow ? "PC %d%%" : "PERCLOS %d%%", pc);
-    draw_text_right(buf, g_w - 4, y, kTheme.text, 1);
-    y += 10;
-    draw_bar(4, y, g_w - 8, 6, in.state.perclos,
+    draw_text_right_shadow(buf, g_w - 3, 2, kTheme.text, 1);
+    draw_bar(3, 12, g_w - 6, 5, in.state.perclos,
              in.state.perclos > 0.5f ? kTheme.danger : kTheme.warn);
-    y += 12;
 
-    display_ui_draw_text("RISK", 4, y, kTheme.dim, 1);
+    // --- bottom band: risk, behaviour cues, most recent event ---
+    const int bot_h = 50;
+    const int by0 = g_h - bot_h;
+    scrim_rect(0, by0, g_w, bot_h);
+
+    int y = by0 + 3;
+    draw_text_shadow("RISK", 3, y, kTheme.dim, 1);
     std::snprintf(buf, sizeof(buf), "%d%%", static_cast<int>(in.state.score * 100.0f + 0.5f));
-    draw_text_right(buf, g_w - 4, y, kTheme.text, 1);
-    y += 10;
-    draw_bar(4, y, g_w - 8, 8, in.state.score,
+    draw_text_right_shadow(buf, g_w - 3, y, kTheme.text, 1);
+    y += 9;
+    draw_bar(3, y, g_w - 6, 8, in.state.score,
              in.state.score >= in.trigger ? kTheme.danger : kTheme.ok);
     // Trigger mark, so the driver can see how close they are to a warning.
-    const int tx = 4 + static_cast<int>((g_w - 8) * in.trigger);
+    const int tx = 3 + static_cast<int>((g_w - 6) * in.trigger);
     fill_rect(tx, y - 2, 2, 12, kTheme.text);
-    y += 14;
+    y += 12;
 
     // --- behaviour cues ---
     std::snprintf(buf, sizeof(buf), "YAWN %d  NOD %d",
                   static_cast<int>(in.state.yawn_rate + 0.5f),
                   static_cast<int>(in.state.nod_rate + 0.5f));
-    display_ui_draw_text(buf, 4, y, kTheme.dim, 1);
-    if (in.state.mouth_open) draw_text_right("MOUTH", g_w - 4, y, kTheme.warn, 1);
-    y += 10;
-    if (in.state.head_down) display_ui_draw_text("HEAD DOWN", 4, y, kTheme.warn, 1);
-    else if (!in.state.baselines_ready) display_ui_draw_text("CALIBRATING", 4, y, kTheme.dim, 1);
+    draw_text_shadow(buf, 3, y, kTheme.dim, 1);
+    if (in.state.mouth_open) draw_text_right_shadow("MOUTH", g_w - 3, y, kTheme.warn, 1);
+    y += 9;
+    if (in.state.head_down) draw_text_shadow("HEAD DOWN", 3, y, kTheme.warn, 1);
+    else if (!in.state.baselines_ready) draw_text_shadow("CALIBRATING", 3, y, kTheme.dim, 1);
     else {
         std::snprintf(buf, sizeof(buf), "FPS %d", static_cast<int>(in.fps + 0.5f));
-        display_ui_draw_text(buf, 4, y, kTheme.dim, 1);
+        draw_text_shadow(buf, 3, y, kTheme.dim, 1);
     }
-    y += 12;
+    y += 9;
 
     // --- most recent event, named, so a warning is explainable ---
     const char *ev = nullptr;
@@ -197,7 +235,30 @@ void display_ui_render(const DisplayInput &in) {
     else if (in.state.events & EVENT_YAWN) ev = "YAWN";
     else if (in.state.events & EVENT_NOD) ev = "NOD";
     else if (in.state.events & EVENT_LONG_BLINK) ev = "SLOW BLINK";
-    if (ev != nullptr) display_ui_draw_text(ev, 4, y, kTheme.warn, 1);
+    // Last in the chain, not first: this is a standing condition rather than an
+    // event, so a real yawn or nod still gets the line when it happens.
+    else if (in.no_eye_model) ev = "NO EYE MODEL";
+    if (ev != nullptr) draw_text_shadow(ev, 3, y, kTheme.warn, 1);
+
+    // --- tracked face box, so the driver can see it is locked on ---
+    // Mapped through the same crop as the preview, otherwise the box drifts off
+    // the face by exactly the cropped margin.
+    if (in.face_side > 0 && cw > 0 && ch > 0) {
+        const float fx = static_cast<float>(g_w) / cw;
+        const float fy = static_cast<float>(g_h) / ch;
+        const uint16_t c = in.face_held ? kTheme.warn : (closed ? kTheme.danger : kTheme.ok);
+        frame_rect(static_cast<int>((in.face_x - cx0) * fx),
+                   static_cast<int>((in.face_y - cy0) * fy),
+                   static_cast<int>(in.face_side * fx),
+                   static_cast<int>(in.face_side * fy), c, 2);
+    } else if (!in.no_model) {
+        // Suppressed in preview-only mode: with no detector bound "NO FACE"
+        // would be permanent and would sit in the middle of the video. The
+        // event line already says NO MODEL.
+        const char *nf = "NO FACE";
+        draw_text_shadow(nf, (g_w - text_w(nf, 1)) / 2, (top_h + by0) / 2 - 4,
+                         kTheme.danger, 1);
+    }
 
     // --- alert banner ---
     if (in.alerting) {
