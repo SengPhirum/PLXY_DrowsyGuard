@@ -73,8 +73,51 @@ static constexpr float TARGET_FPS = 15.0f;
 static constexpr int PERCLOS_WINDOW = 45;
 
 // Sized to the panel, not to the camera: display_ui composes at panel resolution and
-// scales the preview down on the way in. 128x160x2 = 40 KB, internal RAM.
-static uint16_t s_framebuffer[LCD_H_RES * LCD_V_RES];
+// scales the preview down on the way in. 240x320x2 = 150 KB - too big for internal
+// RAM alongside the camera's DMA buffers, so it is allocated from PSRAM at boot.
+// The blit path is unaffected: board_display_blit copies through small internal-RAM
+// chunks, which is also what makes the buffer DMA-safe.
+static uint16_t *s_framebuffer = nullptr;
+
+// --- bring-up mode ------------------------------------------------------------
+// Set to 1 while wiring the panel and the amplifier. The detection pipeline is
+// skipped and the firmware instead loops one visible and one audible test signal
+// forever, so a wire can be moved and the result seen or heard straight away.
+// Without this the only test signals are a 620 ms boot chime and a 6 s colour
+// cycle, both one-shot at boot, which means resetting and racing that window
+// after every single change. Set back to 0 once the panel lights and the speaker
+// sounds - it deliberately never reaches the camera or the models.
+#define BRINGUP_MODE 1
+
+#if BRINGUP_MODE
+static void bringup_loop() {
+    struct Step { const char *name; uint16_t colour; uint32_t tone_hz; };
+    static const Step steps[] = {
+        {"RED",   0xF800,  440},
+        {"GREEN", 0x07E0,  660},
+        {"BLUE",  0x001F,  880},
+        {"WHITE", 0xFFFF, 1175},
+    };
+    ESP_LOGW(TAG, "BRINGUP_MODE on: looping panel fill + test tone, pipeline skipped");
+    ESP_LOGW(TAG, "  panel dark  -> BLK is not on 3V3 (BLK on GND holds it off)");
+    ESP_LOGW(TAG, "  no sound    -> amp VIN not on 5V, or no common GND to the ESP32");
+    ESP_LOGW(TAG, "  set BRINGUP_MODE 0 in main.cpp once both work");
+
+    const bool audio = board_audio_ready();
+    if (!audio) ESP_LOGE(TAG, "audio not ready; panel test only");
+
+    for (unsigned i = 0;; ++i) {
+        const Step &s = steps[i % (sizeof(steps) / sizeof(steps[0]))];
+        ESP_LOGW(TAG, "bringup %3u: panel %-5s + %4u Hz tone", i, s.name, s.tone_hz);
+        board_display_fill(s.colour);
+        if (audio) {
+            board_audio_play_tone(s.tone_hz, 400);
+            board_audio_silence();
+        }
+        vTaskDelay(pdMS_TO_TICKS(audio ? 400 : 800));
+    }
+}
+#endif
 
 extern "C" void app_main(void) {
     ESP_LOGI(TAG, "DrowsyGuard ESP32-S3 research firmware starting");
@@ -105,8 +148,27 @@ extern "C" void app_main(void) {
         ESP_LOGW(TAG, "no audio output available; boot chime skipped");
     }
 
+#if LCD_PIN_TEST
+    // Both before board_display_init(): spi_bus_initialize() reroutes these pins to
+    // the SPI peripheral, after which gpio_set_level() on them does nothing.
+    board_display_pin_diagnose();
+    board_display_pin_test(4000);
+#endif
     if (!board_display_init()) {
         ESP_LOGE(TAG, "LCD init failed; check the wiring in board_display.h");
+    }
+#if LCD_SELFTEST
+    // Runs before the camera so the panel is exercised even if camera init bails.
+    board_display_selftest(1000);
+#endif
+#if BRINGUP_MODE
+    bringup_loop();   // never returns
+#endif
+    s_framebuffer = static_cast<uint16_t *>(heap_caps_malloc(
+        static_cast<size_t>(LCD_H_RES) * LCD_V_RES * sizeof(uint16_t), MALLOC_CAP_SPIRAM));
+    if (s_framebuffer == nullptr) {
+        ESP_LOGE(TAG, "framebuffer alloc failed; is PSRAM enabled?");
+        return;
     }
     if (!display_ui_init(s_framebuffer, LCD_H_RES, LCD_V_RES, board_display_blit)) {
         ESP_LOGE(TAG, "Display UI init failed");

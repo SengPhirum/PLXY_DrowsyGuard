@@ -1,6 +1,8 @@
 #pragma once
 /*
-Panel binding for the 1.8" 128x160 ST7735S SPI module (khmeres.com item 1885).
+Panel binding for the 2.8" 240x320 ILI9341 SPI module (red PCB, with resistive
+touch and a microSD slot - both unused, leave T_* and SD_* pins unconnected).
+SDO(MISO) is also left unconnected: the panel is driven write-only.
 
 display_ui.h deliberately keeps panel init out of the UI code and takes a blit
 callback instead. This file is that callback plus the SPI/panel bring-up, so the
@@ -26,32 +28,44 @@ project does not use.
 
 // Native panel resolution, portrait. The UI stacks vertically, so portrait fits
 // more rows than landscape does.
-#define LCD_H_RES 128
-#define LCD_V_RES 160
+#define LCD_H_RES 240
+#define LCD_V_RES 320
 
-// Some 128x160 modules address a window offset from the panel origin ("red tab"
-// vs "black tab"). If you see a coloured band on two edges and the image is
-// shifted, set these to 2/1 or 2/3 and rebuild.
+// The ILI9341's GRAM is exactly 240x320, so unlike the old ST7735S there is no
+// tab-colour window offset. Leave at 0/0.
 #define LCD_GAP_X 0
 #define LCD_GAP_Y 0
 
-// Panel orientation. This module comes up rotated 180 degrees: the row order is
-// reversed (the event line lands at the top instead of the bottom) and the text
+// Panel orientation. Set to 1 if the module is mounted upside down: the row order
+// reverses (the event line lands at the top instead of the bottom) and the text
 // reads backwards.
 //
 // The rotation is applied in board_display_blit(), NOT via esp_lcd_panel_mirror().
-// MADCTL's MX/MY bits do rotate the image, but they also move which corner of the
-// ST7735S's 132x162 GRAM the visible 128x160 window starts from, so LCD_GAP_X/Y
-// would have to change with them - get that wrong and the panel goes white,
-// because every write lands outside the visible area. Rotating during the copy is
-// immune to that and costs nothing: those bytes are already being touched for the
-// endian swap. Set to 0 if you remount the panel the other way up.
-#define LCD_ROTATE_180 1
+// MADCTL's MX/MY bits do rotate the image, but on panels whose GRAM is larger than
+// the glass they also move which corner the visible window starts from. Harmless on
+// this exact-size ILI9341, but rotating during the copy costs nothing anyway: those
+// bytes are already being touched for the endian swap.
+#define LCD_ROTATE_180 0
 
-// 40 MHz keeps a full 128x160 RGB565 frame (40 KB) under ~8 ms on the wire. At
-// 20 MHz it is ~16 ms, which eats most of the 23 ms frame budget in
-// docs/FIRMWARE_PIPELINE.md. Drop to 20 MHz if long dupont wires make it flicker.
-#define LCD_SPI_HZ (40 * 1000 * 1000)
+// A full 240x320 RGB565 frame is 150 KB = 1.23 Mbit on the wire: ~31 ms at 40 MHz,
+// ~123 ms at 10 MHz. The ILI9341 datasheet only promises ~10 MHz writes but these
+// modules reliably run at 40 MHz over short wires.
+//
+// Currently at 10 MHz for bring-up. 40 MHz assumes short, well-grounded traces;
+// over dupont jumpers to a panel on a separate breadboard the clock edges do not
+// survive, the controller latches nothing, and the panel stays white with its
+// backlight on - which looks identical to a dead panel. 10 MHz (~8 fps) is fine
+// while bringing up but too slow for the 15 fps pipeline, so step this back up
+// (10 -> 20 -> 40) once the panel is confirmed working and stop at the last
+// speed that stays stable.
+#define LCD_SPI_HZ (10 * 1000 * 1000)
+
+// Bring-up aid. Set to 0 once the panel is confirmed working: it costs ~6 s of boot.
+#define LCD_SELFTEST 1
+
+// Wiring check. Set to 1 to toggle each LCD pin in turn before SPI claims them,
+// so a wire can be traced instead of guessed at. See board_display_pin_test.
+#define LCD_PIN_TEST 1
 
 bool board_display_init();
 
@@ -59,3 +73,31 @@ bool board_display_init();
 void board_display_blit(const uint16_t *fb, int w, int h);
 
 void board_display_backlight(bool on);
+
+// Paints the whole panel one RGB565 colour (host byte order; the swap to panel
+// order happens inside). Exposed so bring-up code can drive the panel without
+// composing a framebuffer.
+void board_display_fill(uint16_t rgb565_colour);
+
+// Paints solid colours then a bordered quadrant pattern, holding each for hold_ms,
+// bypassing the camera and the UI. The panel is write-only, so a successful
+// esp_lcd init says nothing about whether a panel is actually attached; this is
+// what separates "no pixels reaching the glass" from "wrong pixels composed".
+void board_display_selftest(int hold_ms);
+
+// Squarewaves each LCD control pin in turn at 2 Hz for per_pin_ms, holding the
+// other four low, and logs which one it is driving. Probe the matching pin at the
+// DISPLAY end: a good wire reads ~1.6 V on a multimeter in DC volts (a 50% duty
+// squarewave between 0 and 3.3 V) or blinks an LED wired to ground through ~1k.
+// A pin that stays at 0 V is a broken, misplaced or wrong-row wire.
+//
+// Must run BEFORE board_display_init(): once spi_bus_initialize() claims these
+// pins the GPIO matrix is routed to the SPI peripheral and manual writes do
+// nothing.
+void board_display_pin_test(int per_pin_ms);
+
+// Self-contained wiring diagnosis, no multimeter needed. Checks each LCD pin for
+// a short to ground or 3V3, scans every pair for a shared breadboard row, and
+// compares capacitive loading to flag a pin with no wire on it. Like
+// board_display_pin_test, must run BEFORE board_display_init().
+void board_display_pin_diagnose();

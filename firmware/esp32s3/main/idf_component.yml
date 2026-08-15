@@ -12,10 +12,10 @@ dependencies:
   espressif/esp32-camera:
     version: "^2.1.7"
 
-  ## ST7735S panel driver. ESP-IDF ships ST7789/ILI9341/GC9A01 in-tree but not
-  ## ST7735S, so this comes from the component registry.
-  waveshare/esp_lcd_st7735:
-    version: "^1.0.1"
+  ## ILI9341 panel driver for the 2.8" 240x320 SPI module (replaced the original
+  ## 1.8" ST7735S; that driver was waveshare/esp_lcd_st7735 if the panel returns).
+  espressif/esp_lcd_ili9341:
+    version: "^2.0.0"
 
   ## Stage 3 (models). Camera and panel are proven on hardware, so these are in.
   ## Model data lives in flash rodata (CONFIG_HUMAN_FACE_DETECT_MODEL_IN_FLASH_RODATA);

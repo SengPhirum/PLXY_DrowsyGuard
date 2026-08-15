@@ -10,7 +10,8 @@ For the five parts bought on 2026-08-11:
 | Part | Listing | Price |
 | --- | --- | --- |
 | ESP32-S3-WROOM-1 **N16R8** dev board with **OV3660** camera | [khmeres.com item 2991](https://khmeres.com/product_detail/2991) | $7.50 |
-| 1.8" **128x160 ST7735S** 65K colour SPI TFT | [khmeres.com item 1885](https://khmeres.com/product_detail/1885) | $3.50 |
+| ~~1.8" **128x160 ST7735S** 65K colour SPI TFT~~ (replaced, see below) | [khmeres.com item 1885](https://khmeres.com/product_detail/1885) | $3.50 |
+| 2.8" **240x320 ILI9341** SPI TFT, resistive touch + microSD (red module) | replacement panel, 2026-08-15 | - |
 | **MAX98357A** I2S filterless class-D amplifier | [khmeres.com item 2724](https://khmeres.com/product_detail/2724) | $2.00 |
 | 4 ohm / 3 W 40x22 mm speaker | [khmeres.com item 2554](https://khmeres.com/product_detail/2554) | $0.75 |
 | MB102 830-point solderless breadboard | [khmeres.com item 371](https://khmeres.com/product_detail/371) | $1.50 |
@@ -39,10 +40,13 @@ The OV3660 is a 3 MP sensor rather than the EYE's 2 MP OV2640. That is fine and
 slightly better: `esp32-camera` supports it, the firmware asks for 240x240 RGB565
 anyway, and a larger native array gives a cleaner downscale.
 
-**The display.** The EYE has a 240x240 ST7789; this is a 128x160 ST7735S, smaller and
-driven over plain SPI on GPIOs you choose. `display_ui.cpp` was written against a
-caller-supplied framebuffer with a blit callback precisely so the panel could be
-swapped; it now adapts its layout when the panel is under 200 px wide.
+**The display.** Originally a 1.8" 128x160 ST7735S; since 2026-08-15 it is a 2.8"
+240x320 **ILI9341** module (the common red PCB with resistive touch and a microSD
+slot, both unused). Still plain SPI on GPIOs you choose. `display_ui.cpp` was written
+against a caller-supplied framebuffer with a blit callback precisely so the panel
+could be swapped; the swap changed only `board_display.h/.cpp` and the driver
+dependency (`espressif/esp_lcd_ili9341`). Note the framebuffer is now 150 KB and
+lives in PSRAM (`main.cpp` allocates it at boot).
 
 **The audio path.** The MAX98357A and the 4 ohm / 3 W speaker are now in hand, and
 `main/board_audio.h/.cpp` drives them over I2S on GPIO 39 (BCLK), 38 (LRCLK) and
@@ -84,23 +88,43 @@ The pin map is now recorded in [board_camera.h](../firmware/esp32s3/main/board_c
 | PWDN | not routed | | Y3 (D1) | 9 |
 | RESET | not routed | | Y2 (D0) | 11 |
 
-### 2.2 Display
+### 2.2 Display (2.8" 240x320 ILI9341 SPI module, red PCB)
 
-Eight wires. Pin labels vary between module batches; alternates are listed.
+The module has a 14-pin header. Only the first **eight** pins get wires; the display
+is driven write-only, and neither the resistive touch controller nor the microSD
+slot is used. Reading the header from the VCC end:
 
 | LCD module pin | Also labelled | Wire to | Why this pin |
 | --- | --- | --- | --- |
+| VCC | VDD | **5V (VBUS)** | module has its own 3.3 V regulator (J1 open) |
 | GND | - | GND | |
-| VCC | VDD | **3V3** | 3.3 V logic; do not feed 5 V |
-| SCL | SCK, CLK | **GPIO 14** | free, non-strapping |
-| SDA | MOSI, DIN | **GPIO 21** | free, non-strapping |
-| RES | RST | **GPIO 42** | free (JTAG MTMS, unused here) |
-| DC | A0, RS | **GPIO 41** | free (JTAG MTDI, unused here) |
 | CS | - | **GPIO 47** | free |
-| BLK | LED, BL | **3V3** | always-on backlight |
+| RESET | RES, RST | **GPIO 42** | free (JTAG MTMS, unused here) |
+| DC | A0, RS | **GPIO 41** | free (JTAG MTDI, unused here) |
+| SDI (MOSI) | SDA, DIN | **GPIO 21** | free, non-strapping |
+| SCK | SCL, CLK | **GPIO 14** | free, non-strapping |
+| LED | BLK, BL | **3V3** | always-on backlight |
 
-Change these in one place only: `LCD_PIN_*` in
+Leave unconnected:
+
+| Pins | What they are |
+| --- | --- |
+| SDO (MISO) | panel read-back; the firmware never reads the panel |
+| T_CLK, T_CS, T_DIN, T_DO, T_IRQ | XPT2046 resistive touch controller, unused |
+| SD_SCK, SD_MISO, SD_MOSI, SD_CS (separate 4-pin header) | microSD slot, unused - its would-be GPIOs 38/39/40 belong to the I2S amplifier |
+
+Signal levels are 3.3 V despite VCC being 5 V: the regulator only feeds the panel
+logic, there are no level shifters, and the ESP32-S3's 3.3 V outputs drive it
+directly. If J1 on the back is bridged (solder blob), the regulator is bypassed -
+then feed VCC with **3V3, not 5 V**.
+
+Change the GPIO assignments in one place only: `LCD_PIN_*` in
 [board_display.h](../firmware/esp32s3/main/board_display.h).
+
+> **Do not wire this module per generic ESP32-S3 + ILI9341 tutorials.** They
+> typically put SCLK/MOSI/DC/CS and the touch pins on GPIO 6-13, all of which the
+> DVP camera owns on this board (section 2.3). The camera and the display would
+> fight and both would appear broken.
 
 ### 2.3 Pins you must not use
 
@@ -381,11 +405,12 @@ eventual fix, and it also matches the base model's training domain.
 | `esp_camera_init failed: 0x101` (`ESP_ERR_NO_MEM`) | PSRAM not enabled | `CONFIG_SPIRAM=y` **and** `CONFIG_SPIRAM_MODE_OCT=y` |
 | Boot loop, `Brownout detector was triggered` | USB port cannot supply camera + LCD | powered hub, shorter/thicker cable, or a 5 V bench supply |
 | LCD stays white | backlight on but no init: wrong CS/DC/RST, or SPI too fast | recheck the four control pins; drop `LCD_SPI_HZ` to 20 MHz |
-| LCD black, backlight on | panel init ran but nothing blits | check for the `ST7735S 128x160 up` log line |
-| Coloured bands on two edges, image shifted | "red tab" panel variant needs a window offset | set `LCD_GAP_X`/`LCD_GAP_Y` to `2`/`1` (or `2`/`3`) |
+| LCD black, backlight on | panel init ran but nothing blits | check for the `ILI9341 240x320 up` log line |
+| Coloured bands on two edges, image shifted | (ST7735S only) window offset | not applicable to the ILI9341; leave `LCD_GAP_X`/`LCD_GAP_Y` at 0 |
 | Red and blue swapped | panel is RGB, not BGR | `LCD_RGB_ELEMENT_ORDER_RGB` in `board_display.cpp` |
 | UI text correct, preview psychedelic | camera/framebuffer byte order | set `CAM_RGB565_BYTE_SWAP` to 0 in `board_camera.h` |
-| Image looks like a negative | some ST7735S batches invert | `esp_lcd_panel_invert_color(s_panel, true)` |
+| Image looks like a negative | some panel batches invert | `esp_lcd_panel_invert_color(s_panel, true)` |
+| Image upside down, text backwards | panel mounted rotated 180 degrees | set `LCD_ROTATE_180` to 1 in `board_display.h` |
 | Preview mirrored the wrong way | mounting orientation | `set_hmirror` / `set_vflip` in `board_camera_tune()` |
 | CMake path errors or `filename too long` | IDF or project in a path with spaces, or long paths disabled | reinstall IDF to `C:\Espressif`; enable `LongPathsEnabled` |
 | `fps` far below 15 | CPU at 160 MHz, or SPI at 20 MHz | check `CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240`; raise `LCD_SPI_HZ` |
@@ -406,7 +431,7 @@ them to `firmware/esp32s3/dependencies.lock`:
 
 ```powershell
 idf.py --version
-Get-Content .\dependencies.lock | Select-String -Pattern 'version|esp32-camera|st7735|esp-dl'
+Get-Content .\dependencies.lock | Select-String -Pattern 'version|esp32-camera|ili9341|esp-dl'
 ```
 
 Then run the six hardware acceptance tests already listed in `DEPLOYMENT.md`:
@@ -420,6 +445,7 @@ flash, physical alert output, and quantized-vs-Python agreement on a shared imag
 - [keyestudio MB0184 ESP32-S3 CAM pin table](https://docs.keyestudio.com/projects/MB0184/en/latest/docs/MB0184%20ESP32-S3%20CAM%20Development%20Board.html)
 - [arduino-esp32 camera_pins.h (ESP32S3_EYE map)](https://github.com/espressif/arduino-esp32/blob/master/libraries/ESP32/examples/Camera/CameraWebServer/camera_pins.h)
 - [espressif/esp32-camera component](https://components.espressif.com/components/espressif/esp32-camera)
-- [waveshare/esp_lcd_st7735 component](https://components.espressif.com/components/waveshare/esp_lcd_st7735/versions/1.0.1/readme)
+- [espressif/esp_lcd_ili9341 component](https://components.espressif.com/components/espressif/esp_lcd_ili9341)
+- [waveshare/esp_lcd_st7735 component](https://components.espressif.com/components/waveshare/esp_lcd_st7735/versions/1.0.1/readme) (original 1.8" panel, no longer used)
 - [espressif/esp-dl component](https://components.espressif.com/components/espressif/esp-dl)
 - [espressif/human_face_detect component](https://components.espressif.com/components/espressif/human_face_detect/versions/0.3.0/readme)

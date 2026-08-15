@@ -3,7 +3,7 @@
 ESP-IDF project for the deployment phase.
 
 **Board: ESP32-S3-WROOM-1 N16R8 CAM + OV3660** (16 MB flash, 8 MB octal PSRAM), with a
-1.8" 128x160 ST7735S SPI panel. Its DVP pin map is identical to the ESP32-S3-EYE map,
+2.8" 240x320 ILI9341 SPI panel. Its DVP pin map is identical to the ESP32-S3-EYE map,
 so ESP-DL's vision examples apply unchanged. Full wiring, toolchain and flashing
 instructions: [`../../docs/HARDWARE_SETUP.md`](../../docs/HARDWARE_SETUP.md).
 
@@ -26,7 +26,7 @@ idf.py -p COM5 flash monitor
 | `risk_filter.h/.cpp` | sustained-risk trigger + cooldown |
 | `display_ui.h/.cpp` | driver-facing screen (RGB565, no LVGL), panel-agnostic |
 | `board_camera.h` | verified OV3660 DVP pin map + sensor tuning |
-| `board_display.h/.cpp` | ST7735S SPI bring-up and blit |
+| `board_display.h/.cpp` | ILI9341 SPI bring-up and blit |
 | `voice_alert.h/.cpp` | reason-specific spoken alerts + buzzer fallback |
 | `model_adapter.*` | ESP-DL binding, version-specific |
 
