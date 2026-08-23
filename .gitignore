@@ -20,3 +20,7 @@ firmware/esp32s3/sdkconfig.old
 # the exact component versions docs/DEPLOYMENT.md has to cite.
 firmware/esp32s3/managed_components/
 models/detectors/
+# Docs-only build. `./plxy.sh docs-build` generates site/ from docs/ + mkdocs.yml;
+# .venv-docs is the isolated mkdocs toolchain it installs on first use.
+site/
+.venv-docs/

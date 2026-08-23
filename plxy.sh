@@ -276,9 +276,19 @@ ${B}project${Z}
   diagrams           regenerate the tutorial figures and poster
   doctor             check toolchain, port and device
 
+${B}docs${Z}                                                ${DIM}no ESP-IDF, no board${Z}
+  docs-preview [port]  serve the docs with hot reload    ${DIM}http://127.0.0.1:$DOCS_PORT/${Z}
+  docs-check           validate: strict build + secrets  ${DIM}what CI runs on a PR${Z}
+  docs-build           build the static site into site/
+  docs-deploy          publish via GitHub Actions
+  docs-clean           remove site/
+
 ${B}environment${Z}
   PLXY_PORT=COM9     force a serial port
   PLXY_HOST=10.0.0.5 talk to the board over station mode instead of its own AP
+  PLXY_DOCS_PORT=n   docs-preview port                   ${DIM}default $DOCS_PORT${Z}
+  PLXY_DOCS_PYTHON=p interpreter for the docs commands
+  PLXY_DOCS_NO_VENV=1 never create .venv-docs            ${DIM}what CI sets${Z}
 EOF
 }
 
@@ -533,6 +543,191 @@ cmd_doctor() {
 }
 
 # --------------------------------------------------------------------------- #
+# documentation
+# --------------------------------------------------------------------------- #
+# Docs-only mode. Everything below is deliberately isolated from the rest of this
+# script: no ESP-IDF, no PowerShell hand-off, no board, and not the project
+# .venv either - the docs toolchain is mkdocs-material and nothing else, so a
+# documentation change can be validated and published without torch, opencv or a
+# 16 MB firmware build being anywhere near it. That isolation is the point: it is
+# what makes the GitHub Actions docs run take seconds, and it is why
+# `./plxy.sh build` and `./plxy.sh docs-build` can never trigger one another.
+
+DOCS_VENV="${PLXY_DOCS_VENV:-$REPO/.venv-docs}"
+DOCS_PORT="${PLXY_DOCS_PORT:-8001}"   # not 8000 - that is the live dashboard
+DOCS_PY=""                            # set by docs_ensure
+
+# Credential shapes worth failing a build over. Kept to formats that are
+# unambiguous, because a scan that cries wolf gets switched off: this project
+# documents a compiled-in Wi-Fi AP password on purpose, and a pattern broad
+# enough to catch that would fire on every page that mentions it.
+# label::regex - the label is what gets reported, never the match itself.
+docs_secret_patterns() {
+    cat <<'PATTERNS'
+PEM private key::-----BEGIN [A-Z ]*PRIVATE KEY-----
+AWS access key id::(AKIA|ASIA)[0-9A-Z]{16}
+GitHub token::gh[pousr]_[A-Za-z0-9]{30,}
+GitHub fine-grained token::github_pat_[A-Za-z0-9_]{40,}
+Slack token::xox[baprs]-[A-Za-z0-9-]{20,}
+API key (sk- form)::sk-[A-Za-z0-9]{32,}
+Google API key::AIza[0-9A-Za-z_-]{33}
+JSON web token::eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}
+PATTERNS
+}
+
+# Interpreter for the docs commands, in priority order.
+docs_python() {
+    if [ -n "${PLXY_DOCS_PYTHON:-}" ]; then echo "$PLXY_DOCS_PYTHON"; return 0; fi
+    [ -x "$DOCS_VENV/Scripts/python.exe" ] && { echo "$DOCS_VENV/Scripts/python.exe"; return 0; }
+    [ -x "$DOCS_VENV/bin/python" ]         && { echo "$DOCS_VENV/bin/python";         return 0; }
+    local c
+    for c in python3 python; do
+        command -v "$c" >/dev/null 2>&1 && { echo "$c"; return 0; }
+    done
+    echo ""
+}
+
+# Make sure mkdocs is importable, building .venv-docs on first use. CI installs
+# the requirements itself and sets PLXY_DOCS_NO_VENV=1, so this is a no-op there.
+docs_ensure() {
+    local py; py="$(docs_python)"
+    [ -n "$py" ] || die "no python found - install Python 3.10+ or set PLXY_DOCS_PYTHON"
+
+    if "$py" -c 'import mkdocs' >/dev/null 2>&1; then DOCS_PY="$py"; return 0; fi
+
+    if [ "${PLXY_DOCS_NO_VENV:-0}" = "1" ]; then
+        die "mkdocs not available to $py - pip install -r requirements-docs.txt"
+    fi
+
+    say "creating the docs environment in ${DOCS_VENV#$REPO/}"
+    "$py" -m venv "$DOCS_VENV" || die "could not create $DOCS_VENV"
+    if   [ -x "$DOCS_VENV/Scripts/python.exe" ]; then DOCS_PY="$DOCS_VENV/Scripts/python.exe"
+    elif [ -x "$DOCS_VENV/bin/python" ];         then DOCS_PY="$DOCS_VENV/bin/python"
+    else die "no interpreter in $DOCS_VENV"; fi
+
+    "$DOCS_PY" -m pip install --quiet --upgrade pip >/dev/null 2>&1
+    "$DOCS_PY" -m pip install --quiet -r "$REPO/requirements-docs.txt" \
+        || die "could not install requirements-docs.txt"
+    ok "docs toolchain installed"
+}
+
+docs_mkdocs() { ( cd "$REPO" && "$DOCS_PY" -m mkdocs "$@" ); }
+
+# Scan for leaked credentials. Runs over the sources *and* the generated site,
+# because a secret can also arrive through the theme, a config value or an
+# included snippet - none of which are visible in docs/.
+docs_scan_secrets() {
+    local hits=0 target line label pattern file
+    for target in "$@"; do
+        [ -e "$target" ] || continue
+        while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            label="${line%%::*}"
+            pattern="${line#*::}"
+            # -l, not -n: the file is enough to act on, and echoing the match
+            # would copy the credential into the CI log - which is the thing
+            # this check exists to prevent. A minified search index would also
+            # print as one 200 kB line.
+            while IFS= read -r file; do
+                [ -n "$file" ] || continue
+                warn "$label in ${file#$REPO/}"
+                hits=1
+            done < <(grep -rlIE --binary-files=without-match -e "$pattern" "$target" 2>/dev/null)
+        done < <(docs_secret_patterns)
+    done
+    [ "$hits" -eq 0 ] || die "possible credential in the documentation - remove it before publishing"
+    ok "no credential patterns found"
+}
+
+# Strict build. --strict turns every mkdocs warning into an error, which is what
+# actually catches the failures worth catching: a link to a page that no longer
+# exists, a #anchor that was renamed, an image that was never committed, a nav
+# entry pointing at nothing, and two pages claiming the same URL.
+docs_build_into() {
+    local out="$1"
+    docs_mkdocs build --strict --clean --site-dir "$out" \
+        || die "documentation build failed - fix the errors above"
+}
+
+cmd_docs_check() {
+    docs_ensure
+    local tmp="${TMPDIR:-/tmp}/plxy-docs-check.$$"
+    rm -rf "$tmp"
+
+    say "validating documentation (strict)"
+    docs_build_into "$tmp"
+    ok "links, anchors, nav and assets all resolve"
+
+    say "scanning for credentials"
+    docs_scan_secrets "$REPO/docs" "$REPO/mkdocs.yml" "$tmp"
+
+    rm -rf "$tmp"
+    ok "documentation is publishable"
+}
+
+cmd_docs_build() {
+    docs_ensure
+    say "building documentation into site/"
+    docs_build_into "$REPO/site"
+
+    say "scanning for credentials"
+    docs_scan_secrets "$REPO/docs" "$REPO/mkdocs.yml" "$REPO/site"
+
+    local pages
+    pages="$(find "$REPO/site" -name '*.html' 2>/dev/null | wc -l | tr -d ' ')"
+    ok "site/ ready - $pages pages"
+    echo "     ${DIM}preview it with: ./plxy.sh docs-preview${Z}"
+}
+
+cmd_docs_preview() {
+    docs_ensure
+    local port="${1:-$DOCS_PORT}"
+    say "serving documentation on http://127.0.0.1:$port/"
+    echo "     ${DIM}hot reload is on - edit any file under docs/ and the page refreshes${Z}"
+    echo "     ${DIM}Ctrl+C to stop${Z}"
+    # Not --strict on purpose: the preview must not die because a link you are
+    # halfway through typing does not resolve yet. docs-check is the gate.
+    #
+    # site_url is overridden because mkdocs serve mounts the site under that
+    # URL's path: with the published Pages URL in place, the preview would answer
+    # on /PLXY_DrowsyGuard/ and redirect anyone who opened the address printed
+    # above.
+    export PLXY_DOCS_SITE_URL="http://127.0.0.1:$port/"
+    docs_mkdocs serve --dev-addr "127.0.0.1:$port"
+}
+
+cmd_docs_clean() {
+    say "removing site/"
+    rm -rf "$REPO/site"
+    ok "clean"
+}
+
+# Publishing happens in GitHub Actions, never from a laptop: the workflow is the
+# only path that is guaranteed to have validated the build first, and it is the
+# only one holding the Pages id-token. This command validates locally and then
+# asks that workflow to run, so there is exactly one way documentation reaches
+# production.
+cmd_docs_deploy() {
+    cmd_docs_check
+
+    local branch; branch="$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+    [ "$branch" = "main" ] || warn "on branch '$branch' - the workflow always publishes main"
+
+    if ! command -v gh >/dev/null 2>&1; then
+        warn "gh CLI not found - cannot trigger the workflow from here"
+        echo "     Run it from the browser instead:"
+        echo "     ${C}https://github.com/SengPhirum/PLXY_DrowsyGuard/actions/workflows/docs-deploy.yml${Z}"
+        echo "     ${DIM}or just push your docs/ changes to main - that publishes too${Z}"
+        return 1
+    fi
+
+    say "dispatching the docs-deploy workflow"
+    gh workflow run docs-deploy.yml --ref main || die "could not dispatch the workflow"
+    ok "queued - watch it with: gh run watch"
+    echo "     ${DIM}published at https://sengphirum.github.io/PLXY_DrowsyGuard/${Z}"
+}
+
+# --------------------------------------------------------------------------- #
 case "${1:-help}" in
     dev)          shift; cmd_dev "$@" ;;
     build)        shift; cmd_build "$@" ;;
@@ -556,6 +751,11 @@ case "${1:-help}" in
     test)         shift; cmd_test "$@" ;;
     diagrams)     shift; cmd_diagrams "$@" ;;
     doctor)       shift; cmd_doctor "$@" ;;
+    docs-check)   shift; cmd_docs_check "$@" ;;
+    docs-build)   shift; cmd_docs_build "$@" ;;
+    docs-preview|docs-serve) shift; cmd_docs_preview "$@" ;;
+    docs-deploy)  shift; cmd_docs_deploy "$@" ;;
+    docs-clean)   shift; cmd_docs_clean "$@" ;;
     help|-h|--help) cmd_help ;;
     *) die "unknown command '$1' - try ./plxy.sh help" ;;
 esac

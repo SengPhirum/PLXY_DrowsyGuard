@@ -1,0 +1,13 @@
+# Documentation-only dependencies.
+#
+# Deliberately separate from pyproject.toml: the docs build must not need torch,
+# opencv, onnxruntime or ESP-IDF. This file is the entire input to
+# `./plxy.sh docs-build` and to the GitHub Actions docs workflows, and it should
+# stay small enough that a docs CI run is measured in seconds.
+#
+#   ./plxy.sh docs-preview     # installs these into .venv-docs on first run
+#
+# mkdocs-material pulls mkdocs, pymdown-extensions and pygments, so nothing else
+# is listed here. Link/anchor validation is built into mkdocs >= 1.6 and needs no
+# extra plugin.
+mkdocs-material>=9.5,<10

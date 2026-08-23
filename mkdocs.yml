@@ -1,0 +1,157 @@
+# Documentation site for DrowsyGuard.
+#
+# This file is the *only* input the docs-only build needs. Nothing here reads the
+# firmware, the training pipeline or the Python package, which is what lets
+# `./plxy.sh docs-build` run without ESP-IDF, torch, or a board attached.
+#
+# Warnings are not turned into errors here on purpose: `docs-preview` would then
+# refuse to start over a link you are halfway through typing. `docs-build` and
+# `docs-check` pass --strict instead, so CI still fails on anything below.
+
+site_name: DrowsyGuard
+site_description: >-
+  Camera-based driver drowsiness detection on an ESP32-S3 - firmware, training
+  toolkit, hardware build and operations manual.
+site_author: Seng Phirum
+# `mkdocs serve` mounts the site under this URL's path, so a hard-coded
+# site_url would put the local preview at /PLXY_DrowsyGuard/ instead of /.
+# docs-preview overrides it with the local address; a fork can point it at its
+# own Pages URL without editing this file.
+site_url: !ENV [PLXY_DOCS_SITE_URL, "https://sengphirum.github.io/PLXY_DrowsyGuard/"]
+
+repo_url: https://github.com/SengPhirum/PLXY_DrowsyGuard
+repo_name: SengPhirum/PLXY_DrowsyGuard
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+site_dir: site
+
+# Task briefs are working notes, not product documentation.
+exclude_docs: |
+  prompts/
+
+theme:
+  name: material
+  language: en
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - navigation.indexes
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.action.edit
+    - content.tooltips
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Follow system theme
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: deep orange
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: deep orange
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+plugins:
+  - search
+
+# Every one of these is a build failure under --strict, which is how
+# `docs-check` catches a bad link before it reaches the published site.
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+  nav:
+    omitted_files: warn
+    not_found: warn
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/SengPhirum/PLXY_DrowsyGuard
+      name: DrowsyGuard on GitHub
+  generator: false
+
+copyright: >-
+  Research prototype. Not a certified automotive safety device.
+
+nav:
+  - Overview:
+      - index.md
+      - Thesis plan: THESIS_PLAN.md
+  - Getting started:
+      - getting-started/index.md
+      - Install the toolkit: getting-started/installation.md
+      - Quickstart: getting-started/quickstart.md
+  - User manual:
+      - guide/index.md
+      - Hardware build:
+          - Hardware setup tutorial: tutorials/hardware-setup/README.md
+          - Toolchain and firmware install: HARDWARE_SETUP.md
+          - Voice alert hardware: VOICE_ALERT_HARDWARE.md
+      - Working with the device:
+          - Firmware dev loop: guide/dev-loop.md
+          - Using the device: guide/device.md
+      - Desktop toolkit:
+          - Live dashboard: guide/live-dashboard.md
+          - Datasets: guide/datasets.md
+          - Training and export: guide/training.md
+  - Configuration:
+      - configuration/index.md
+  - API reference:
+      - reference/index.md
+      - Command line: reference/cli.md
+      - Device HTTP API: reference/device-api.md
+      - Dashboard HTTP API: reference/dashboard-api.md
+      - Python modules: reference/python-api.md
+  - Operations:
+      - operations/index.md
+      - Deployment: DEPLOYMENT.md
+      - On-device pipeline: FIRMWARE_PIPELINE.md
+      - Documentation pipeline: operations/documentation.md
+      - Handoff protocol: AI_HANDOFF.md
+  - Security: security.md
+  - Troubleshooting: troubleshooting.md

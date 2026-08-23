@@ -1,0 +1,114 @@
+# Docs-only deployment.
+#
+# Publishes the documentation to GitHub Pages and nothing else: no firmware
+# build, no ESP-IDF, no torch, no container, no release. The whole job is a
+# `pip install mkdocs-material` and a static site generation, which is why it is
+# separated from the application pipeline in the first place - a typo fix should
+# not queue behind a 16 MB firmware build.
+#
+# The build and deploy steps are separate jobs on purpose: `deploy` only runs if
+# `build` succeeded, so a documentation build that fails validation leaves the
+# previously published site untouched rather than replacing it with a broken one.
+
+name: Deploy documentation
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "requirements-docs.txt"
+      - "plxy.sh"
+      - ".github/workflows/docs-deploy.yml"
+  workflow_dispatch:
+
+# Minimum required to publish Pages. Notably absent: `contents: write` - this
+# workflow never pushes to the repository.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two deployments race. `cancel-in-progress: false` because cancelling
+# a Pages deployment half way is how a site ends up in a partial state.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  # Use the runner's interpreter; ./plxy.sh must not build a .venv-docs here.
+  PLXY_DOCS_NO_VENV: "1"
+
+jobs:
+  build:
+    name: Validate and build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-docs.txt
+
+      - name: Install documentation dependencies
+        run: pip install --disable-pip-version-check -r requirements-docs.txt
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      # Deliberately the same entry point developers run locally, so a green CI
+      # run and a green `./plxy.sh docs-check` mean the same thing. It performs
+      # the strict build (broken links, missing anchors, unresolved nav entries,
+      # missing assets, duplicate routes) and the credential scan, then writes
+      # the static site to site/.
+      - name: Build documentation (docs-only)
+        run: ./plxy.sh docs-build
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Report build result
+        run: |
+          {
+            echo "## Documentation build"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Status | :white_check_mark: validated and built |"
+            echo "| Pages | $(find site -name '*.html' | wc -l) |"
+            echo "| Commit | \`${GITHUB_SHA::7}\` |"
+            echo "| Built at | $(date -u '+%Y-%m-%d %H:%M:%S UTC') |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy documentation
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Report deployment result
+        run: |
+          {
+            echo "## Documentation deployed"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Status | :rocket: published |"
+            echo "| URL | ${{ steps.deployment.outputs.page_url }} |"
+            echo "| Commit | \`${GITHUB_SHA::7}\` |"
+            echo "| Deployed at | $(date -u '+%Y-%m-%d %H:%M:%S UTC') |"
+          } >> "$GITHUB_STEP_SUMMARY"

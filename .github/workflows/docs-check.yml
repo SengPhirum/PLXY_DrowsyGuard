@@ -1,0 +1,79 @@
+# Documentation validation for pull requests.
+#
+# Validates and builds the documentation without publishing anything: no Pages
+# permission is requested, so this workflow *cannot* deploy even if it wanted
+# to. Only a push to main (or a manual dispatch of docs-deploy.yml) publishes.
+#
+# The rendered site is attached as a normal build artifact so a reviewer can
+# download and open it before approving a documentation change.
+
+name: Check documentation
+
+on:
+  pull_request:
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "requirements-docs.txt"
+      - "plxy.sh"
+      - ".github/workflows/docs-check.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-check-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PLXY_DOCS_NO_VENV: "1"
+
+jobs:
+  check:
+    name: Validate documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-docs.txt
+
+      - name: Install documentation dependencies
+        run: pip install --disable-pip-version-check -r requirements-docs.txt
+
+      # Strict build + credential scan. Fails the check on a broken internal
+      # link, a missing #anchor, a nav entry pointing at nothing, a missing
+      # image, two pages claiming one URL, or a leaked credential pattern.
+      - name: Validate documentation
+        run: ./plxy.sh docs-check
+
+      - name: Build documentation (docs-only)
+        run: ./plxy.sh docs-build
+
+      - name: Upload rendered site for review
+        uses: actions/upload-artifact@v4
+        with:
+          name: documentation-site
+          path: site
+          retention-days: 7
+
+      - name: Report result
+        run: |
+          {
+            echo "## Documentation check"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Status | :white_check_mark: passed |"
+            echo "| Pages | $(find site -name '*.html' | wc -l) |"
+            echo "| Commit | \`${GITHUB_SHA::7}\` |"
+            echo "| Preview | download the \`documentation-site\` artifact |"
+            echo
+            echo "Nothing was published. Documentation is deployed only on push to \`main\`."
+          } >> "$GITHUB_STEP_SUMMARY"

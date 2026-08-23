@@ -2,6 +2,17 @@
 
 Low-cost, camera-based driver drowsiness detection research project designed for retrofit use in older vehicles.
 
+**Documentation: <https://sengphirum.github.io/PLXY_DrowsyGuard/>** — getting
+started, the hardware build, configuration, the device and dashboard APIs,
+operations, security and troubleshooting, with search.
+
+Build it locally without any of the firmware toolchain:
+
+```bash
+./plxy.sh docs-preview     # http://127.0.0.1:8001/  (hot reload)
+./plxy.sh docs-check       # strict validation - what CI runs on a PR
+```
+
 ## Target
 - MCU: ESP32-S3-WROOM-1 **N16R8** (16 MB flash, 8 MB octal PSRAM)
 - Camera: **OV3660** on the board's DVP/FPC connector
@@ -226,8 +237,9 @@ firmware/esp32s3/    ESP-IDF application for the target board
 configs/             training configurations
 scripts/             one-off tooling (ESP-DL quantization, tutorial diagrams)
 tests/               pytest suite, including firmware/Python parity checks
-docs/                architecture, deployment, hardware and tutorials
+docs/                the documentation site sources (mkdocs.yml at the root)
 docs/prompts/        the task briefs this repository has been worked against
+.github/workflows/   docs-only validation and GitHub Pages deployment
 ```
 
 ## Safety

@@ -55,7 +55,7 @@ over the ESP32-S3's own Wi-Fi access point instead. What that traded away:
 The preview is a diagnostic, never a dependency: the capture loop copies one frame
 and returns, skips the copy entirely when no browser is connected, and the alert
 path never touches the network. See section 2.2 for how to reach it and
-[firmware/esp32s3/main/web_server.h](../firmware/esp32s3/main/web_server.h) for why
+[firmware/esp32s3/main/web_server.h](https://github.com/SengPhirum/PLXY_DrowsyGuard/blob/main/firmware/esp32s3/main/web_server.h) for why
 there are two HTTP servers.
 
 **The audio path.** The MAX98357A and the 4 ohm / 3 W speaker are now in hand, and
@@ -87,7 +87,7 @@ Nothing to wire. The OV3660 plugs into the board's FPC connector: lift the black
 slide the ribbon in with the contacts facing the connector's contact side, press the
 latch down. A half-seated ribbon reads as `esp_camera_init failed: 0x105`.
 
-The pin map is now recorded in [board_camera.h](../firmware/esp32s3/main/board_camera.h):
+The pin map is now recorded in [board_camera.h](https://github.com/SengPhirum/PLXY_DrowsyGuard/blob/main/firmware/esp32s3/main/board_camera.h):
 
 | Signal | GPIO | | Signal | GPIO |
 | --- | --- | --- | --- | --- |
@@ -127,9 +127,9 @@ and the still-image fallback for everyone else.
 
 Wi-Fi costs no GPIOs: the radio is on-die and shares no pins with the DVP camera
 bus or the I2S amplifier. Change the SSID, password, channel or optional station
-credentials in [board_wifi.h](../firmware/esp32s3/main/board_wifi.h); change the
+credentials in [board_wifi.h](https://github.com/SengPhirum/PLXY_DrowsyGuard/blob/main/firmware/esp32s3/main/board_wifi.h); change the
 ports, JPEG quality and stream-rate defaults in
-[web_server.h](../firmware/esp32s3/main/web_server.h).
+[web_server.h](https://github.com/SengPhirum/PLXY_DrowsyGuard/blob/main/firmware/esp32s3/main/web_server.h).
 
 > **The radio is the biggest current consumer in the build.** Transmit bursts of a
 > couple of hundred milliamps land on top of whatever the camera and the
@@ -185,7 +185,7 @@ measure `SD`: near 0 V means the part is shut down, and a 100 kohm resistor from
 `SD` to `VIN` forces left-channel mode.
 
 Change these in one place only: `AUDIO_PIN_*` in
-[board_audio.h](../firmware/esp32s3/main/board_audio.h).
+[board_audio.h](https://github.com/SengPhirum/PLXY_DrowsyGuard/blob/main/firmware/esp32s3/main/board_audio.h).
 
 ---
 
@@ -302,7 +302,7 @@ idf.py build
 idf.py -p COM5 flash monitor
 ```
 
-`set-target` reads [sdkconfig.defaults](../firmware/esp32s3/sdkconfig.defaults), which
+`set-target` reads [sdkconfig.defaults](https://github.com/SengPhirum/PLXY_DrowsyGuard/blob/main/firmware/esp32s3/sdkconfig.defaults), which
 already sets what is easy to get wrong:
 
 | Setting | Value | Consequence if wrong |
@@ -382,11 +382,11 @@ Use this stage to:
 
 ## 8. Stage 3: bind ESP-DL
 
-Two functions in [model_adapter.cpp](../firmware/esp32s3/main/model_adapter.cpp); a
+Two functions in [model_adapter.cpp](https://github.com/SengPhirum/PLXY_DrowsyGuard/blob/main/firmware/esp32s3/main/model_adapter.cpp); a
 sketch of both is already in that file.
 
 1. The ESP-DL dependencies are already declared in
-   [main/idf_component.yml](../firmware/esp32s3/main/idf_component.yml) (`espressif/esp-dl`
+   [main/idf_component.yml](https://github.com/SengPhirum/PLXY_DrowsyGuard/blob/main/firmware/esp32s3/main/idf_component.yml) (`espressif/esp-dl`
    and `espressif/human_face_detect`), and the face detector is bound.
 
 2. `idf.py reconfigure`, then `idf.py menuconfig` and leave the model location at
@@ -407,7 +407,7 @@ sketch of both is already in that file.
 
 5. Re-tune `RISK_TRIGGER` in `main.cpp` (currently 0.55) from the desktop dashboard.
 
-Be aware of gap 6 in [PROJECT_STATE.md](../PROJECT_STATE.md): the eye model is
+Be aware of gap 6 in [PROJECT_STATE.md](https://github.com/SengPhirum/PLXY_DrowsyGuard/blob/main/PROJECT_STATE.md): the eye model is
 IR-trained and scored AUC 0.62 on visible-light data. Expect stage 3 to work
 mechanically and still classify badly in daylight until that model is fine-tuned. The
 OV3660 has no IR capability; an IR-cut-removed sensor plus 850 nm illumination is the
