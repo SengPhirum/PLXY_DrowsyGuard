@@ -50,11 +50,18 @@ jobs:
       # Strict build + credential scan. Fails the check on a broken internal
       # link, a missing #anchor, a nav entry pointing at nothing, a missing
       # image, two pages claiming one URL, or a leaked credential pattern.
+      #
+      # `bash ./plxy.sh`, not `./plxy.sh`: this repository is developed on Windows
+      # with core.filemode=false, where the working tree reports every file as
+      # executable regardless of what git actually records. A script can lose its
+      # +x bit in the index without anyone seeing it locally, and the runner then
+      # fails with "Permission denied" (exit 126). Going through bash does not
+      # care about the bit.
       - name: Validate documentation
-        run: ./plxy.sh docs-check
+        run: bash ./plxy.sh docs-check
 
       - name: Build documentation (docs-only)
-        run: ./plxy.sh docs-build
+        run: bash ./plxy.sh docs-build
 
       - name: Upload rendered site for review
         uses: actions/upload-artifact@v4
