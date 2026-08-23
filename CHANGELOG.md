@@ -1,5 +1,112 @@
 # Changelog
 
+## 2026-08-23 — the panel is gone: live preview over Wi-Fi
+
+The SPI display was removed from the build and replaced by a web page the board
+serves itself. Join the access point it broadcasts, open `http://192.168.4.1/`, and
+the phone or laptop in your hand is the display.
+
+**Why.** The panel cost five GPIOs, a 150 KB PSRAM framebuffer, a per-frame software
+blit and one managed driver component per panel variant (ST7735S, then ILI9341). In
+exchange it showed 240x320 pixels of 8-pixel-tall text to one person sitting directly
+in front of it. The browser shows the frame *and* the fused risk score with its
+trigger, the PERCLOS window, per-eye closure probability, blink/yawn/nod rates, head
+geometry, an event log and frame timing — at a size that can be read from the
+passenger seat — and `GET /api/status` returns the same numbers as JSON, so the
+hardware acceptance tests in `docs/DEPLOYMENT.md` can be scripted instead of read off
+glass. The build went from **15 wires to 7**, and from 2 spare GPIOs to 7.
+
+**Firmware — new.**
+- `main/board_wifi.h/.cpp`: SoftAP bring-up. SSID is `DrowsyGuard-XXXXXX` (last three
+  bytes of the AP MAC, so two boards on one bench stay distinguishable), WPA2 with
+  `drowsyguard`, and `esp_wifi_set_ps(WIFI_PS_NONE)` because with power save on the
+  MJPEG stream arrives in bursts a couple of hundred milliseconds apart, which looks
+  exactly like a camera that cannot keep up. Optional AP+STA: fill in `WIFI_STA_SSID`
+  and the device also joins a named network, which is how it becomes reachable from a
+  development machine without leaving the lab Wi-Fi.
+- `main/web_server.h/.cpp`: **two** `esp_http_server` instances — control on port 80,
+  MJPEG stream on port 81. One instance serves one request at a time and a stream
+  never ends, so a stream on port 80 would block the page and the API for as long as
+  anyone watched. Consequence, documented rather than hidden: one live viewer at a
+  time, with a still-image fallback on port 80 for everyone else.
+- `main/web/index.html`: the page, linked into the binary as flash rodata
+  (`EMBED_TXTFILES`) so it can never be out of step with the JSON it parses. The face
+  box is drawn client-side in a canvas over the video rather than burned into the
+  JPEG — the device keeps encoding pixels it already has, and the box stays crisp at
+  any zoom. Automatic fallback to polled stills if the stream slot is taken.
+- Endpoints: `/`, `/stream` (:81), `/api/snapshot`, `/api/status`, `/api/settings`
+  (`?quality=`, `?fps=`, `?muted=`), `/api/alert-test` (`?reason=0..3`).
+
+**Firmware — the frame handoff, which is the part that had to be right.**
+`web_server_publish_frame()` copies one frame into one of two PSRAM snapshot buffers
+and returns; it does no encoding, and it returns without copying at all when no
+browser is connected. The ~20 ms JPEG encode runs in the stream task, pinned to core
+1, on the buffer the capture loop is no longer writing to. With one consumer, two
+buffers are provably enough: at most one can be held for encoding, which always
+leaves one free to write into. A drowsiness detector that stutters because someone
+opened a web page would be a bad trade.
+
+**Firmware — removed.**
+- `main/board_display.h/.cpp` and `main/display_ui.h/.cpp` (four files, ~830 lines).
+- The `waveshare/esp_lcd_st7735` and `espressif/esp_lcd_ili9341` dependencies. Nothing
+  was added in their place: Wi-Fi and `esp_http_server` ship with ESP-IDF, and the
+  JPEG encoder (`fmt2jpg_cb`) comes with `esp32-camera`, which was already a
+  dependency.
+- `main.cpp`: the bring-up loop that cycled panel fills and test tones, the LCD pin
+  diagnostics, the base64 frame dumper (`/api/snapshot` returns the actual frame the
+  detector was handed, which is strictly better), and the 150 KB framebuffer
+  allocation. The ESP-DL self-test over `test_frames.h` survives behind
+  `#define MODEL_SELFTEST 0`.
+
+**Firmware — a real bug found on the way.** `voice_alert`'s `max_repeat_count` was a
+lifetime budget, not a per-episode one: after three announcements the device went
+silent for the rest of the power cycle. With the panel gone the speaker is the only
+output the driver perceives, so that is a safety defect rather than an annoyance. The
+counter now resets after `repeat_reset_ms` (5 min) without an alert. Also added:
+`voice_alert_set_muted()`, `voice_alert_count()` and `voice_alert_test()` — the last
+one is what the page's **Test speaker** button calls, because with no display "no
+alert fired" and "the amplifier is dead" would otherwise be indistinguishable.
+
+**Build.** `sdkconfig.defaults` gained the esp32-camera web-server tuning
+(`ESP_WIFI_STATIC_TX_BUFFER_NUM`, `LWIP_TCP_SND_BUF_DEFAULT`, `LWIP_MAX_SOCKETS`,
+AMPDU) — with stock buffer counts an MJPEG stream stalls for hundreds of milliseconds
+at a time. `sdkconfig` was deleted so it re-seeds from defaults. Note that TX buffers
+are *static* here and that is forced, not chosen: ESP-IDF removes the dynamic option
+whenever `SPIRAM_TRY_ALLOCATE_WIFI_LWIP` is set, and the derived
+`CONFIG_ESP_WIFI_TX_BUFFER_TYPE` is silently ignored if you set it directly — a trap
+this project walked into once and now documents in `sdkconfig.defaults` itself.
+
+**The firmware now builds.** `idf.py build` against ESP-IDF v5.5.5 completes with no
+warnings from project code: 2.2 MB app, 65 % of the 6 MB partition free. This is the
+first time anything in `firmware/` has been compiled — it still has never been run on
+hardware.
+
+**Tooling and diagrams.**
+- `scripts/diagram_fonts.py` (new): the four DejaVu faces every diagram is drawn with
+  are now looked up rather than hard-coded to `/usr/share/fonts/truetype/dejavu`, so
+  the artwork can be regenerated on the same Windows machine the firmware is flashed
+  from (`pip install matplotlib` supplies all four). Still DejaVu only, deliberately:
+  every text width in these diagrams is measured to lay the drawing out, so swapping
+  the metrics would move labels.
+- `scripts/pinmap.py` no longer reads a display header; `FREED_BY_WEB_PREVIEW` records
+  the five GPIOs that came back. All eleven reference figures, the three step diagrams
+  and the one-page poster were regenerated. Figure 5 changed from "wiring the display,
+  8 wires" to "joining the board's Wi-Fi, 0 wires" and now carries the HTTP surface,
+  which is the nearest thing a headless build has to a connector pinout.
+- `tests/test_tutorial_diagrams.py`: the display assertions are replaced by ones that
+  matter now — that no artefact still configures the removed panel, that the page's
+  hard-coded stream port matches `web_server.h`, that `WIFI_AP_PASSWORD` is a legal
+  WPA2 key (8+ characters, or empty for a deliberately open network), and that the
+  JPEG quality default is on `fmt2jpg`'s 1-100 scale rather than the sensor's inverted
+  0-63 one. 92 tests pass.
+
+**Documentation.** The tutorial, `docs/HARDWARE_SETUP.md`, `docs/FIRMWARE_PIPELINE.md`,
+`docs/DEPLOYMENT.md`, `firmware/esp32s3/README.md`, `README.md`, `PROJECT_STATE.md`
+and `ROADMAP.md` all follow. Two new acceptance tests were added: frame rate recorded
+with and without a browser watching (the delta is the evidence the preview costs the
+detector nothing it needs), and 20 stream open/close cycles with heap sampled after
+each.
+
 ## 2026-08-13 — audio hardware wired, beginner setup tutorial, repo cleanup
 
 **Hardware.** The remaining three parts of the order were identified and are now

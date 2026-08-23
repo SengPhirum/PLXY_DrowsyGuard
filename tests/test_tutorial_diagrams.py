@@ -39,25 +39,41 @@ def _diagram_module():
 # Pin maps: diagram tables vs firmware headers
 # --------------------------------------------------------------------------- #
 
-def test_display_diagram_pins_match_board_display_header():
-    gen = _diagram_module()
-    d = _defines(FIRMWARE / 'board_display.h')
-    expected = {
-        'SCL': d['LCD_PIN_SCK'],
-        'SDA': d['LCD_PIN_MOSI'],
-        'CS': d['LCD_PIN_CS'],
-        'DC': d['LCD_PIN_DC'],
-        'RST': d['LCD_PIN_RST'],
-    }
-    drawn = {row[0]: row[2] for row in gen.DISPLAY_WIRING}
-    for pin, gpio in expected.items():
-        assert drawn[pin] == f'GPIO{gpio}', (
-            f'display pin {pin} is drawn as {drawn[pin]} but board_display.h says GPIO{gpio}')
+def test_the_panel_is_gone_from_the_firmware():
+    """The SPI panel was removed when the preview moved into a browser.
 
-    # Power pins are not GPIOs and must stay on the rails they belong to.
-    assert drawn['VDD'] == '3V3'
-    assert drawn['BLK'] == '3V3'
-    assert drawn['GND'] == 'GND'
+    Asserted rather than assumed: a stray board_display.h would be picked up by
+    pinmap.load_pins() and silently reintroduce five GPIOs to the wiring tables,
+    and the tutorial would start telling readers to wire a panel the firmware no
+    longer drives.
+    """
+    for gone in ('board_display.h', 'board_display.cpp',
+                 'display_ui.h', 'display_ui.cpp'):
+        assert not (FIRMWARE / gone).exists(), f'{gone} is back; the tables will drift'
+    for present in ('board_wifi.h', 'board_wifi.cpp',
+                    'web_server.h', 'web_server.cpp', 'web/index.html'):
+        assert (FIRMWARE / present).exists(), f'{present} is missing'
+
+
+def test_no_artefact_still_configures_the_removed_panel():
+    """Prose explaining the removal is fine; a live pin reference is not."""
+    stale = ('ST7735', 'ILI9341', 'board_display.h', 'LCD_PIN_', 'DISPLAY_WIRING')
+    excuses = ('remove', 'gone', 'no longer', 'used to', 'was the', 'came back',
+               'gets soldered', 'gets wired', 'gets a rail')
+    targets = [ROOT / 'scripts/pinmap.py',
+               ROOT / 'scripts/generate_tutorial_diagrams.py',
+               ROOT / 'scripts/generate_wiring_poster.py',
+               ROOT / 'scripts/generate_step_diagrams.py',
+               TUTORIAL / 'README.md',
+               FIRMWARE / 'CMakeLists.txt',
+               FIRMWARE / 'idf_component.yml']
+    for path in targets:
+        for line in path.read_text(encoding='utf-8').splitlines():
+            if any(e in line.lower() for e in excuses):
+                continue
+            for token in stale:
+                assert token not in line, (
+                    f'{path.name} still references {token}: {line.strip()!r}')
 
 
 def test_audio_diagram_pins_match_board_audio_header():
@@ -87,7 +103,7 @@ def test_no_pin_is_claimed_by_two_subsystems():
     """The whole point of the GPIO allocation figure: no double-booking."""
     gen = _diagram_module()
     used = {}
-    for row in gen.DISPLAY_WIRING + gen.AUDIO_WIRING:
+    for row in gen.AUDIO_WIRING:
         if row[2].startswith('GPIO'):
             n = int(row[2][4:])
             assert n not in used, f'GPIO {n} is used by both {used[n]} and {row[0]}'
@@ -100,12 +116,13 @@ def test_no_pin_is_claimed_by_two_subsystems():
 
 def test_gpio_roles_agree_with_the_wiring_tables():
     gen = _diagram_module()
-    for row in gen.DISPLAY_WIRING:
-        if row[2].startswith('GPIO'):
-            assert gen.GPIO_ROLES[int(row[2][4:])][0] == 'lcd'
     for row in gen.AUDIO_WIRING:
         if row[2].startswith('GPIO'):
             assert gen.GPIO_ROLES[int(row[2][4:])][0] == 'audio'
+    # The five the panel used to hold must be drawn as free, not left coloured in
+    # as though something still owned them.
+    for n in (14, 21, 41, 42, 47):
+        assert gen.GPIO_ROLES[n][0] == 'free', f'GPIO {n} is still claimed'
 
 
 # --------------------------------------------------------------------------- #
@@ -146,14 +163,22 @@ def test_tutorial_embeds_every_image():
 def test_tutorial_wiring_table_matches_the_firmware():
     """Every GPIO in the tutorial's wiring table must exist in the headers."""
     readme = (TUTORIAL / 'README.md').read_text(encoding='utf-8')
-    display = _defines(FIRMWARE / 'board_display.h')
     audio = _defines(FIRMWARE / 'board_audio.h')
-    wired = {display['LCD_PIN_SCK'], display['LCD_PIN_MOSI'], display['LCD_PIN_CS'],
-             display['LCD_PIN_DC'], display['LCD_PIN_RST'],
-             audio['AUDIO_PIN_BCLK'], audio['AUDIO_PIN_LRCLK'], audio['AUDIO_PIN_DIN']}
+    wired = {audio['AUDIO_PIN_BCLK'], audio['AUDIO_PIN_LRCLK'], audio['AUDIO_PIN_DIN']}
     for gpio in wired:
         assert f'GPIO {gpio}' in readme or f'GPIO{gpio}' in readme, (
             f'GPIO {gpio} is wired by the firmware but never named in the tutorial')
+
+
+def test_tutorial_tells_the_reader_how_to_reach_the_preview():
+    """With no panel, the tutorial is useless unless it names the SSID and the URL."""
+    readme = (TUTORIAL / 'README.md').read_text(encoding='utf-8')
+    wifi = (FIRMWARE / 'board_wifi.h').read_text(encoding='utf-8')
+    prefix = re.search(r'#define WIFI_AP_SSID_PREFIX\s+"([^"]*)"', wifi).group(1)
+    password = re.search(r'#define WIFI_AP_PASSWORD\s+"([^"]*)"', wifi).group(1)
+    assert prefix in readme, 'the tutorial never names the SSID the board broadcasts'
+    assert password in readme, 'the tutorial never gives the Wi-Fi password'
+    assert '192.168.4.1' in readme, 'the tutorial never gives the address to open'
 
 
 def test_root_readme_links_to_the_tutorial():
@@ -181,28 +206,13 @@ def _pinmap():
 
 def test_pinmap_reads_the_firmware_headers():
     pm = _pinmap()
-    d = _defines(FIRMWARE / 'board_display.h')
     a = _defines(FIRMWARE / 'board_audio.h')
-    by_module = {w.module: w.esp for w in pm.DISPLAY_WIRING}
-    assert by_module['SCL'] == f"GPIO {d['LCD_PIN_SCK']}"
-    assert by_module['SDA'] == f"GPIO {d['LCD_PIN_MOSI']}"
-    assert by_module['CS'] == f"GPIO {d['LCD_PIN_CS']}"
-    assert by_module['DC'] == f"GPIO {d['LCD_PIN_DC']}"
-    assert by_module['RST'] == f"GPIO {d['LCD_PIN_RST']}"
     amp = {w.module: w.esp for w in pm.AMP_WIRING}
     assert amp['BCLK'] == f"GPIO {a['AUDIO_PIN_BCLK']}"
     assert amp['LRC'] == f"GPIO {a['AUDIO_PIN_LRCLK']}"
     assert amp['DIN'] == f"GPIO {a['AUDIO_PIN_DIN']}"
-
-
-def test_backlight_goes_to_3v3_not_ground():
-    """BLK is the backlight enable. Grounding it is a common tutorial error that
-    leaves the panel dark and reads as a dead display."""
-    pm = _pinmap()
-    blk = next(w for w in pm.DISPLAY_WIRING if w.module == 'BLK')
-    assert blk.esp == '3V3', 'BLK must go to 3V3; grounding it kills the backlight'
-    vdd = next(w for w in pm.DISPLAY_WIRING if w.module == 'VDD')
-    assert vdd.esp == '3V3', 'VDD is a 3.3 V input; 5 V can destroy the panel'
+    assert not hasattr(pm, 'DISPLAY_WIRING'), (
+        'the panel table is back; this build has no panel to wire')
 
 
 def test_amplifier_sd_and_gain_are_never_wired():
@@ -225,6 +235,53 @@ def test_no_gpio_is_double_booked_and_none_land_on_reserved_pins():
 
 
 def test_free_gpio_list_is_what_the_docs_claim():
+    """Seven spare, not two: dropping the SPI panel handed back five GPIOs."""
     pm = _pinmap()
-    assert pm.FREE_GPIOS == [1, 3], (
-        f'docs say only GPIO 1 and 3 are spare; pinmap computes {pm.FREE_GPIOS}')
+    assert pm.FREE_GPIOS == [1, 3, 14, 21, 41, 42, 47], (
+        f'docs say GPIO 1, 3, 14, 21, 41, 42 and 47 are spare; '
+        f'pinmap computes {pm.FREE_GPIOS}')
+    assert set(pm.FREED_BY_WEB_PREVIEW) <= set(pm.FREE_GPIOS), (
+        'a GPIO the panel released has been claimed again without updating the list')
+
+
+# --------------------------------------------------------------------------- #
+# The web preview, which is the only user interface the board now has
+# --------------------------------------------------------------------------- #
+
+def test_the_page_and_the_firmware_agree_on_the_stream_port():
+    """index.html hard-codes a port to use before the first /api/status reply.
+
+    If web_server.h moves the stream and the page does not follow, the preview is
+    dark for the first fraction of a second of every page load - and stays dark
+    for good if the status poll ever fails.
+    """
+    header = (FIRMWARE / 'web_server.h').read_text(encoding='utf-8')
+    page = (FIRMWARE / 'web/index.html').read_text(encoding='utf-8')
+    port = int(re.search(r'#define WEB_PORT_STREAM\s+(\d+)', header).group(1))
+    fallback = int(re.search(r'let streamPort = (\d+)', page).group(1))
+    assert fallback == port, (
+        f'web_server.h streams on {port} but index.html falls back to {fallback}')
+
+
+def test_the_access_point_password_is_a_legal_wpa2_key():
+    """WPA2 needs eight characters. Anything shorter makes esp_wifi_set_config
+    fail, which surfaces as a board that never appears in the Wi-Fi list at
+    all - a symptom that looks like dead hardware."""
+    wifi = (FIRMWARE / 'board_wifi.h').read_text(encoding='utf-8')
+    password = re.search(r'#define WIFI_AP_PASSWORD\s+"([^"]*)"', wifi).group(1)
+    assert password == '' or len(password) >= 8, (
+        f'WIFI_AP_PASSWORD is {len(password)} characters; WPA2 needs 8 or more '
+        '(use "" for a deliberately open network)')
+
+
+def test_the_jpeg_quality_default_is_on_the_right_scale():
+    """esp32-camera has two quality scales that run in opposite directions: the
+    sensor's jpeg_quality is 0-63 where lower is better, while fmt2jpg takes
+    1-100 where higher is better. The web server uses the second, so a value
+    copied from the sensor config would quietly produce a mush preview."""
+    header = (FIRMWARE / 'web_server.h').read_text(encoding='utf-8')
+    quality = int(re.search(r'#define WEB_JPEG_QUALITY_DEFAULT\s+(\d+)',
+                            header).group(1))
+    assert 50 <= quality <= 95, (
+        f'WEB_JPEG_QUALITY_DEFAULT is {quality}; on the 1-100 fmt2jpg scale that '
+        'is either unreadable or wasteful, and looks like a 0-63 sensor value')

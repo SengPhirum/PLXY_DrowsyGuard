@@ -24,8 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from diagram_kit import (BLUE, Breadboard, Canvas, GREEN, INK, MUTED, NAVY, PANEL,
-                         PCB_BLUE, PCB_PURPLE, PURPLE, RED, SCREEN, TERM_GREEN,
-                         BLACK_W, HAIRLINE)
+                         PCB_PURPLE, PURPLE, RED, TERM_GREEN, BLACK_W, HAIRLINE)
 
 OUT = Path(__file__).resolve().parents[1] / 'docs/tutorials/hardware-setup/images/steps'
 
@@ -45,16 +44,13 @@ CH_R = BB_X + 336 + 34
 # become exact hole coordinates instead of label-keyed callouts.
 ESP32_HEADER = {'left': None, 'right': None}
 
-# Silkscreen order on the 1.8" ST7735S module, read off the owner's photograph
-# of the actual part: "GND VDD SCL SDA RST DC CS BLK", left to right.
-DISPLAY_PINS = ['GND', 'VDD', 'SCL', 'SDA', 'RST', 'DC', 'CS', 'BLK']
-
-# MAX98357A breakout, seven pins plus the two-way screw terminal.
+# MAX98357A breakout, seven pins plus the two-way screw terminal. It is the only
+# module in the build with a header to solder: the SPI panel was dropped when the
+# preview moved into a browser, and the camera is an FPC ribbon.
 AMP_PINS = ['LRC', 'BCLK', 'DIN', 'GAIN', 'SD', 'GND', 'VIN']
 
 WIRE_LEGEND = [
     (RED, 'Red = 5 V'),
-    (BLUE, 'Blue = 3.3 V'),
     (BLACK_W, 'Black = GND'),
 ]
 
@@ -143,20 +139,6 @@ def step_breadboard_anatomy():
 # Step 02 - solder the headers
 # --------------------------------------------------------------------------- #
 
-def _draw_display(c, x, y, w, h, pins=True):
-    c.rect(x, y, w, h, fill=PCB_BLUE, radius=5)
-    c.rect(x + w * 0.06, y + h * 0.16, w * 0.88, h * 0.66, fill=SCREEN, radius=2)
-    step = w * 0.104
-    for i, name in enumerate(DISPLAY_PINS):
-        px = x + w * 0.105 + i * step
-        c.rect(px - 4, y + 5, 8, 8, fill=(212, 176, 90), radius=1)
-        if pins:
-            c.text(px, y - 8, name, size=11, bold=True, mono=True,
-                   fill=(40, 46, 58), anchor='mm')
-    c.text(x + w / 2, y + h - 12, "1.8'128X160 RGB_TFT", size=10,
-           fill=(200, 214, 240), anchor='mm')
-
-
 def _draw_amp(c, x, y, w, h, pins=True):
     c.rect(x, y, w, h, fill=PCB_PURPLE, radius=5)
     c.rect(x + w * 0.40, y + h * 0.34, w * 0.26, h * 0.28, fill=(32, 34, 40), radius=2)
@@ -172,30 +154,38 @@ def _draw_amp(c, x, y, w, h, pins=True):
 
 def step_solder_headers():
     c = Canvas(1680, 1180)
-    c.banner('STEP 2', 'SOLDER THE HEADER STRIPS TO THE TWO SMALL MODULES')
+    c.banner('STEP 2', 'SOLDER THE HEADER STRIP TO THE AMPLIFIER')
 
     c.note(60, 110, 1560, [
-        'Both modules ship with their header strips loose in the bag. Until they are soldered nothing can make reliable contact,',
-        'so this is the one step that needs a tool that was not in the order: a soldering iron and solder.',
+        'One module, one strip. The amplifier ships with its header loose in the bag, and until it is soldered nothing can make',
+        'reliable contact - so this is the one step that needs a tool that was not in the order: a soldering iron and solder.',
     ], kind='warn')
 
-    # display
+    # amplifier - the only thing here with a header to solder
     c.rect(90, 250, 700, 420, fill=PANEL, outline=HAIRLINE, width=2, radius=12)
-    c.text(440, 278, '1.8" ST7735S display  -  8-pin strip', size=18, bold=True,
+    c.text(440, 278, 'MAX98357A amplifier  -  7-pin strip', size=18, bold=True,
            anchor='mm')
-    _draw_display(c, 250, 360, 380, 230)
+    _draw_amp(c, 250, 360, 380, 230)
     c.text(440, 620, 'Silkscreen order, left to right', size=13, fill=MUTED, anchor='mm')
-    c.text(440, 642, ' '.join(DISPLAY_PINS), size=14, mono=True, bold=True,
+    c.text(440, 642, ' '.join(AMP_PINS), size=14, mono=True, bold=True,
            fill=INK, anchor='mm')
 
-    # amplifier
+    # what does NOT get soldered, which is now most of the build
     c.rect(870, 250, 720, 420, fill=PANEL, outline=HAIRLINE, width=2, radius=12)
-    c.text(1230, 278, 'MAX98357A amplifier  -  7-pin strip', size=18, bold=True,
-           anchor='mm')
-    _draw_amp(c, 1040, 360, 380, 230)
-    c.text(1230, 620, 'Silkscreen order, left to right', size=13, fill=MUTED, anchor='mm')
-    c.text(1230, 642, ' '.join(AMP_PINS), size=14, mono=True, bold=True,
-           fill=INK, anchor='mm')
+    c.text(1230, 278, 'Nothing else gets soldered', size=18, bold=True, anchor='mm')
+    rows = [
+        ('Camera', 'flat flexible ribbon into the FPC socket - latch, not solder'),
+        ('Speaker', 'two bare wires into the green screw terminal'),
+        ('Preview', 'a web page over Wi-Fi - there is no panel to wire any more'),
+        ('ESP32-S3 board', 'headers already fitted on this item'),
+    ]
+    for i, (what, how) in enumerate(rows):
+        ry = 340 + i * 74
+        c.rect(910, ry, 640, 58, fill=(250, 251, 252), outline=HAIRLINE, width=1,
+               radius=8)
+        c.rect(910, ry, 6, 58, fill=GREEN, radius=2)
+        c.text(936, ry + 10, what, size=15, bold=True)
+        c.text(936, ry + 33, how, size=12, fill=MUTED)
 
     c.callout(90, 710, 480,
               'Long pins DOWN, short pins into the board',
@@ -216,9 +206,9 @@ def step_solder_headers():
               accent=GREEN)
 
     c.panel_box(90, 900, 700, 'CHECK', [
-        'All 8 display pins and all 7 amplifier pins soldered',
+        'All 7 amplifier pins soldered',
         'No solder bridging two neighbouring pins',
-        'Strips sit square, not tilted',
+        'The strip sits square, not tilted',
         'Silkscreen labels still readable after soldering',
     ], accent=GREEN, check=True)
 
@@ -266,34 +256,37 @@ def step_power_rails():
               accent=BLACK_W, target=bb.rail('L', '-', 20), via_x=CH_L)
 
     c.callout(1150, 170, 440,
-              'Keep the right-hand rails for 3.3 V',
-              ['The display needs 3.3 V, not 5 V. Giving it its own rail on the '
-               'opposite edge makes the two physically hard to confuse.'],
+              'Leave the right-hand rails empty',
+              ['Nothing in this build runs on 3.3 V off the breadboard. The panel '
+               'that used to is gone - the preview is a web page - so the only two '
+               'nets that leave the controller are 5 V and GND.',
+               'Keep the far rails free anyway: it is where a 3.3 V sensor would go '
+               'later, and an empty rail is a spare, not a mistake.'],
               accent=BLUE, target=bb.rail('R', '+', 12), via_x=CH_R,
               anchor_side='left')
 
-    c.note(1150, 380, 440, [
+    c.note(1150, 420, 440, [
         'This is a convention, not a rule.',
         'The breadboard does not know what a rail is for.',
         'Pick one layout, draw it on paper, and keep to it -',
         'most wiring mistakes are a rail used for two things.',
     ], kind='info')
 
-    _legend(c, 1150, 560, 440, WIRE_LEGEND + [
+    _legend(c, 1150, 600, 440, WIRE_LEGEND + [
         ((120, 126, 138), 'Any other colour = signal'),
     ])
 
-    c.panel_box(1150, 780, 440, 'CHECK', [
+    c.panel_box(1150, 790, 440, 'CHECK', [
         'Rails bridged, or confirmed unbroken',
         'You know which rail is 5 V and which is GND',
-        'Right-hand rails still empty, reserved for 3.3 V',
+        'Right-hand rails still empty',
         'Still nothing plugged into USB',
     ], accent=GREEN, check=True)
 
     c.note(60, 860, 420, [
         'Colour discipline pays for itself.',
-        'Red only ever carries 5 V, blue only 3.3 V,',
-        'black only ground. When a wire is the wrong',
+        'Red only ever carries 5 V, black only ground,',
+        'anything else is a signal. When a wire is the wrong',
         'colour you can see the mistake without tracing it.',
     ], kind='ok')
 

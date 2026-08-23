@@ -27,7 +27,7 @@ automatic fallback when I2S fails to initialize.
 ## Connections
 
 GPIO numbers are now fixed. The DVP camera consumes fourteen pins and the octal
-PSRAM reserves 33-37, so these three are what remained after the display took
+PSRAM reserves 33-37, so these three are what remained after the SPI panel took
 14/21/41/42/47. They are the microSD slot's pins, which this project does not use.
 
 | ESP32-S3 | Amplifier | Defined in |

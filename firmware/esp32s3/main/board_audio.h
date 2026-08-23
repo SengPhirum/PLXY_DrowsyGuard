@@ -7,9 +7,14 @@ I2S audio output for the MAX98357A class-D amplifier (khmeres.com item 2724,
 Pin choice, and why these three:
   Every GPIO the DVP camera uses (4,5,6,7,8,9,10,11,12,13,15,16,17,18) is off
   limits, as are 33..37 (SPI flash + octal PSRAM), 19/20 (native USB) and 43/44
-  (UART0 console). board_display.h takes 14, 21, 41, 42, 47 and GPIO 2 is the
-  buzzer. That leaves 1, 3, 38, 39, 40. The microSD slot owns 38/39/40 and this
-  project does not use a card, so the amplifier gets them and 1/3 stay spare.
+  (UART0 console). GPIO 2 is the buzzer. That leaves 1, 3, 14, 21, 38, 39, 40, 41,
+  42 and 47. The microSD slot owns 38/39/40 and this project does not use a card,
+  so the amplifier gets them.
+
+  These three were chosen when a SPI panel still held 14, 21, 41, 42 and 47. The
+  panel is gone (the preview is served over Wi-Fi now, see web_server.h) so those
+  five are free again, but there is no reason to move the amplifier onto them: the
+  microSD pins are still the ones nothing else wants.
 
   If you ever fit a microSD card, these three must move - there is no way to
   share them.

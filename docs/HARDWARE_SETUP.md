@@ -2,16 +2,15 @@
 
 > **New here?** This page is the toolchain and bring-up reference. If you are
 > assembling the hardware for the first time, start with the step-by-step
-> [Hardware Setup Tutorial](./tutorials/hardware-setup/README.md), which covers all
-> five parts with wiring diagrams, then come back here for the ESP-DL stages.
+> [Hardware Setup Tutorial](./tutorials/hardware-setup/README.md), which covers
+> every part with wiring diagrams, then come back here for the ESP-DL stages.
 
-For the five parts bought on 2026-08-11:
+For the parts bought on 2026-08-11:
 
 | Part | Listing | Price |
 | --- | --- | --- |
 | ESP32-S3-WROOM-1 **N16R8** dev board with **OV3660** camera | [khmeres.com item 2991](https://khmeres.com/product_detail/2991) | $7.50 |
-| ~~1.8" **128x160 ST7735S** 65K colour SPI TFT~~ (replaced, see below) | [khmeres.com item 1885](https://khmeres.com/product_detail/1885) | $3.50 |
-| 2.8" **240x320 ILI9341** SPI TFT, resistive touch + microSD (red module) | replacement panel, 2026-08-15 | - |
+| ~~SPI TFT panel~~ **removed from the build 2026-08-23**, see section 1 | [khmeres.com item 1885](https://khmeres.com/product_detail/1885) | $3.50 |
 | **MAX98357A** I2S filterless class-D amplifier | [khmeres.com item 2724](https://khmeres.com/product_detail/2724) | $2.00 |
 | 4 ohm / 3 W 40x22 mm speaker | [khmeres.com item 2554](https://khmeres.com/product_detail/2554) | $0.75 |
 | MB102 830-point solderless breadboard | [khmeres.com item 371](https://khmeres.com/product_detail/371) | $1.50 |
@@ -40,13 +39,24 @@ The OV3660 is a 3 MP sensor rather than the EYE's 2 MP OV2640. That is fine and
 slightly better: `esp32-camera` supports it, the firmware asks for 240x240 RGB565
 anyway, and a larger native array gives a cleaner downscale.
 
-**The display.** Originally a 1.8" 128x160 ST7735S; since 2026-08-15 it is a 2.8"
-240x320 **ILI9341** module (the common red PCB with resistive touch and a microSD
-slot, both unused). Still plain SPI on GPIOs you choose. `display_ui.cpp` was written
-against a caller-supplied framebuffer with a blit callback precisely so the panel
-could be swapped; the swap changed only `board_display.h/.cpp` and the driver
-dependency (`espressif/esp_lcd_ili9341`). Note the framebuffer is now 150 KB and
-lives in PSRAM (`main.cpp` allocates it at boot).
+**The display - there isn't one any more.** The build carried a 1.8" ST7735S, then
+a 2.8" ILI9341, and as of 2026-08-23 neither: the preview is served to a browser
+over the ESP32-S3's own Wi-Fi access point instead. What that traded away:
+
+| Removed | Gained |
+| --- | --- |
+| 5 GPIOs (14, 21, 41, 42, 47) | 7 free GPIOs instead of 2 |
+| 8 jumper wires | 7 wires in the whole build instead of 15 |
+| a 150 KB PSRAM framebuffer + per-frame software blit | ~20 ms of JPEG encode, on core 1, only while someone is watching |
+| two managed panel-driver components | nothing - `esp_http_server` and Wi-Fi are in-tree |
+| 240x320 of 8-pixel text, readable by one person in front of it | the frame plus risk, PERCLOS, per-eye closure, blink/yawn/nod rates, head geometry, an event log and frame timing, on a phone, from the passenger seat |
+| - | `curl`-able JSON for scripted acceptance tests |
+
+The preview is a diagnostic, never a dependency: the capture loop copies one frame
+and returns, skips the copy entirely when no browser is connected, and the alert
+path never touches the network. See section 2.2 for how to reach it and
+[firmware/esp32s3/main/web_server.h](../firmware/esp32s3/main/web_server.h) for why
+there are two HTTP servers.
 
 **The audio path.** The MAX98357A and the 4 ohm / 3 W speaker are now in hand, and
 `main/board_audio.h/.cpp` drives them over I2S on GPIO 39 (BCLK), 38 (LRCLK) and
@@ -58,8 +68,10 @@ initialize. Wiring and the `SD`/`GAIN` configuration pins: see the
 
 - A **USB-C data cable**. Charge-only cables are the single most common cause of
   "the board doesn't appear".
-- **~15 dupont jumper wires** - 8 for the display, 5 for the amplifier, 2 spare.
-- A **soldering iron**. The display and amplifier ship with loose header strips.
+- **~8 dupont jumper wires** - 5 for the amplifier, 2 for the speaker, 1 spare.
+- A **soldering iron**. The amplifier ships with a loose header strip; it is the
+  only thing in the build that needs soldering.
+- A **phone, tablet or laptop** with a browser. That is the display now.
 - Approved English/Khmer voice recordings. Until they exist each alert reason
   plays its own tone pattern, which is audible and testable but is not speech.
 - Optionally a **microSD card** - but the SD slot's GPIOs are now the I2S amplifier's,
@@ -88,43 +100,41 @@ The pin map is now recorded in [board_camera.h](../firmware/esp32s3/main/board_c
 | PWDN | not routed | | Y3 (D1) | 9 |
 | RESET | not routed | | Y2 (D0) | 11 |
 
-### 2.2 Display (2.8" 240x320 ILI9341 SPI module, red PCB)
+### 2.2 The preview (nothing to wire)
 
-The module has a 14-pin header. Only the first **eight** pins get wires; the display
-is driven write-only, and neither the resistive touch controller nor the microSD
-slot is used. Reading the header from the VCC end:
+The board is headless. It comes up as a SoftAP and serves the live preview and
+all the detection telemetry over HTTP:
 
-| LCD module pin | Also labelled | Wire to | Why this pin |
-| --- | --- | --- | --- |
-| VCC | VDD | **5V (VBUS)** | module has its own 3.3 V regulator (J1 open) |
-| GND | - | GND | |
-| CS | - | **GPIO 47** | free |
-| RESET | RES, RST | **GPIO 42** | free (JTAG MTMS, unused here) |
-| DC | A0, RS | **GPIO 41** | free (JTAG MTDI, unused here) |
-| SDI (MOSI) | SDA, DIN | **GPIO 21** | free, non-strapping |
-| SCK | SCL, CLK | **GPIO 14** | free, non-strapping |
-| LED | BLK, BL | **3V3** | always-on backlight |
-
-Leave unconnected:
-
-| Pins | What they are |
+| | |
 | --- | --- |
-| SDO (MISO) | panel read-back; the firmware never reads the panel |
-| T_CLK, T_CS, T_DIN, T_DO, T_IRQ | XPT2046 resistive touch controller, unused |
-| SD_SCK, SD_MISO, SD_MOSI, SD_CS (separate 4-pin header) | microSD slot, unused - its would-be GPIOs 38/39/40 belong to the I2S amplifier |
+| **SSID** | `DrowsyGuard-XXXXXX` - the last three bytes of the AP MAC, so two boards on one bench stay distinguishable |
+| **Password** | `drowsyguard` (WPA2; set `WIFI_AP_PASSWORD` to `""` for an open network) |
+| **Address** | `http://192.168.4.1/` |
 
-Signal levels are 3.3 V despite VCC being 5 V: the regulator only feeds the panel
-logic, there are no level shifters, and the ESP32-S3's 3.3 V outputs drive it
-directly. If J1 on the back is bridged (solder blob), the regulator is bypassed -
-then feed VCC with **3V3, not 5 V**.
+| Endpoint | Port | What it serves |
+| --- | --- | --- |
+| `/` | 80 | the page, linked into the binary from `main/web/index.html` |
+| `/stream` | 81 | MJPEG live preview - **one viewer at a time** |
+| `/api/snapshot` | 80 | one JPEG; the page's fallback for extra viewers |
+| `/api/status` | 80 | risk, PERCLOS, face box, event rates, heap, uptime |
+| `/api/settings` | 80 | `?quality=`, `?fps=`, `?muted=` |
+| `/api/alert-test` | 80 | `?reason=0..3`, plays one warning |
 
-Change the GPIO assignments in one place only: `LCD_PIN_*` in
-[board_display.h](../firmware/esp32s3/main/board_display.h).
+Two servers because `esp_http_server` serves one request at a time per instance
+and an MJPEG stream never ends; a stream on port 80 would block the page and the
+API for as long as anyone watched. Hence the single-viewer limit on the stream,
+and the still-image fallback for everyone else.
 
-> **Do not wire this module per generic ESP32-S3 + ILI9341 tutorials.** They
-> typically put SCLK/MOSI/DC/CS and the touch pins on GPIO 6-13, all of which the
-> DVP camera owns on this board (section 2.3). The camera and the display would
-> fight and both would appear broken.
+Wi-Fi costs no GPIOs: the radio is on-die and shares no pins with the DVP camera
+bus or the I2S amplifier. Change the SSID, password, channel or optional station
+credentials in [board_wifi.h](../firmware/esp32s3/main/board_wifi.h); change the
+ports, JPEG quality and stream-rate defaults in
+[web_server.h](../firmware/esp32s3/main/web_server.h).
+
+> **The radio is the biggest current consumer in the build.** Transmit bursts of a
+> couple of hundred milliamps land on top of whatever the camera and the
+> amplifier are doing. A board that is stable until you open the preview has a
+> supply problem, not a firmware one.
 
 ### 2.3 Pins you must not use
 
@@ -141,14 +151,13 @@ expect:
 | 45, 46 | strapping pins; avoid driving them at boot |
 | 48 | on-board RGB LED on most units |
 
-That leaves **1, 2, 3, 14, 21, 38, 39, 40, 41, 42, 47**. The display takes five; GPIO 2
-is the buzzer in `voice_alert.cpp`; **38/39/40** (the microSD slot, unused by this
-project) are now the I2S amplifier's, assigned in `board_audio.h`. **Only GPIO 1 and
-GPIO 3 remain free.**
+That leaves **1, 2, 3, 14, 21, 38, 39, 40, 41, 42, 47**. GPIO 2 is the buzzer in
+`voice_alert.cpp`; **38/39/40** (the microSD slot, unused by this project) are the
+I2S amplifier's, assigned in `board_audio.h`. **GPIO 1, 3, 14, 21, 41, 42 and 47
+are free** - the last five came back when the SPI panel was dropped.
 
 > If one of these is not broken out on your particular board's header, pick another
-> from the free list and update `board_display.h` or `board_audio.h`. Do not reach
-> for 33-37.
+> from the free list and update `board_audio.h`. Do not reach for 33-37.
 
 ### 2.4 I2S amplifier
 
@@ -319,21 +328,37 @@ If it reports 2 MB, or nothing, stop and fix `SPIRAM_MODE_OCT` before anything e
 This is **stage 1: preview-only**. The ESP-DL models are not bound yet, so
 `model_init()` returns false and the firmware says so rather than pretending:
 
-- **one short 880 Hz beep at boot** - the audio self-test in `main.cpp`,
-- the live camera feed in the top 45 % of the panel,
-- `NO FACE`, `EYES OPEN`, `PC 0%`, `RISK 0%` and an `FPS` readout below it,
-- `NO MODEL - PREVIEW` on the bottom line,
-- one log line a second: `fps 24.3  risk 0.00  perclos 0.00  heap ...  psram ...`
+- **three rising notes at boot** - the audio self-test in `main.cpp`,
+- `DrowsyGuard-XXXXXX` in your phone's Wi-Fi list,
+- a live camera feed at `http://192.168.4.1/`, with the face box drawn over it,
+- an amber `eye model missing` pill: the detector is bound, the eye model is not,
+- one log line a second:
+  `fps 15.2  risk 0.00  perclos 0.00  face 18/20 ... viewers 1  heap ...  psram ...`
 
-That one screen validates the camera ribbon, the pin map, PSRAM, the SPI panel, the
-RGB565 byte order and the power supply; the beep validates the I2S pins, the
-amplifier and the speaker. Do not move on until both are clean.
+Between them those two signals validate everything: the chime covers the I2S pins,
+the amplifier and the speaker; the SSID covers PSRAM and the radio (the Wi-Fi
+stack allocates from PSRAM, so a PSRAM failure takes the network with it); the
+page covers the HTTP path; and the image covers the camera ribbon, the pin map,
+the RGB565 byte order and the power supply. Do not move on until all four are
+clean.
+
+They also fail distinguishably, which is the whole point of having two:
+
+| What you get | Where the fault is |
+| --- | --- |
+| no chime | the audio path - not the camera, not the network |
+| chime, no SSID | the radio, or PSRAM upstream of it |
+| SSID, no page | wrong address - it is `192.168.4.1`, not a `.local` name |
+| page, dark preview | the camera. The status pills say which subsystem failed |
 
 The boot banner also states which output path is live:
 
 ```
+I (xxx) wifi: SoftAP "DrowsyGuard-A1B2C3" up on channel 6, WPA2
+I (xxx) wifi: join it, then open http://192.168.4.1/
 I (xxx) audio: I2S up: BCLK=39 LRCLK=38 DIN=40 @ 16000 Hz 16-bit stereo
 I (xxx) voice_alert: Alert controller initialized; ... output=I2S/MAX98357A
+I (xxx) web: preview at http://192.168.4.1/  (stream on port 81)
 ```
 
 `output=buzzer` there means I2S did not come up and the fallback is in use.
@@ -346,26 +371,23 @@ Nothing to write. `main.cpp` already runs `Perclos`, `BehaviorAnalyzer`, `RiskFi
 `voice_alert` and the UI every frame; they are simply fed zeros until the models land.
 Use this stage to:
 
-- record the **display-only frame rate** - expect well above 15 fps; the SPI blit alone
-  is roughly 8 ms at 40 MHz and 16 ms at 20 MHz,
-- confirm the buzzer fires, by temporarily calling
-  `voice_alert_trigger(now_ms, AlertReason::Drowsy)` from the per-second log branch,
-- log peak heap for the acceptance tests in [DEPLOYMENT.md](DEPLOYMENT.md).
+- record the **preview-only frame rate**, twice: with a browser watching and with
+  none. The difference is the JPEG encode, and it is the number to quote when
+  arguing that the preview does not cost the detector anything it needs,
+- confirm the alert path fires, by pressing **Test speaker** on the page or
+  `curl -X POST "http://192.168.4.1/api/alert-test?reason=1"`. No code edit and no
+  reflash - which is the point of the endpoint existing,
+- log peak heap for the acceptance tests in [DEPLOYMENT.md](DEPLOYMENT.md), opening
+  and closing the stream a few times while you watch it.
 
 ## 8. Stage 3: bind ESP-DL
 
 Two functions in [model_adapter.cpp](../firmware/esp32s3/main/model_adapter.cpp); a
 sketch of both is already in that file.
 
-1. Uncomment the ESP-DL dependencies in
-   [main/idf_component.yml](../firmware/esp32s3/main/idf_component.yml):
-
-   ```yaml
-   espressif/esp-dl:
-     version: "^3.1.2"
-   espressif/human_face_detect:
-     version: "^0.3.0"
-   ```
+1. The ESP-DL dependencies are already declared in
+   [main/idf_component.yml](../firmware/esp32s3/main/idf_component.yml) (`espressif/esp-dl`
+   and `espressif/human_face_detect`), and the face detector is bound.
 
 2. `idf.py reconfigure`, then `idf.py menuconfig` and leave the model location at
    `CONFIG_HUMAN_FACE_DETECT_MODEL_IN_FLASH_RODATA` - simplest, and `partitions.csv`
@@ -403,17 +425,19 @@ eventual fix, and it also matches the base model's training domain.
 | `Failed to connect ... Wrong boot mode` | not in download mode | hold BOOT, tap RESET, release BOOT, reflash |
 | `esp_camera_init failed: 0x105` (`ESP_ERR_NOT_FOUND`) | ribbon half-seated, PSRAM off, or wrong pin map | reseat the ribbon; check the 8 MB PSRAM boot line; check `CONFIG_OV3660_SUPPORT` |
 | `esp_camera_init failed: 0x101` (`ESP_ERR_NO_MEM`) | PSRAM not enabled | `CONFIG_SPIRAM=y` **and** `CONFIG_SPIRAM_MODE_OCT=y` |
-| Boot loop, `Brownout detector was triggered` | USB port cannot supply camera + LCD | powered hub, shorter/thicker cable, or a 5 V bench supply |
-| LCD stays white | backlight on but no init: wrong CS/DC/RST, or SPI too fast | recheck the four control pins; drop `LCD_SPI_HZ` to 20 MHz |
-| LCD black, backlight on | panel init ran but nothing blits | check for the `ILI9341 240x320 up` log line |
-| Coloured bands on two edges, image shifted | (ST7735S only) window offset | not applicable to the ILI9341; leave `LCD_GAP_X`/`LCD_GAP_Y` at 0 |
-| Red and blue swapped | panel is RGB, not BGR | `LCD_RGB_ELEMENT_ORDER_RGB` in `board_display.cpp` |
-| UI text correct, preview psychedelic | camera/framebuffer byte order | set `CAM_RGB565_BYTE_SWAP` to 0 in `board_camera.h` |
-| Image looks like a negative | some panel batches invert | `esp_lcd_panel_invert_color(s_panel, true)` |
-| Image upside down, text backwards | panel mounted rotated 180 degrees | set `LCD_ROTATE_180` to 1 in `board_display.h` |
+| Boot loop, `Brownout detector was triggered` | USB port cannot supply camera + radio + amp | powered hub, shorter/thicker cable, or a 5 V bench supply |
+| Stable until the preview is opened, then resets | transmit bursts on a marginal supply | as above, or lower the stream rate on the page |
+| No `DrowsyGuard-` SSID anywhere | radio never started | look for the `wifi: SoftAP ... up` line; if PSRAM failed first, fix that - the Wi-Fi stack allocates from it |
+| SSID visible, phone refuses to join | `WIFI_AP_PASSWORD` shorter than 8 characters | WPA2 needs 8+; see `board_wifi.h` |
+| Joined, page times out | wrong address | it is `http://192.168.4.1/` - not `https`, not a `.local` name |
+| Page loads, preview stuck on "opening live stream" | another viewer holds the single stream slot | close the other tab, or use **Use still photos** |
+| Preview arrives in bursts seconds apart | Wi-Fi power save on, or TCP window too small | confirm `esp_wifi_set_ps(WIFI_PS_NONE)` ran and that `sdkconfig` kept `CONFIG_LWIP_TCP_SND_BUF_DEFAULT` and `CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM` |
+| `jpeg overflowed ... lower it` in the log | quality too high for the encode buffer | lower the quality slider, or raise `WEB_JPEG_BUFFER_BYTES` |
+| Preview red and blue swapped | RGB565 byte order into the JPEG encoder | set `CAM_RGB565_BYTE_SWAP` to 0 in `board_camera.h` |
 | Preview mirrored the wrong way | mounting orientation | `set_hmirror` / `set_vflip` in `board_camera_tune()` |
 | CMake path errors or `filename too long` | IDF or project in a path with spaces, or long paths disabled | reinstall IDF to `C:\Espressif`; enable `LongPathsEnabled` |
-| `fps` far below 15 | CPU at 160 MHz, or SPI at 20 MHz | check `CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240`; raise `LCD_SPI_HZ` |
+| `fps` far below 15 | CPU at 160 MHz, or the stream rate too high | check `CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240`; lower the stream rate on the page |
+| `_binary_index_html_start` undefined at link time | `EMBED_TXTFILES` missing from `main/CMakeLists.txt` | restore it - the page is linked in from `main/web/index.html` |
 | No boot beep, log says `output=buzzer` | I2S channel failed to initialize | check `AUDIO_PIN_*` against the reserved list in section 2.3 |
 | No boot beep, log says `output=I2S/MAX98357A` | wiring, or the amplifier is shut down | check GND and VIN, then measure `SD` - below 0.16 V is shutdown |
 | Loud hiss or buzz instead of a tone | no common ground between board and amplifier | tie every module GND to one net |
@@ -431,7 +455,7 @@ them to `firmware/esp32s3/dependencies.lock`:
 
 ```powershell
 idf.py --version
-Get-Content .\dependencies.lock | Select-String -Pattern 'version|esp32-camera|ili9341|esp-dl'
+Get-Content .\dependencies.lock | Select-String -Pattern 'version|esp32-camera|esp-dl|human_face'
 ```
 
 Then run the six hardware acceptance tests already listed in `DEPLOYMENT.md`:
@@ -441,11 +465,12 @@ flash, physical alert output, and quantized-vs-Python agreement on a shared imag
 ## Sources
 
 - [khmeres.com item 2991 - ESP32-S3 N16R8 board with OV3660](https://khmeres.com/product_detail/2991)
-- [khmeres.com item 1885 - 1.8" 128x160 ST7735S display](https://khmeres.com/product_detail/1885)
 - [keyestudio MB0184 ESP32-S3 CAM pin table](https://docs.keyestudio.com/projects/MB0184/en/latest/docs/MB0184%20ESP32-S3%20CAM%20Development%20Board.html)
 - [arduino-esp32 camera_pins.h (ESP32S3_EYE map)](https://github.com/espressif/arduino-esp32/blob/master/libraries/ESP32/examples/Camera/CameraWebServer/camera_pins.h)
 - [espressif/esp32-camera component](https://components.espressif.com/components/espressif/esp32-camera)
-- [espressif/esp_lcd_ili9341 component](https://components.espressif.com/components/espressif/esp_lcd_ili9341)
-- [waveshare/esp_lcd_st7735 component](https://components.espressif.com/components/waveshare/esp_lcd_st7735/versions/1.0.1/readme) (original 1.8" panel, no longer used)
+  - also the source of `fmt2jpg_cb`, the JPEG encoder the web preview uses
+- [ESP-IDF HTTP Server API reference](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/protocols/esp_http_server.html)
+  - one request per instance at a time, which is why the stream has its own port
+- [ESP-IDF Wi-Fi API guide (SoftAP)](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-guides/wifi.html)
 - [espressif/esp-dl component](https://components.espressif.com/components/espressif/esp-dl)
 - [espressif/human_face_detect component](https://components.espressif.com/components/espressif/human_face_detect/versions/0.3.0/readme)

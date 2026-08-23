@@ -20,7 +20,14 @@ enum class AlertReason : uint8_t {
 struct VoiceAlertConfig {
     AlertLanguage language = AlertLanguage::English;
     uint32_t cooldown_ms = 30000;
+    // Announcements per episode. The cap exists so a driver who is already awake
+    // and pulling over is not nagged; it is NOT a lifetime budget.
     uint32_t max_repeat_count = 3;
+    // How long the driver has to stay out of trouble before the repeat cap resets
+    // and a new episode can be announced. Without this the cap is permanent: after
+    // three warnings on a long drive the device would go silent for the rest of the
+    // trip, which is the one failure mode a drowsiness alarm must not have.
+    uint32_t repeat_reset_ms = 300000;   // 5 minutes
     bool buzzer_fallback = true;
 };
 
@@ -37,5 +44,21 @@ const char* voice_alert_banner_text(AlertReason reason);
 // Asset basename for the recorded clip, without extension or language prefix.
 const char* voice_alert_clip_name(AlertReason reason);
 
-// True while an announcement is still playing, for the UI banner.
+// True while an announcement is still playing, for the web banner.
 bool voice_alert_is_active(uint32_t now_ms);
+
+// Announcements made since boot. Reported on the status page, and the only record
+// there is now that nothing is drawn on a panel.
+uint32_t voice_alert_count();
+
+// Silences the speaker without stopping detection - for bench work, and for a
+// passenger-seat demo where the alarm has already been demonstrated. Risk scoring,
+// the event log and the counters all keep running.
+void voice_alert_set_muted(bool muted);
+bool voice_alert_muted();
+
+// Plays one announcement immediately, bypassing the cooldown and the repeat cap.
+// This is the speaker self-test the web UI exposes: with no display, it is the only
+// way to separate "no alert fired" from "the amplifier is not wired". Returns false
+// when the alerts are muted, so the page can say so rather than look broken.
+bool voice_alert_test(AlertReason reason);

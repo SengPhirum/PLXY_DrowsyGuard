@@ -1,0 +1,66 @@
+#pragma once
+/*
+Network bring-up for the headless build.
+
+There is no panel on this board any more, so Wi-Fi is not a convenience feature -
+it is the only way to see what the camera sees. The device therefore comes up as
+its own access point (SoftAP) rather than waiting to join someone else's network:
+a car has no infrastructure Wi-Fi, and a thesis demo has to work in a room where
+nobody knows the password. The phone or laptop joins DrowsyGuard-XXXX and browses
+to http://192.168.4.1/.
+
+Station mode is optional and additive. Fill in WIFI_STA_SSID and the device runs
+AP+STA: it keeps serving its own SSID while also joining the named network, which
+is what makes it reachable from a development machine without unplugging from the
+lab Wi-Fi. Leave it empty for the in-vehicle configuration.
+
+No GPIOs here. The ESP32-S3 radio is on-die and shares no pins with the DVP
+camera bus or the I2S amplifier, which is exactly why dropping the SPI panel frees
+the design rather than constraining it.
+*/
+
+#include <cstdint>
+
+// --- SoftAP identity -------------------------------------------------------
+// The last three bytes of the AP MAC are appended to the SSID, so two boards on
+// the same bench are distinguishable without reflashing either of them.
+#define WIFI_AP_SSID_PREFIX "DrowsyGuard"
+
+// WPA2 requires at least 8 characters. Set to "" for an open network, which is
+// convenient on the bench and wrong in a vehicle: the stream is a live camera
+// feed of the driver's face.
+#define WIFI_AP_PASSWORD "drowsyguard"
+
+// 6 is a sane default in the middle of the 2.4 GHz band. Channel choice matters
+// more than it looks: the camera and the radio share the same power budget, and a
+// congested channel means retransmits, which means brownouts on a marginal USB
+// supply rather than a slow stream.
+#define WIFI_AP_CHANNEL 6
+
+// Only one client can hold the MJPEG stream at a time (see web_server.h), but
+// several may sit on the status page, so the AP allows a small group.
+#define WIFI_AP_MAX_CLIENTS 4
+
+// --- optional station mode -------------------------------------------------
+// Leave WIFI_STA_SSID empty to stay AP-only.
+#define WIFI_STA_SSID ""
+#define WIFI_STA_PASSWORD ""
+
+struct WifiStatus {
+    bool ap_up = false;
+    char ap_ssid[33] = {0};
+    char ap_ip[16] = {0};
+    int ap_clients = 0;
+    bool sta_enabled = false;
+    bool sta_connected = false;
+    char sta_ip[16] = {0};
+    int8_t sta_rssi = 0;
+};
+
+// Initialises NVS, the network stack and the radio. Returns false only if the AP
+// itself could not be started - the firmware still runs in that case, because the
+// alert path does not depend on the network.
+bool board_wifi_init();
+
+// Snapshot of the current network state, for the status endpoint and the log.
+void board_wifi_status(WifiStatus *out);

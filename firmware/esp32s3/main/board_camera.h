@@ -2,9 +2,20 @@
 /*
 Verified pin map for the board selected for this thesis:
 
-  ESP32-S3-WROOM-1 N16R8 "ESP32-S3-CAM" development board + OV3660 sensor
+  ESP32-S3-WROOM-1 N16R8 "ESP32-S3-CAM" development board + OV3660/OV5640 sensor
   (khmeres.com item 2991; the same board ships as keyestudio MB0184 and as the
   Freenove ESP32-S3-WROOM CAM board).
+
+The sensor is not guaranteed to be the one on the listing. The unit verified on
+2026-08-23 shipped an **OV5640**, and esp32-camera says so on the way past:
+
+    I (1776) ov3660: Mismatch PID=0x5640
+    I (1777) camera: Detected OV5640 camera
+
+That is a probe miss, not an error - the driver then binds the right sensor and
+240x240 RGB565 comes out the same. Nothing below changes: the DVP pin map is the
+board's, not the sensor's. Just keep CONFIG_OV5640_SUPPORT enabled (it is pinned
+in sdkconfig.defaults) or the same board will look like a dead camera.
 
 The DVP map below is byte-for-byte the ESP32-S3-EYE map in arduino-esp32's
 camera_pins.h and in ESP-WHO, which is why the ESP-DL vision examples run on this
@@ -19,7 +30,7 @@ Reserved on N16R8 and unavailable no matter what the silkscreen says:
   GPIO 33..37  SPI flash + octal PSRAM
   GPIO 19, 20  native USB D-/D+ (free only if you never use the USB-OTG port)
   GPIO 43, 44  UART0 console
-  GPIO 38..40  microSD slot (free if no card is used - see board_display.h)
+  GPIO 38..40  microSD slot (used by the I2S amplifier - see board_audio.h)
 */
 
 #include "esp_camera.h"
@@ -90,12 +101,11 @@ inline camera_config_t board_camera_config() {
 inline void board_camera_tune() {
     sensor_t *s = esp_camera_sensor_get();
     if (s == nullptr) return;
-    // Leave the sensor upright. The panel is the thing mounted upside down, and
-    // LCD_ROTATE_180 in board_display.cpp already corrects for that on the way to
-    // the glass - rotating here as well would compose with it and, far worse, would
-    // hand ESP-DL an inverted frame. Face detectors do not detect upside-down faces,
-    // so that reads as "the camera is broken" when the image is in fact fine.
-    // Rotate the panel, never the sensor.
+    // Leave the sensor upright. Rotating here would hand ESP-DL an inverted frame,
+    // and face detectors do not detect upside-down faces - which reads as "the
+    // camera is broken" when the image is in fact fine. If the module is mounted
+    // rotated, correct it in the browser with a CSS transform on the preview, never
+    // here: the models see these bytes.
     s->set_hmirror(s, 1);        // selfie orientation
     s->set_vflip(s, 0);          // flip to 1 only if the module itself is remounted
     s->set_gain_ctrl(s, 1);      // AGC on: cabin light swings hard

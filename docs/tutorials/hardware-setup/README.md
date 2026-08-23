@@ -1,7 +1,11 @@
 # DrowsyGuard hardware setup — from unopened boxes to a working system
 
 A complete beginner's guide to assembling, wiring, flashing and testing the
-DrowsyGuard driver-drowsiness prototype from the five parts on the order.
+DrowsyGuard driver-drowsiness prototype from the four parts on the order.
+
+There is **no screen to wire**. The board serves its own live preview over
+Wi-Fi, so the display is whatever phone or laptop you already own - which is
+why this build is seven wires rather than fifteen.
 
 You do not need prior ESP32 experience. You do need to read section 5 (power)
 before you connect anything, because two of the mistakes it describes destroy
@@ -34,7 +38,9 @@ plausible-looking wiring choice destroys a part or silences the system.*
 >
 > - **`SD` to GND does not enable the amplifier — it shuts it down.** Below 0.16 V
 >   the MAX98357A is in shutdown. Leave `SD` unconnected.
-> - **`BLK` to GND turns the display's backlight off.** `BLK` goes to `3V3`.
+> - **A phone warning that the Wi-Fi network has no internet is the correct
+>   result, not an error.** The board *is* the network; there is no uplink to
+>   the internet and there does not need to be.
 
 ---
 
@@ -44,10 +50,10 @@ A dashboard-mounted camera that watches the driver's eyes, measures how long the
 stay closed, and speaks a warning when sustained drowsiness is detected.
 
 ```
-OV3660 camera ──DVP ribbon──► ESP32-S3  ──SPI──►  1.8" ST7735S display
-                                 │                (what the driver sees)
-                                 └────I2S────►  MAX98357A ──► 4 Ω speaker
-                                                              (the warning)
+OV3660 camera ──DVP ribbon──► ESP32-S3 ──I2S──► MAX98357A ──► 4 Ω speaker
+                                 │                            (the warning)
+                                 └──Wi-Fi──► your phone's browser
+                                             (preview + all the numbers)
 ```
 
 | Stage | What happens | Where in this repo |
@@ -58,52 +64,58 @@ OV3660 camera ──DVP ribbon──► ESP32-S3  ──SPI──►  1.8" ST773
 | Fuse | PERCLOS + long blinks + yawns + nods → one risk score | `main/behavior.cpp` |
 | Decide | Sustained risk + cooldown → alert edge | `main/risk_filter.cpp` |
 | Warn | Reason-specific tone/speech over I2S, buzzer fallback | `main/voice_alert.cpp` |
-| Show | Preview, face box, eye state, risk bar | `main/display_ui.cpp` |
+| Serve | SoftAP, MJPEG preview, status JSON, controls | `main/web_server.cpp` |
+| Show | Preview, face box, risk, PERCLOS, event log, in a browser | `main/web/index.html` |
 
-The camera is the input, the display is feedback for the driver, and the
-amplifier plus speaker is the output that actually wakes someone up. The
-breadboard carries the shared 5 V, 3.3 V and ground rails that tie them together.
+The camera is the input, the speaker is the output that actually wakes someone
+up, and the browser is how a developer or an examiner sees what the system
+thinks. The breadboard carries the shared 5 V and ground rails.
+
+The preview is a **diagnostic, not a dependency**: the detection loop hands over
+a frame and returns immediately, and skips the copy entirely when no page is
+open. Nothing about the alert path changes when nobody is watching.
 
 ---
 
 ## 2. Required hardware
 
-![The five purchased components](./images/01-components-overview.png)
+![The four purchased components](./images/01-components-overview.png)
 
-*Verify you have all five before starting. The two boards are easy to tell apart:
+*Verify you have all four before starting. The two boards are easy to tell apart:
 the controller is a large black PCB with two USB-C sockets, the amplifier is a
 small purple PCB with a green screw terminal.*
 
 | # | Exact product title as sold | khmeres item | Price | Role |
 | --- | --- | --- | --- | --- |
 | 1 | ESP32-S3 N16R8 development board with OV3660 | [2991](https://khmeres.com/product_detail/2991) | $7.50 | Controller + camera |
-| 2 | 1.8 inch 128x160 ST7735S driver OLED color display 65K | [1885](https://khmeres.com/product_detail/1885) | $3.50 | Driver-facing display |
-| 3 | MAX98357 I2S audio amplifier filterless class D | [2724](https://khmeres.com/product_detail/2724) | $2.00 | Alert amplifier |
-| 4 | High quality speaker 3 watt 4 ohm 40mmX22mm | [2554](https://khmeres.com/product_detail/2554) | $0.75 | Alert loudspeaker |
-| 5 | Breadboard 830 point solderless MB102 test board | [371](https://khmeres.com/product_detail/371) | $1.50 | Power rails + prototyping |
+| 2 | MAX98357 I2S audio amplifier filterless class D | [2724](https://khmeres.com/product_detail/2724) | $2.00 | Alert amplifier |
+| 3 | High quality speaker 3 watt 4 ohm 40mmX22mm | [2554](https://khmeres.com/product_detail/2554) | $0.75 | Alert loudspeaker |
+| 4 | Breadboard 830 point solderless MB102 test board | [371](https://khmeres.com/product_detail/371) | $1.50 | Power rails + prototyping |
 
-**Total: $15.25.**
+**Total: $11.75.**
 
-> **The listing for item 1885 says "OLED". It is not an OLED.** The module's own
-> silkscreen reads `1.8'128X160 RGB_TFT` and the driver is an ST7735S, which is a
-> TFT LCD controller. This matters practically: the panel needs a backlight (the
-> `BLK` pin), whereas an OLED would not. The firmware treats it as a TFT and that
-> is correct.
+> **A screen is no longer on the parts list.** Earlier revisions of this build
+> wired a 1.8" SPI panel (khmeres item 1885) and eight jumper wires to it. The
+> preview now comes out of the board over Wi-Fi instead, which is both cheaper
+> and strictly more useful: a phone shows the frame *and* the risk score, the
+> PERCLOS window, the event rates and the frame timing, at a size you can
+> actually read. If you already bought the panel, nothing here needs it - keep
+> it for another project.
 
 ### Not in the order — you still need these
 
 | Item | Why | Substitute |
 | --- | --- | --- |
 | **USB-C data cable** | Flashing. A charge-only cable is the most common "board doesn't appear" cause | any USB-C cable known to carry data |
-| **~15 jumper wires** | 8 for the display, 5 for the amplifier, 2 spare | male-to-female if the modules have male headers |
-| **Soldering iron + solder** | The display and amplifier ship with **loose** header strips | a friend with an iron; these cannot be reliably used unsoldered |
+| **~8 jumper wires** | 5 for the amplifier, 2 for the speaker, 1 spare | male-to-female if the module has male headers |
+| **A phone or laptop** | It *is* the display. Any browser will do | you already have one |
+| **Soldering iron + solder** | The amplifier ships with a **loose** header strip | a friend with an iron; it cannot be reliably used unsoldered |
 | Buzzer (optional) | Fallback alert path already coded on GPIO 2 | any 3.3 V active buzzer |
 
-> **You will almost certainly have to solder.** Looking at the product photos for
-> items 1885 and 2724, both ship with their pin headers as separate loose strips.
-> Until those are soldered the modules cannot make reliable contact with jumper
-> wires or the breadboard. This is the one step in this guide that needs a tool
-> you were not sold.
+> **You will probably have to solder once.** Item 2724 ships with its pin header
+> as a separate loose strip, and until it is soldered the module cannot make
+> reliable contact with jumper wires or the breadboard. That is the only
+> soldering in the build, and the one step that needs a tool you were not sold.
 
 ---
 
@@ -116,12 +128,15 @@ small purple PCB with a green screw terminal.*
 | Python | 3.10+ | desktop tooling only, not needed to flash |
 | Git | any | to clone this repository |
 
-The firmware also pulls two managed components automatically on first
+The firmware pulls its managed components automatically on first
 `idf.py reconfigure` — you do not install these by hand:
 
-- `espressif/esp32-camera` `^2.1.7` — OV3660 DVP driver
-- `waveshare/esp_lcd_st7735` `^1.0.1` — ST7735S panel driver (ESP-IDF ships
-  ST7789/ILI9341/GC9A01 in-tree, but not ST7735S)
+- `espressif/esp32-camera` `^2.1.7` — OV3660 DVP driver, and the JPEG encoder
+  the web preview uses
+- `espressif/esp-dl` and `espressif/human_face_detect` — the detection models
+
+Nothing extra is needed for the preview itself: the Wi-Fi stack and the HTTP
+server ship with ESP-IDF, and the page is compiled into the firmware binary.
 
 ---
 
@@ -150,8 +165,9 @@ Key features to locate before you start:
 
 ![ESP32-S3 GPIO allocation](./images/02-controller-pin-map.png)
 
-*Check: of 49 GPIOs, only **GPIO 1 and GPIO 3** remain free after this build. If
-you need a pin for something else, it must be one of those two.*
+*Check: of 49 GPIOs, **seven** are free after this build - GPIO 1, 3, 14, 21, 41,
+42 and 47. Five of those came back when the SPI panel was dropped in favour of
+the browser preview.*
 
 > **Pin positions are not drawn anywhere in this guide, deliberately.** The
 > top-to-bottom order of pins on this board's headers varies between production
@@ -167,10 +183,9 @@ you need a pin for something else, it must be one of those two.*
 | 43, 44 | UART0 console — `idf.py monitor` needs these |
 | 0, 45, 46 | Strapping / BOOT |
 | 48 | On-board RGB LED on most units |
-| 14, 21, 41, 42, 47 | Used by the display in this build |
 | 38, 39, 40 | Used by the I2S amplifier in this build |
 | 2 | Buzzer fallback |
-| **1, 3** | **Free** |
+| **1, 3, 14, 21, 41, 42, 47** | **Free** — 14/21/41/42/47 were the SPI panel |
 
 ### 4.3 The camera
 
@@ -184,11 +199,25 @@ The camera needs **no jumper wires**. Its 14 signals run through the FPC ribbon
 into the board's connector. `PWDN` and `RESET` are not routed on this board, so
 the sensor is permanently powered and is reset over SCCB instead.
 
-### 4.4 The display
+### 4.4 The preview — there is no display to identify
 
-Module silkscreen, left to right: `GND` `VDD` `SCL` `SDA` `RST` `DC` `CS` `BLK`.
-Some batches print `VCC` for `VDD`, `SCK`/`CLK` for `SCL`, `MOSI`/`DIN` for `SDA`,
-`RES` for `RST`, `A0`/`RS` for `DC` and `LED`/`BL` for `BLK`.
+![Joining the board's Wi-Fi](./images/05-web-preview.png)
+
+*Check: nothing to unpack for this one. The hardware you need is a phone.*
+
+The board comes up as its own access point and serves the live preview on it:
+
+| | |
+| --- | --- |
+| **SSID** | `DrowsyGuard-XXXXXX` — the last three bytes of the board's MAC, so two boards on one bench stay distinguishable |
+| **Password** | `drowsyguard` |
+| **Address** | `http://192.168.4.1/` |
+
+Both are set in
+[`firmware/esp32s3/main/board_wifi.h`](../../../firmware/esp32s3/main/board_wifi.h).
+Setting `WIFI_AP_PASSWORD` to `""` makes the network open, which is convenient
+on the bench and wrong in a vehicle: the stream is a live video of the driver's
+face.
 
 ### 4.5 The amplifier
 
@@ -210,15 +239,15 @@ side of the centre channel are **not** connected to each other.*
 
 ![Power architecture and common ground](./images/08-power-architecture.png)
 
-*Check before powering: the display `VDD` wire must land on a **3V3** pin and the
-amplifier `VIN` wire on a **5V** pin. If those two are swapped, the display can be
-destroyed. Trace both wires with a finger before plugging in the USB cable.*
+*Check before powering: the amplifier `VIN` wire is the only wire in the build
+that touches **5V**, and every module `GND` must reach the same net. Trace both
+with a finger before plugging in the USB cable.*
 
 | Component | Supply | Logic level | Notes |
 | --- | --- | --- | --- |
 | ESP32-S3-WROOM-1 | 3.3 V (on-board LDO from USB 5 V) | 3.3 V | |
 | OV3660 camera | 3.3 V via the FPC | 3.3 V | nothing to wire |
-| ST7735S display | **3.3 V only** | 3.3 V | 5 V on `VDD` can destroy it |
+| 2.4 GHz radio | 3.3 V, on-die | — | nothing to wire, but see the current budget |
 | MAX98357A | 2.5 V – 5.5 V, **use 5 V** | accepts 3.3 V logic | 3.2 W into 4 Ω needs 5 V |
 | Speaker | driven by the amplifier | — | 4 Ω, 3 W, bridged output |
 
@@ -226,21 +255,29 @@ destroyed. Trace both wires with a finger before plugging in the USB cable.*
 
 1. **Common ground.** Every `GND` on every module ties to the same net. Without
    it the I2S clock has no reference and the amplifier outputs noise or silence.
-2. **No level shifters anywhere in this build.** The ESP32-S3 drives 3.3 V logic.
-   The ST7735S is a 3.3 V part. The MAX98357A accepts 3.3 V logic while its `VIN`
-   runs at 5 V — that combination is fine and is how the part is designed to be
-   used. Adding a level shifter would only add failure modes.
+2. **No level shifters anywhere in this build.** The ESP32-S3 drives 3.3 V logic
+   and the MAX98357A accepts 3.3 V logic while its `VIN` runs at 5 V — that
+   combination is fine and is how the part is designed to be used. Adding a
+   level shifter would only add failure modes.
 3. **One supply.** Everything is powered from the single USB-C cable. If you later
    add a bench supply for the amplifier, its ground **must** still tie to the
    board ground.
 
 ### Current budget
 
-The camera plus display plus an amplifier at full output can exceed what a weak
-USB port or a thin cable delivers, and the symptom is a boot loop with
-`Brownout detector was triggered`. `sdkconfig.defaults` already lowers the
-brownout threshold so this does not masquerade as a camera fault, but the real
-fix is a better cable, a powered hub, or a 5 V supply.
+The camera, an amplifier at full output and Wi-Fi transmit bursts peak together,
+and together they can exceed what a weak USB port or a thin cable delivers. The
+symptom is a boot loop with `Brownout detector was triggered`.
+`sdkconfig.defaults` already lowers the brownout threshold so this does not
+masquerade as a camera fault, but the real fix is a better cable, a powered hub,
+or a 5 V supply.
+
+The radio is the new item on that list. Dropping the panel removed a steady
+40–60 mA of backlight, but serving an MJPEG stream replaces it with something
+peakier: transmit bursts of a couple of hundred milliamps that coincide with
+whatever the camera and the amplifier are doing. If the board is stable until
+the moment you open the preview, this is why — and it is a supply problem, not
+a firmware one.
 
 ---
 
@@ -254,14 +291,6 @@ quietly damages I2S inputs.
 
 | From device | From pin | To device | To pin | Voltage / signal | Purpose |
 | --- | --- | --- | --- | --- | --- |
-| ST7735S display | `GND` | ESP32-S3 | `GND` | 0 V | Common ground |
-| ST7735S display | `VDD` | ESP32-S3 | `3V3` | 3.3 V | Logic + panel supply |
-| ST7735S display | `SCL` | ESP32-S3 | `GPIO 14` | 3.3 V digital | SPI clock |
-| ST7735S display | `SDA` | ESP32-S3 | `GPIO 21` | 3.3 V digital | SPI data, host → panel |
-| ST7735S display | `RST` | ESP32-S3 | `GPIO 42` | 3.3 V digital | Panel reset |
-| ST7735S display | `DC` | ESP32-S3 | `GPIO 41` | 3.3 V digital | Data / command select |
-| ST7735S display | `CS` | ESP32-S3 | `GPIO 47` | 3.3 V digital | SPI chip select |
-| ST7735S display | `BLK` | ESP32-S3 | `3V3` | 3.3 V | Backlight, always on |
 | MAX98357A | `GND` | ESP32-S3 | `GND` | 0 V | Common ground |
 | MAX98357A | `VIN` | ESP32-S3 | `5V` | 5 V | Amplifier supply |
 | MAX98357A | `BCLK` | ESP32-S3 | `GPIO 39` | 3.3 V digital | I2S bit clock |
@@ -270,29 +299,45 @@ quietly damages I2S inputs.
 | MAX98357A | screw `+` | Speaker | either lead | amplified audio | Speaker drive |
 | MAX98357A | screw `−` | Speaker | other lead | amplified audio | Speaker return |
 | OV3660 camera | FPC ribbon | ESP32-S3 | FPC connector | — | 14-signal DVP bus |
+| Your phone | Wi-Fi | ESP32-S3 | Wi-Fi | 2.4 GHz | Live preview + telemetry |
 
-**15 wires total.** The camera contributes none — it is the ribbon.
+**7 wires total.** The camera contributes none — it is the ribbon — and the
+preview contributes none, because it goes over the air.
 
-### 6.2 Step by step — display
+### 6.2 Step by step — the preview (nothing to wire)
 
-![Display wiring](./images/05-display-wiring.png)
+This section used to be eight jumper wires to an SPI panel. It is now three
+actions on a phone, and it is the step that proves the camera:
 
-*Check: eight wires, and `VDD` and `BLK` both land on `3V3`. Nothing from this
-module goes anywhere near `5V`.*
+1. Power the board (§10) and wait for the three-note boot chime.
+2. Join the Wi-Fi network `DrowsyGuard-XXXXXX`, password `drowsyguard`.
+3. Open `http://192.168.4.1/`.
 
-1. Solder the 8-pin header strip to the display module if it is not already fitted.
-2. `GND` → a `GND` pin on the ESP32-S3 (or the breadboard ground rail).
-3. `VDD` → `3V3`.
-4. `SCL` → `GPIO 14`.
-5. `SDA` → `GPIO 21`.
-6. `RST` → `GPIO 42`.
-7. `DC` → `GPIO 41`.
-8. `CS` → `GPIO 47`.
-9. `BLK` → `3V3`.
+The preview starts by itself. Alongside it the page shows the fused risk score
+and its trigger, the PERCLOS window, eye-closure probability, yawn/nod/blink
+rates, head geometry, the face box drawn over the video, an event log, and the
+frame rate — plus a mute switch and a speaker self-test.
 
-To change any of these, edit `LCD_PIN_*` in
-[`firmware/esp32s3/main/board_display.h`](../../../firmware/esp32s3/main/board_display.h)
-— one place, nowhere else.
+| Endpoint | Port | What it is |
+| --- | --- | --- |
+| `/` | 80 | the page itself, compiled into the firmware |
+| `/stream` | **81** | MJPEG live preview |
+| `/api/snapshot` | 80 | one JPEG — also the fallback for extra viewers |
+| `/api/status` | 80 | every number on the page, as JSON |
+| `/api/settings` | 80 | stream rate, JPEG quality, mute |
+| `/api/alert-test` | 80 | play one warning through the speaker |
+
+> **Why the stream is on a different port.** ESP-IDF's HTTP server handles one
+> request at a time per instance, and an MJPEG stream never finishes — so a
+> stream on port 80 would block the page and the API for as long as anyone was
+> watching. The firmware runs a second server on port 81 for the stream alone.
+> The practical consequence: **one live viewer at a time**. A second phone still
+> gets the whole page, with a still image refreshed roughly once a second.
+
+To change the SSID, the password or the channel, edit
+[`firmware/esp32s3/main/board_wifi.h`](../../../firmware/esp32s3/main/board_wifi.h);
+for the ports, buffer sizes and stream defaults, see
+[`firmware/esp32s3/main/web_server.h`](../../../firmware/esp32s3/main/web_server.h).
 
 ### 6.3 Step by step — amplifier and speaker
 
@@ -301,7 +346,8 @@ To change any of these, edit `LCD_PIN_*` in
 *Check: five wires to the board plus two to the speaker. `VIN` is the only wire in
 the whole build that touches `5V`.*
 
-1. Solder the header strip to the amplifier module.
+1. Solder the 7-pin header strip to the amplifier module — the only soldering
+   in this build.
 2. `GND` → `GND`.
 3. `VIN` → `5V`.
 4. `BCLK` → `GPIO 39`.
@@ -348,9 +394,9 @@ at all, measure `SD`; if it reads near 0 V, fit a 100 kΩ resistor from `SD` to
 
 ![Complete wiring](./images/10-complete-wiring.png)
 
-*Check: count your wires against this diagram before plugging in — 8 to the
-display, 5 to the amplifier, 2 to the speaker. Then re-trace `VDD`→`3V3` and
-`VIN`→`5V` one final time.*
+*Check: count your wires against this diagram before plugging in — 5 to the
+amplifier and 2 to the speaker. Then re-trace `VIN`→`5V` and every `GND` one
+final time.*
 
 ---
 
@@ -432,7 +478,9 @@ whether it works, and what to change if your hardware differs.
 
 | File | What it controls | Change it when |
 | --- | --- | --- |
-| `firmware/esp32s3/main/board_display.h` | `LCD_PIN_*`, panel size, SPI speed, window offset | you wire the display to different pins, or see colour/offset artefacts |
+| `firmware/esp32s3/main/board_wifi.h` | SoftAP SSID, password, channel; optional station credentials | you want a different network name, or the board to join your lab Wi-Fi as well |
+| `firmware/esp32s3/main/web_server.h` | HTTP ports, JPEG quality and stream rate defaults, buffer ceiling | the preview is too heavy for your link, or a port is taken |
+| `firmware/esp32s3/main/web/index.html` | the page itself | you want different numbers on screen |
 | `firmware/esp32s3/main/board_audio.h` | `AUDIO_PIN_*`, sample rate, tone amplitude | you wire the amplifier to different pins, or it is too loud/quiet |
 | `firmware/esp32s3/main/board_camera.h` | DVP pin map, frame size, byte order | never, unless your board is not this board |
 | `firmware/esp32s3/sdkconfig.defaults` | PSRAM mode, flash size, CPU speed, sensor support | see the table below |
@@ -449,6 +497,8 @@ already sets the things that are easy to get wrong:
 | `CONFIG_ESPTOOLPY_FLASHSIZE_16MB` | `y` | truncated image / boot loop |
 | `CONFIG_OV3660_SUPPORT` | `y` | sensor not detected (`0x105`) |
 | `CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240` | `y` | roughly half the frame rate |
+| `CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM` | `24` | the preview stalls in bursts and reads as a slow camera |
+| `CONFIG_LWIP_TCP_SND_BUF_DEFAULT` | `65534` | same — MJPEG needs the window |
 
 ---
 
@@ -461,15 +511,27 @@ repository — you do not have to write it:
 | --- | --- |
 | `main/board_audio.h` / `.cpp` | I2S bring-up on GPIO 38/39/40, PCM playback, tone generator |
 | `main/voice_alert.cpp` | Alert state machine, reason-specific tone patterns, buzzer fallback |
-| `main/main.cpp` | Plays an 880 Hz chirp at boot as a built-in audio self-test |
+| `main/main.cpp` | Plays a three-note chime at boot as a built-in audio self-test |
+| `main/board_wifi.*` | SoftAP bring-up (plus optional station mode) |
+| `main/web_server.*` | Two HTTP servers, MJPEG encoding, status JSON, controls |
+| `main/web/index.html` | The page, linked into the binary as flash rodata |
 
 Two design points worth knowing:
 
 - **Playback runs on its own FreeRTOS task.** The capture loop has a ~23 ms frame
   budget; playing even a half-second alert inline would drop roughly twenty
-  frames and freeze the preview at the exact moment the driver needs it.
+  frames and stall the preview at the exact moment there is something worth
+  looking at.
 - **Mono is written to both I2S slots**, which is what makes the amplifier's
   `SD` pin configuration irrelevant (§6.4).
+- **The alert repeat cap resets after five minutes of calm.** Three warnings per
+  episode, not three per power cycle: with the panel gone the speaker is the only
+  thing the driver perceives, and an alarm that goes permanently quiet after
+  three events on a long drive would be the one failure mode this device cannot
+  have. See `repeat_reset_ms` in `main/voice_alert.h`.
+- **JPEG encoding never blocks detection.** The capture loop copies the frame
+  into one of two PSRAM buffers and returns; the ~20 ms encode happens in the
+  stream task, on the other core, and is skipped entirely when no page is open.
 
 Recorded speech is not committed. Until approved English/Khmer clips exist (see
 `firmware/esp32s3/assets/audio/README.md`), each alert reason plays a distinct
@@ -494,7 +556,7 @@ If flashing refuses to start: **hold BOOT, tap RESET, release BOOT**, then flash
 Do this in order. Do not skip to the last step.
 
 1. **USB unplugged.** Re-check the wiring table in §6.1 one wire at a time.
-2. Confirm `VDD` → `3V3` and `VIN` → `5V`. These are the two that destroy parts.
+2. Confirm `VIN` → `5V`, and that no speaker lead touches `GND`.
 3. Confirm no wire touches `GPIO 33`–`GPIO 37`.
 4. Confirm the camera ribbon is latched.
 5. Plug the USB-C cable into the **UART** port.
@@ -504,10 +566,21 @@ Do this in order. Do not skip to the last step.
 
 ![Expected first boot](./images/11-first-power-on.png)
 
-*Check: you should **hear one short beep** and **see a live preview** with
-`NO MODEL - PREVIEW` on the bottom line. The beep proves the amplifier, the I2S
-pins and the speaker in one step; the preview proves the camera, the panel, the
-pin map, PSRAM and the power supply.*
+*Check: you should **hear three rising notes**, then find `DrowsyGuard-XXXXXX` in
+your phone's Wi-Fi list and a live preview at `http://192.168.4.1/`. The chime
+proves the amplifier, the I2S pins and the speaker in one step; the preview
+proves the camera, the ribbon, the pin map, PSRAM, the radio and the power
+supply.*
+
+The three failures at this point look nothing alike, which is the point of
+having both signals:
+
+| What you get | What it means |
+| --- | --- |
+| No chime | Audio path — the amplifier or its wiring, not the camera |
+| Chime, but no SSID in the Wi-Fi list | The radio never started; check PSRAM came up first |
+| SSID present, page will not load | Right network, wrong address — it is `192.168.4.1`, not a `.local` name |
+| Page loads, preview dark | The camera. The status pills on the page name the failed subsystem |
 
 These two lines must appear in the boot log:
 
@@ -531,15 +604,21 @@ Test in this order. Each step assumes the previous one passed.
 | 2 | USB / serial | `[System.IO.Ports.SerialPort]::GetPortNames()` | a `COM` port appears |
 | 3 | Board | flash `hello_world` | chip banner + countdown |
 | 4 | PSRAM | flash DrowsyGuard, read the boot log | `Found 8MB PSRAM device` |
-| 5 | **Audio** | listen at boot | one short 880 Hz beep |
-| 6 | Display | look at the panel | backlight on, UI text drawn |
-| 7 | Camera | look at the top of the panel | live moving preview |
-| 8 | Frame rate | read the once-a-second log line | `fps` above 15 |
-| 9 | Alert path | temporarily call `voice_alert_trigger(now_ms, AlertReason::Drowsy)` in the per-second log branch of `main.cpp` | two 880 Hz beeps + `DROWSY` banner |
+| 5 | **Audio** | listen at boot | three rising notes |
+| 6 | Wi-Fi | look at your phone's network list | `DrowsyGuard-XXXXXX` appears |
+| 7 | Web server | open `http://192.168.4.1/` | the page loads and the status pills fill in |
+| 8 | Camera | watch the preview | live moving image |
+| 9 | Frame rate | the `fps` pill, or the once-a-second log line | `fps` above 15 |
+| 10 | Alert path | press **Test speaker** on the page | the chosen warning plays, and a line appears in the event log |
 
-Testing audio before the display is deliberate: the boot chirp is the cheapest
-signal in the system, and if it is silent you know the fault is in the audio path
-rather than anywhere else.
+Testing audio first is deliberate: the boot chime is the cheapest signal in the
+system and needs no network, so if it is silent you know the fault is in the
+audio path rather than anywhere else.
+
+Row 10 replaces what used to be a temporary code edit. The speaker self-test is
+a button on the page precisely because there is no longer a panel to read: with
+no local output, "no alert fired" and "the amplifier is dead" would otherwise be
+indistinguishable.
 
 ---
 
@@ -550,15 +629,22 @@ With all components passing individually:
 1. Flash and let the board run for a full minute.
 2. Confirm the once-a-second log line advances and `fps` stays above 15:
    ```
-   I (xxx) drowsyguard: fps 24.3  risk 0.00  perclos 0.00  heap ...  psram ...
+   I (xxx) drowsyguard: fps 15.2  risk 0.00  perclos 0.00  face 18/20 ... viewers 1 ...
    ```
-3. Sit in front of the camera. The preview should track you; the face box should
-   appear once ESP-DL is bound (stage 3).
-4. Confirm `heap` and `psram` are stable across a minute — a falling number is a
+3. Sit in front of the camera. The preview should track you and the face box
+   should follow your head; it turns amber when the box is being held between
+   detections rather than freshly detected.
+4. Watch `fps` with the preview open and again with the tab closed. A few frames
+   per second of difference is expected — the JPEG encode is real work. A large
+   drop means the stream rate is set too high for the link: turn it down on the
+   page.
+5. Confirm `heap` and `psram` are stable across a minute — a falling number is a
    leak, and `docs/DEPLOYMENT.md` has a one-hour heap-stability acceptance test.
-5. Trigger an alert (row 9 above) and confirm the tone plays **and** the preview
-   keeps updating during playback. If the preview freezes while the tone plays,
-   the audio task is not running and something is wrong with §9.
+   Open and close the preview a few times while watching: a stream that leaks
+   would show up here first.
+6. Press **Test speaker** and confirm the tone plays **and** the preview keeps
+   updating during playback. If the preview freezes while the tone plays, the
+   audio task is not running and something is wrong with §9.
 
 At this point the hardware is proven. What remains is model work, not wiring:
 `docs/HARDWARE_SETUP.md` §8 covers binding ESP-DL, and `PROJECT_STATE.md` gap 6
@@ -576,8 +662,9 @@ explains why the eye model still classifies poorly in visible light.
 | `idf.py not found` | Plain terminal instead of an ESP-IDF shell | Use the ESP-IDF PowerShell shortcut, or dot-source `export.ps1` |
 | Works in one terminal, not another | `export.ps1` is per-session | Re-run it in each new terminal |
 | `Failed to connect ... Wrong boot mode` | Not in download mode | Hold BOOT, tap RESET, release BOOT, reflash |
-| Boot loop, `Brownout detector was triggered` | USB port cannot supply camera + LCD + amp | Powered hub, shorter/thicker cable, or a 5 V supply |
-| Nothing at all, board warm | Short, or a supply wire on the wrong pin | Unplug. Re-check `VDD`→`3V3` and `VIN`→`5V` |
+| Boot loop, `Brownout detector was triggered` | USB port cannot supply camera + radio + amp | Powered hub, shorter/thicker cable, or a 5 V supply |
+| Stable until you open the preview, then resets | Transmit bursts on a marginal supply | Same fixes; or lower the stream rate on the page |
+| Nothing at all, board warm | Short, or a supply wire on the wrong pin | Unplug. Re-check `VIN`→`5V` and that no speaker lead is on `GND` |
 
 ### Camera
 
@@ -586,18 +673,21 @@ explains why the eye model still classifies poorly in visible light.
 | `esp_camera_init failed: 0x105` | Ribbon half-seated, PSRAM off, or wrong pin map | Reseat the ribbon; check the 8 MB PSRAM line; check `CONFIG_OV3660_SUPPORT` |
 | `esp_camera_init failed: 0x101` | PSRAM not enabled | `CONFIG_SPIRAM=y` **and** `CONFIG_SPIRAM_MODE_OCT=y` |
 | Preview mirrored the wrong way | Mounting orientation | `set_hmirror` / `set_vflip` in `board_camera_tune()` |
-| Preview psychedelic, UI text fine | Camera/framebuffer byte order | Set `CAM_RGB565_BYTE_SWAP` to `0` in `board_camera.h` |
+| Preview colours are psychedelic — red and blue swapped | RGB565 byte order into the JPEG encoder | Set `CAM_RGB565_BYTE_SWAP` to `0` in `board_camera.h` |
+| Preview very dark or washed out | Auto-exposure fighting a backlit windscreen | `set_brightness` / `set_gain_ctrl` in `board_camera_tune()` |
 
-### Display
+### Wi-Fi and the preview
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
-| Backlight on, screen white | Wrong CS/DC/RST, or SPI too fast | Re-check the four control pins; drop `LCD_SPI_HZ` to 20 MHz |
-| Backlight on, screen black | Panel init ran but nothing blits | Look for the `ST7735S 128x160 up` log line |
-| Coloured bands on two edges, image shifted | "Red tab" panel variant needs a window offset | Set `LCD_GAP_X`/`LCD_GAP_Y` to `2`/`1` (or `2`/`3`) |
-| Red and blue swapped | Panel is RGB, not BGR | `LCD_RGB_ELEMENT_ORDER_RGB` in `board_display.cpp` |
-| Image looks like a negative | Some ST7735S batches invert | `esp_lcd_panel_invert_color(s_panel, true)` |
-| Nothing at all, backlight off | `BLK` not connected | `BLK` → `3V3` |
+| No `DrowsyGuard-` network anywhere | The radio never started | Look for the `wifi: SoftAP ... up` line in the log; if PSRAM failed first, fix that — the Wi-Fi stack allocates from it |
+| SSID visible, phone will not connect | Password mismatch, or `WIFI_AP_PASSWORD` shorter than 8 characters | WPA2 needs 8+; check `board_wifi.h` |
+| Connected, but the page times out | Wrong address | It is `http://192.168.4.1/`. Not a `.local` name, and not `https` |
+| Page loads, preview stays on "opening live stream" | Another viewer holds the single stream slot | Close the other tab, or use the **Use still photos** button |
+| Preview arrives in bursts, seconds apart | Wi-Fi power save on, or the TCP window too small | Confirm `esp_wifi_set_ps(WIFI_PS_NONE)` ran, and that `sdkconfig` kept the `CONFIG_LWIP_TCP_SND_BUF_DEFAULT` value from `sdkconfig.defaults` |
+| Preview smooth but the numbers freeze | The status poll is failing while the stream survives | The header dot turns red — check the log for a crash in the capture loop |
+| `jpeg overflowed ... lower it` in the log | Quality too high for the encode buffer | Lower the quality slider, or raise `WEB_JPEG_BUFFER_BYTES` |
+| Everything works, then the page dies after a while | The board rebooted; the uptime on the page resets | Read the log — a brownout or a panic, not a network fault |
 
 ### Audio
 
@@ -616,31 +706,33 @@ explains why the eye model still classifies poorly in visible light.
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | CMake path errors, `filename too long` | Project or IDF in a path with spaces, or long paths disabled | Reinstall IDF to `C:\Espressif`; enable `LongPathsEnabled` |
-| `esp_lcd_st7735.h: No such file` | Managed components not fetched | `idf.py reconfigure` |
+| `esp_camera.h: No such file` | Managed components not fetched | `idf.py reconfigure` |
+| `_binary_index_html_start` undefined | `EMBED_TXTFILES` line missing from `main/CMakeLists.txt` | Restore it — the page is linked in from `main/web/index.html` |
 | `driver/i2s_std.h: No such file` | ESP-IDF older than v5.0 | Install v5.4.x — the legacy `i2s.h` API is not used here |
-| `fps` far below 15 | CPU at 160 MHz, or SPI at 20 MHz | Check `CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240`; raise `LCD_SPI_HZ` |
+| `fps` far below 15 | CPU at 160 MHz, or the stream rate set too high | Check `CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240`; lower the stream rate on the page |
 
 ---
 
 ## 14. Final verification checklist
 
-- [ ] All five components identified and accounted for
-- [ ] Header strips soldered to the display and amplifier
+- [ ] All four components identified and accounted for
+- [ ] Header strip soldered to the amplifier
 - [ ] Camera ribbon latched and does not pull out
-- [ ] Display `VDD` on `3V3` — **not** `5V`
 - [ ] Amplifier `VIN` on `5V`
+- [ ] Neither speaker lead on `GND`
 - [ ] Every module `GND` on a common ground
 - [ ] No wire on `GPIO 33`–`GPIO 37`
-- [ ] All 15 connections match the table in §6.1
+- [ ] All 7 connections match the table in §6.1
 - [ ] ESP-IDF v5.4.x installed, `idf.py --version` works
 - [ ] `hello_world` flashes and runs
 - [ ] Boot log shows `Found 8MB PSRAM device`
-- [ ] One short beep at boot
-- [ ] Backlight on, UI text drawn
-- [ ] Live camera preview visible
-- [ ] `fps` above 15
-- [ ] Heap and PSRAM stable over a minute
-- [ ] Manual alert produces a tone without freezing the preview
+- [ ] Three rising notes at boot
+- [ ] `DrowsyGuard-XXXXXX` appears in the Wi-Fi list
+- [ ] `http://192.168.4.1/` loads and every status pill is green
+- [ ] Live camera preview visible in the browser
+- [ ] `fps` above 15, with the preview open
+- [ ] Heap and PSRAM stable over a minute, across a few stream open/close cycles
+- [ ] **Test speaker** produces a tone without stalling the preview
 
 ---
 
@@ -649,7 +741,6 @@ explains why the eye model still classifies poorly in visible light.
 **Product listings**
 
 - [khmeres.com item 2991 — ESP32-S3 N16R8 development board with OV3660](https://khmeres.com/product_detail/2991)
-- [khmeres.com item 1885 — 1.8 inch 128x160 ST7735S display](https://khmeres.com/product_detail/1885)
 - [khmeres.com item 2724 — MAX98357 I2S audio amplifier filterless class D](https://khmeres.com/product_detail/2724)
 - [khmeres.com item 2554 — High quality speaker 3 watt 4 ohm 40mmX22mm](https://khmeres.com/product_detail/2554)
 - [khmeres.com item 371 — Breadboard 830 point solderless MB102 test board](https://khmeres.com/product_detail/371)
@@ -664,7 +755,10 @@ explains why the eye model still classifies poorly in visible light.
 - [keyestudio MB0184 ESP32-S3 CAM pin table](https://docs.keyestudio.com/projects/MB0184/en/latest/docs/MB0184%20ESP32-S3%20CAM%20Development%20Board.html)
 - [arduino-esp32 `camera_pins.h` (ESP32S3_EYE map)](https://github.com/espressif/arduino-esp32/blob/master/libraries/ESP32/examples/Camera/CameraWebServer/camera_pins.h)
 - [espressif/esp32-camera component](https://components.espressif.com/components/espressif/esp32-camera)
-- [waveshare/esp_lcd_st7735 component](https://components.espressif.com/components/waveshare/esp_lcd_st7735)
+  (also the source of `fmt2jpg_cb`, the JPEG encoder the preview uses)
+- [ESP-IDF HTTP Server API reference](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/protocols/esp_http_server.html)
+  (one request per instance at a time — the reason the stream has its own port)
+- [ESP-IDF Wi-Fi API reference — SoftAP](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-guides/wifi.html)
 
 **In this repository**
 

@@ -3,21 +3,26 @@
 ## `idf.py reconfigure` resolves these and writes the exact versions to
 ## dependencies.lock. Copy those into docs/DEPLOYMENT.md - the thesis needs the
 ## pinned numbers, not the ranges.
+##
+## The two SPI panel drivers that used to be listed here (waveshare/esp_lcd_st7735
+## and espressif/esp_lcd_ili9341) are gone: the preview is served to a browser now,
+## so the firmware has no panel to drive. Nothing was added in their place - the
+## HTTP server, the Wi-Fi stack and the JPEG encoder all ship with ESP-IDF and
+## esp32-camera respectively.
 dependencies:
   idf:
     version: ">=5.3"
 
   ## DVP camera driver. Supports the OV3660 on this board; enable
   ## CONFIG_OV3660_SUPPORT in menuconfig (set in sdkconfig.defaults).
+  ##
+  ## Also supplies the JPEG encoder the web preview uses (fmt2jpg_cb in
+  ## img_converters.h). The sensor stays in RGB565 because the models need raw
+  ## pixels; only the frames a browser actually asks for are encoded.
   espressif/esp32-camera:
     version: "^2.1.7"
 
-  ## ILI9341 panel driver for the 2.8" 240x320 SPI module (replaced the original
-  ## 1.8" ST7735S; that driver was waveshare/esp_lcd_st7735 if the panel returns).
-  espressif/esp_lcd_ili9341:
-    version: "^2.0.0"
-
-  ## Stage 3 (models). Camera and panel are proven on hardware, so these are in.
+  ## Stage 3 (models). Camera and speaker are proven on hardware, so these are in.
   ## Model data lives in flash rodata (CONFIG_HUMAN_FACE_DETECT_MODEL_IN_FLASH_RODATA);
   ## partitions.csv already gives the app 6 MB for it.
   espressif/esp-dl:

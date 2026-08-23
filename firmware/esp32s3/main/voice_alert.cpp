@@ -12,15 +12,20 @@
 //
 // Playback runs on its own task. voice_alert_trigger() is called from the capture
 // loop, which has a ~23 ms frame budget (docs/FIRMWARE_PIPELINE.md); playing even a
-// half-second alert inline would drop roughly twenty frames and freeze the preview
-// at exactly the moment the driver needs to see it.
+// half-second alert inline would drop roughly twenty frames and stall the browser
+// preview at exactly the moment there is something worth looking at.
+//
+// Since the panel was removed this is the only output the driver perceives, so the
+// failure modes here matter more than they did: see repeat_reset_ms in the header.
 
 static const char *TAG = "voice_alert";
 static VoiceAlertConfig g_config{};
 static uint32_t g_last_alert_ms = 0;
 static uint32_t g_repeat_count = 0;
+static uint32_t g_total_count = 0;
 static bool g_initialized = false;
 static bool g_audio = false;
+static bool g_muted = false;
 
 static QueueHandle_t g_queue = nullptr;
 
@@ -67,7 +72,9 @@ static void alert_audio_task(void *) {
                  g_config.language == AlertLanguage::Khmer ? "km" : "en",
                  voice_alert_clip_name(reason));
 
-        if (g_audio) {
+        if (g_muted) {
+            ESP_LOGW(TAG, "muted; not annunciating %s", voice_alert_clip_name(reason));
+        } else if (g_audio) {
             const TonePattern p = pattern_for(reason);
             for (uint32_t i = 0; i < p.beeps; ++i) {
                 board_audio_play_tone(p.freq_hz, p.beep_ms);
@@ -117,6 +124,20 @@ void voice_alert_set_language(AlertLanguage language) {
     g_config.language = language;
 }
 
+uint32_t voice_alert_count() { return g_total_count; }
+
+void voice_alert_set_muted(bool muted) {
+    if (g_muted != muted) ESP_LOGW(TAG, "alerts %s", muted ? "MUTED" : "unmuted");
+    g_muted = muted;
+}
+
+bool voice_alert_muted() { return g_muted; }
+
+bool voice_alert_test(AlertReason reason) {
+    if (!g_initialized || g_muted) return false;
+    return xQueueSend(g_queue, &reason, 0) == pdTRUE;
+}
+
 const char* voice_alert_banner_text(AlertReason reason) {
     switch (reason) {
         case AlertReason::Microsleep: return "WAKE UP";
@@ -146,6 +167,14 @@ bool voice_alert_is_active(uint32_t now_ms) {
 
 bool voice_alert_trigger(uint32_t now_ms, AlertReason reason) {
     if (!g_initialized) return false;
+    // A long quiet spell ends the episode, so the repeat cap applies per episode
+    // rather than per power cycle.
+    if (g_repeat_count > 0 && g_config.repeat_reset_ms > 0 &&
+        (now_ms - g_last_alert_ms) >= g_config.repeat_reset_ms) {
+        ESP_LOGI(TAG, "%lu ms quiet; repeat counter reset",
+                 static_cast<unsigned long>(now_ms - g_last_alert_ms));
+        g_repeat_count = 0;
+    }
     if (g_repeat_count > 0 && (now_ms - g_last_alert_ms) < g_config.cooldown_ms) {
         return false;
     }
@@ -155,6 +184,7 @@ bool voice_alert_trigger(uint32_t now_ms, AlertReason reason) {
 
     g_last_alert_ms = now_ms;
     ++g_repeat_count;
+    ++g_total_count;
 
     // Hand off and return: never block the capture loop on playback.
     if (xQueueSend(g_queue, &reason, 0) != pdTRUE) {

@@ -18,10 +18,12 @@ S2 the face detector would be several times slower with no optimized kernels ava
 so face detection plus two eye inferences per frame is not viable.
 
 **Recommended board: ESP32-S3-EYE.** It already carries everything this project needs
-— OV2640 2 MP camera, 1.3" 240x240 LCD, digital microphone, 8 MB PSRAM, 8 MB flash —
-and it is the reference board for ESP-WHO vision work. It is also what
-`PROJECT_STATE.md` already recommended. Audio output for spoken alerts still needs the
-MAX98357A-class I2S amplifier in the roadmap; the on-board mic is an input.
+— OV2640 2 MP camera, digital microphone, 8 MB PSRAM, 8 MB flash — and it is the
+reference board for ESP-WHO vision work. It is also what `PROJECT_STATE.md`
+already recommended. Audio output for spoken alerts still needs the
+MAX98357A-class I2S amplifier in the roadmap; the on-board mic is an input. Its
+on-board LCD is now surplus rather than a selling point: the shipped build is
+headless and serves its preview over Wi-Fi.
 
 ## Frame budget on ESP32-S3
 
@@ -36,10 +38,17 @@ re-measure on real hardware.
 | face detect stage 2 | `mnp_s8_v1` | 48x48x3 | 5.8 ms | every 3rd frame |
 | eye state x2 | `open_closed_eye` | 32x32x3 | ~4-8 ms (estimate) | every frame |
 | behaviour + PERCLOS | — | — | <1 ms | every frame |
-| LCD compose + blit | — | 240x240 RGB565 | ~2-4 ms | every frame |
+| frame copy for the preview | — | 240x240 RGB565 | ~1-2 ms | only while a browser is connected |
 
-Amortised: `(33.1 + 5.8) / 3 ≈ 13 ms` detector + ~6 ms eyes + ~4 ms UI ≈ **23 ms/frame,
-so 15-20 fps** with headroom on a 240 MHz dual-core part.
+Amortised: `(33.1 + 5.8) / 3 ≈ 13 ms` detector + ~6 ms eyes + ~2 ms handoff ≈
+**21 ms/frame, so 15-20 fps** with headroom on a 240 MHz dual-core part.
+
+The JPEG encode for the preview — roughly 20 ms for a 240x240 frame at quality 80
+— is deliberately *not* in that table. It runs in the stream task, pinned to
+core 1, on a second snapshot buffer; the capture loop's only cost is the copy
+above, and even that is skipped when no browser is connected. The preview is a
+diagnostic, and a diagnostic that slows the thing it measures is worth less than
+no diagnostic at all.
 
 Two decisions make that budget work:
 
@@ -52,8 +61,8 @@ Two decisions make that budget work:
    frame rates, which is why blinks carry only 0.20 of the fused score and PERCLOS 0.55.
 
 Memory: the eye model is 46 KB and the detectors are a few hundred KB, all comfortable
-in 8 MB PSRAM. The 240x240 RGB565 framebuffer is 115 KB and is statically allocated in
-`display_ui`.
+in 8 MB PSRAM. The preview adds two 115 KB RGB565 snapshot buffers and two 48 KB
+JPEG buffers, all in PSRAM, allocated once at boot by `web_server_start()`.
 
 ## Landmark order differs between desktop and device
 
@@ -74,35 +83,58 @@ on the device or the tuning is meaningless. `firmware/esp32s3/main/behavior.h` m
 `src/drowsyguard/behavior.py`, and `tests/test_firmware_parity.py` parses the header and
 fails if any constant, the fusion weights, or the `RiskFilter` defaults diverge.
 
-## Driver-facing screen
+## The interface: a web page, not a panel
 
-`display_ui.cpp` renders, in RGB565 with no LVGL dependency:
+The build is headless. `web_server.cpp` runs a SoftAP and two HTTP servers, and
+`web/index.html` — compiled into the binary as flash rodata — renders:
 
-- live camera preview with the tracked face box (green open, red closed, amber held),
-- `EYES OPEN` / `EYES CLOSED` and a PERCLOS bar,
-- a risk bar with a tick marking the alert trigger, so the driver can see how close
-  they are to a warning rather than being surprised by one,
-- yawn/nod counts, `MOUTH`, `HEAD DOWN`, `CALIBRATING`, and fps,
-- the last named event, including `SNEEZE IGNORED` so a suppressed false alarm is
-  visible rather than mysterious,
-- a full-width banner naming the reason when an alert fires.
+- the live MJPEG preview with the tracked face box drawn client-side over it in a
+  canvas (green fresh, amber held, red while alerting),
+- the fused risk score, its trigger and the current streak toward an alert, so a
+  warning can be seen coming rather than only heard,
+- the PERCLOS bar, per-frame eye-closure probability and current closure length,
+- blink / long-blink / yawn / nod rates per minute, head roll, jaw drop and the
+  pitch proxy, plus `mouth open`, `head down`, `learning baselines` and
+  `sneeze filter active` — so a suppressed false alarm is visible rather than
+  mysterious,
+- a two-minute risk sparkline with the trigger drawn as a dashed line,
+- an event log, the alert count, and a mute switch and speaker self-test,
+- uptime, frame count, fps, viewer count, free heap and free PSRAM.
 
-Panel initialization is intentionally left as a TODO with a blit callback, for the same
-reason as `board_camera.h`: the LCD controller and pins depend on the board, and a
-guessed pin map that appears to work is worse than an explicit gap.
+Why this replaced the SPI panel, in one line each:
+
+- **Cost.** The panel held five GPIOs, a 150 KB PSRAM framebuffer, a per-frame
+  software blit and one managed component per panel variant.
+- **Legibility.** Everything above is *more* than 240x320 of 8-pixel text could
+  carry, on a screen large enough to read from the passenger seat.
+- **Instrumentation.** `GET /api/status` returns the same numbers as JSON, so the
+  acceptance tests in `DEPLOYMENT.md` script instead of being read off glass.
+- **Isolation.** The detection loop hands over a frame and returns; it does no
+  encoding, and does nothing at all when no browser is connected. The alert path
+  never touches the network.
+
+The one thing lost is a display in the car with no phone in it. That is a real
+regression for a shipping product and a non-issue for a thesis instrument, and it
+is the reason the speaker path — not the preview — is what the safety-relevant
+code protects.
 
 ## Spoken alerts
 
 `voice_alert.h` defines `AlertReason` — `Drowsy`, `Microsleep`, `Yawning`, `HeadNod` —
-each mapping to its own recorded clip and screen banner (`WAKE UP`, `TAKE A BREAK`,
+each mapping to its own recorded clip and on-page banner (`WAKE UP`, `TAKE A BREAK`,
 `STAY ALERT`, `DROWSY`). A named cause is far more actionable than a generic chime.
 Clips are prerecorded PCM in flash rather than on-MCU synthesis, for predictable latency
-and multilingual output; see `assets/audio/README.md`. I2S streaming is still a TODO
-pending the amplifier and pin map.
+and multilingual output; see `assets/audio/README.md`. Until approved clips exist each
+reason plays its own tone pattern over I2S.
+
+Two properties matter more now that the speaker is the only output the driver
+perceives: playback runs on its own task so it can never stall the capture loop, and the
+three-per-episode repeat cap resets after five minutes of calm (`repeat_reset_ms`) so a
+long drive cannot silence the alarm permanently.
 
 ## Status
 
-None of this firmware has been compiled or flashed — no ESP32-S3 board exists in this
-environment. The behaviour logic is a direct port of Python that is unit-tested, and the
-constants are guarded by a parity test, but treat the ESP-DL call sites, the LCD blit and
-the I2S path as unverified scaffolding.
+The firmware builds clean against ESP-IDF v5.5, but it has never been flashed — no
+ESP32-S3 board exists in this environment. The behaviour logic is a direct port of
+Python that is unit-tested, and the constants are guarded by a parity test, but treat
+the ESP-DL call sites, the I2S path and the Wi-Fi/HTTP path as unverified scaffolding.

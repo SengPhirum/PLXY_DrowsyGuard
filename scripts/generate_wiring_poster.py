@@ -16,9 +16,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from diagram_kit import (BLACK_W, BLUE, Breadboard, Canvas, GOLD, GREEN, HAIRLINE,
-                         INK, MUTED, NAVY, PANEL, PCB_BLACK, PCB_BLUE, PCB_PURPLE,
-                         PURPLE, RED, SCREEN, TERM_GREEN)
-from pinmap import AMP_WIRING, DISPLAY_WIRING, FREE_GPIOS, load_pins
+                         INK, MUTED, NAVY, PANEL, PCB_BLACK, PCB_PURPLE, PURPLE,
+                         RED, SCREEN, TERM_GREEN)
+from pinmap import AMP_WIRING, FREE_GPIOS, load_pins
 
 OUT = Path(__file__).resolve().parents[1] / 'docs/tutorials/hardware-setup/images'
 
@@ -53,11 +53,11 @@ def esp32_on_board(c, bb, row_a, row_b, label=True):
 def single_row_module(c, bb, row_a, row_b, fill, body_rows=4.6, col='J'):
     """A module whose header is a SINGLE row of pins.
 
-    The display and the amplifier both have one 8- and one 7-pin strip, so unlike
-    the controller they do not straddle the trench: the pins go into one column
-    line and the body overhangs the edge of the board. Mounting them on the outer
-    column (J here) is what keeps the other four holes of each row reachable for
-    a jumper - put them anywhere inland and the body covers its own wiring holes.
+    The amplifier has one 7-pin strip, so unlike the controller it does not
+    straddle the trench: the pins go into one column line and the body overhangs
+    the edge of the board. Mounting it on the outer column (J here) is what keeps
+    the other four holes of each row reachable for a jumper - put it anywhere
+    inland and the body covers its own wiring holes.
     """
     x0 = bb.hole(col, row_a)[0] - bb.p * 0.6
     x1 = bb.hole(col, row_b)[0] + bb.p * 0.6
@@ -70,12 +70,6 @@ def single_row_module(c, bb, row_a, row_b, fill, body_rows=4.6, col='J'):
         c.rect(hx - bb.p * 0.22, hyy - bb.p * 0.22, bb.p * 0.44, bb.p * 0.44,
                fill=(212, 176, 90), radius=1)
     return (x0, y0, x1 - x0, bh)
-
-
-def display_on_board(c, bb, row_a, row_b, col='J'):
-    x0, y0, w, h = single_row_module(c, bb, row_a, row_b, PCB_BLUE, 5.4, col)
-    c.rect(x0 + w * 0.08, y0 + h * 0.22, w * 0.84, h * 0.66, fill=SCREEN, radius=2)
-    return (x0, y0, w, h)
 
 
 def amp_on_board(c, bb, row_a, row_b, col='J'):
@@ -147,8 +141,8 @@ def build():
     c.text(W / 2, 56, 'STEP-BY-STEP WIRING POSTER', size=20, bold=True, fill=GOLD,
            anchor='mm')
     c.rect(0, 74, W, 40, fill=(232, 238, 250))
-    sub = ('ESP32-S3-WROOM-1 N16R8 + OV3660   •   1.8" ST7735S TFT   •   '
-           'MAX98357A I2S amp   •   4 Ω 3 W speaker   •   MB102 breadboard')
+    sub = ('ESP32-S3-WROOM-1 N16R8 + OV3660   •   MAX98357A I2S amp   •   '
+           '4 Ω 3 W speaker   •   MB102 breadboard   •   preview over Wi-Fi')
     c.text(W / 2, 94, sub, size=15, bold=True, fill=NAVY, anchor='mm')
     c.rect(0, 114, W, 38, fill=(255, 244, 224))
     c.text(W / 2, 133, 'IMPORTANT — unplug USB before changing any wire. '
@@ -159,13 +153,12 @@ def build():
     panel(c, 40, 190, 800, 250, '0', 'COMPONENTS')
     items = [
         ('ESP32-S3 CAM', 'item 2991', PCB_BLACK),
-        ('ST7735S 1.8"', 'item 1885', PCB_BLUE),
         ('MAX98357A', 'item 2724', PCB_PURPLE),
         ('4 Ω 3 W spk', 'item 2554', (52, 54, 58)),
         ('MB102 board', 'item 371', (214, 208, 192)),
     ]
     for i, (name, code, col) in enumerate(items):
-        cx = 90 + i * 150
+        cx = 130 + i * 180
         c.rect(cx, 235, 120, 80, fill=col, radius=6)
         c.text(cx + 60, 330, name, size=13, bold=True, anchor='mm')
         c.text(cx + 60, 352, code, size=11, mono=True, fill=MUTED, anchor='mm')
@@ -229,42 +222,50 @@ def build():
            size=12, fill=MUTED)
 
     # ---- 5: add the display ---------------------------------------------- #
-    panel(c, 870, 790, 790, 250, '5', 'PLACE THE DISPLAY AND AMPLIFIER')
+    panel(c, 870, 790, 790, 250, '5', 'PLACE THE AMPLIFIER')
     bb5 = Breadboard(c, 895, 832, pitch=6.6, orient='landscape').draw(label_every=10)
     esp32_on_board(c, bb5, 6, 27, label=False)
-    display_on_board(c, bb5, 34, 41)      # 8 pins
-    amp_on_board(c, bb5, 47, 53)          # 7 pins
+    amp_on_board(c, bb5, 40, 46)          # 7 pins
     ty = 832 + bb5.h + 16
-    c.text(900, ty, 'Both small modules have a SINGLE row of pins, so they do not '
-                    'straddle the trench.', size=13, bold=True, fill=NAVY)
-    c.text(900, ty + 22, 'Mount them on the outer column J with the body overhanging '
+    c.text(900, ty, 'The amplifier has a SINGLE row of pins, so it does not straddle '
+                    'the trench.', size=13, bold=True, fill=NAVY)
+    c.text(900, ty + 22, 'Mount it on the outer column J with the body overhanging '
                          'the edge — that keeps', size=13, fill=(58, 64, 76))
     c.text(900, ty + 42, 'F–I of each row free to plug a jumper into. Inland, the '
                          'body covers its own holes.', size=13, fill=(58, 64, 76))
-    c.text(900, ty + 64, 'Solder their header strips first — they ship loose.',
+    c.text(900, ty + 64, 'Solder its header strip first — it ships loose.',
            size=12, fill=(168, 84, 8))
 
-    # ---- 6: display wiring ----------------------------------------------- #
-    panel(c, 40, 1090, 1620, 330, '6', 'WIRE THE DISPLAY  —  SPI, 8 WIRES')
-    pin_table(c, 80, 1140, _rows(DISPLAY_WIRING), w=380, notes=False)
-    c.rect(520, 1130, 2, 250, fill=HAIRLINE)
-    c.text(570, 1140, 'Why these pins', size=14, bold=True, fill=NAVY)
+    # ---- 6: the preview, which used to be eight wires to a panel --------- #
+    panel(c, 40, 1090, 1620, 330, '6', 'SEE THE CAMERA  —  JOIN THE BOARD\'S WI-FI, '
+                                       '0 WIRES')
+    c.text(80, 1140, 'There is no screen to wire', size=14, bold=True, fill=NAVY)
     for i, t in enumerate([
-            f"GPIO {pins['LCD_PIN_SCK']}, {pins['LCD_PIN_MOSI']}, "
-            f"{pins['LCD_PIN_CS']}, {pins['LCD_PIN_DC']} and {pins['LCD_PIN_RST']} "
-            'are what the DVP camera and',
-            'the octal PSRAM leave free. They are set in',
-            'firmware/esp32s3/main/board_display.h and nowhere else.',
+            'The ESP32-S3 serves the live preview itself, over its',
+            'own access point. Any phone or laptop browser is the',
+            'display, and it shows far more than a 1.8" panel could:',
+            'risk, PERCLOS, event rates, the face box, frame timing.',
             '',
-            'BLK is the BACKLIGHT — it goes to 3V3, not GND.',
-            'Grounding BLK turns the screen dark, which reads as',
-            'a dead panel.',
+            'This is what freed five GPIOs and eight wires.']):
+        c.text(80, 1168 + i * 21, t, size=13, fill=(58, 64, 76),
+               bold=t.startswith('This is'))
+    c.rect(520, 1130, 2, 250, fill=HAIRLINE)
+
+    c.text(570, 1140, 'Three steps', size=14, bold=True, fill=NAVY)
+    for i, t in enumerate([
+            '1.  Power the board. Listen for the boot chime.',
+            '2.  Join Wi-Fi   DrowsyGuard-XXXXXX',
+            '        password  drowsyguard',
+            '3.  Open        http://192.168.4.1/',
             '',
-            'VDD is 3.3 V only. 5 V here can destroy the module.']):
-        col = (192, 57, 43) if 'BLK is' in t or 'VDD is' in t else (58, 64, 76)
-        c.text(570, 1168 + i * 21, t, size=13, bold=('BLK is' in t or 'VDD is' in t),
-               fill=col)
-    c.text(1150, 1140, 'Never use these', size=14, bold=True, fill=(192, 57, 43))
+            'Your phone will say the network has no internet.',
+            'It has not. The board IS the network.',
+            '',
+            'SSID and password: main/board_wifi.h.']):
+        c.text(570, 1168 + i * 21, t, size=13, mono=t.startswith(('1.', '2.', '3.', '   ')),
+               fill=(58, 64, 76))
+
+    c.text(1150, 1140, 'Never use these GPIOs', size=14, bold=True, fill=(192, 57, 43))
     for i, t in enumerate([
             'GPIO 33–37   SPI flash + octal PSRAM — hangs the board',
             'GPIO 43, 44  UART0 console — idf.py monitor needs them',
@@ -273,11 +274,12 @@ def build():
             'GPIO 48      on-board RGB LED',
             'GPIO 2       buzzer fallback output',
             '',
-            f"Only GPIO {' and '.join(str(g) for g in FREE_GPIOS)} are spare "
-            'after this build.']):
+            f"Spare after this build: GPIO "
+            f"{', '.join(str(g) for g in FREE_GPIOS)}.",
+            '14, 21, 41, 42 and 47 came back with the panel.']):
         c.text(1150, 1168 + i * 21, t, size=12, mono=('GPIO' in t),
-               fill=(58, 64, 76) if 'Only' not in t else NAVY,
-               bold='Only' in t)
+               fill=(58, 64, 76) if 'Spare' not in t else NAVY,
+               bold='Spare' in t)
 
     # ---- 7: amplifier ---------------------------------------------------- #
     panel(c, 40, 1470, 800, 340, '7', 'WIRE THE AMPLIFIER  —  I2S, 5 WIRES')
@@ -306,48 +308,44 @@ def build():
     ], kind='warn')
 
     # ---- 9: final overview ----------------------------------------------- #
-    panel(c, 40, 1860, 1620, 420, '9', 'FINAL CONNECTION OVERVIEW  —  15 WIRES')
+    panel(c, 40, 1860, 1620, 420, '9', 'FINAL CONNECTION OVERVIEW  —  7 WIRES')
     bb9 = Breadboard(c, 80, 1910, pitch=10.2, orient='landscape').draw(label_every=5)
     esp32_on_board(c, bb9, 6, 27)
-    display_on_board(c, bb9, 34, 41)
-    amp_on_board(c, bb9, 47, 53)
+    amp_on_board(c, bb9, 40, 46)
 
-    # The 15 wires. The controller's right-hand header sits in column I, so its
-    # taps are column J; the two small modules sit in J, so theirs are column F.
-    for i, wire in enumerate(DISPLAY_WIRING):
-        colour = {'gnd': BLACK_W, '3v3': BLUE, '5v': RED}.get(wire.role, PURPLE)
-        bb9.wire(bb9.hole('J', 14 + i), bb9.hole('F', 34 + i), colour, width=2)
+    # The controller's right-hand header sits in column I, so its taps are column
+    # J; the amplifier sits in J, so its taps are column F.
     for i, wire in enumerate(AMP_WIRING):
         colour = {'gnd': BLACK_W, '3v3': BLUE, '5v': RED}.get(wire.role, PURPLE)
-        bb9.wire(bb9.hole('J', 23 + i), bb9.hole('F', 47 + i), colour, width=2)
+        bb9.wire(bb9.hole('J', 20 + i), bb9.hole('F', 40 + i), colour, width=2)
     spk_x, spk_y = 1500, 2010
     speaker(c, spk_x, spk_y, 60)
-    term = bb9.hole('J', 49)
+    term = bb9.hole('J', 44)
     c.line([(term[0], term[1] + 30), (spk_x - 90, term[1] + 30),
             (spk_x - 90, spk_y - 18), (spk_x - 52, spk_y - 18)], fill=RED, width=3)
     c.line([(term[0] + 20, term[1] + 30), (spk_x - 70, term[1] + 30),
             (spk_x - 70, spk_y + 18), (spk_x - 52, spk_y + 18)], fill=BLACK_W, width=3)
     ty = 1910 + bb9.h + 20
-    c.text(80, ty, '8 wires to the display   +   5 to the amplifier   +   '
-                   '2 to the speaker   =   15.   The camera adds none — it is the '
-                   'FPC ribbon.', size=14, bold=True, fill=NAVY)
+    c.text(80, ty, '5 wires to the amplifier   +   2 to the speaker   =   7.   '
+                   'The camera adds none — it is the FPC ribbon — and the preview '
+                   'adds none: it goes over Wi-Fi.', size=14, bold=True, fill=NAVY)
     c.swatch_row(80, ty + 28, RED, '5 V — amplifier VIN only')
-    c.swatch_row(400, ty + 28, BLUE, '3.3 V — display VDD and BLK')
-    c.swatch_row(740, ty + 28, BLACK_W, 'GND — every module, one net')
-    c.swatch_row(1080, ty + 28, PURPLE, 'signals — SPI and I2S')
+    c.swatch_row(400, ty + 28, BLACK_W, 'GND — every module, one net')
+    c.swatch_row(740, ty + 28, PURPLE, 'signals — I2S BCLK, LRC, DIN')
 
     # ---- 10: power and test ---------------------------------------------- #
     panel(c, 40, 2330, 1620, 150, '10', 'POWER UP AND TEST')
     for i, t in enumerate([
-            '1.  Re-check VDD→3V3 and VIN→5V. These two are what destroy parts.',
+            '1.  Re-check VIN→5V and every GND. Those are what destroy parts.',
             '2.  Plug USB-C into the UART port. Watch and smell for five seconds.',
             '3.  idf.py -p COM5 flash monitor']):
         c.text(80, 2372 + i * 24, t, size=14, fill=(58, 64, 76),
                mono=t.strip().startswith('3.  idf'))
     for i, t in enumerate([
             '4.  Expect: "Found 8MB PSRAM device" in the log.',
-            '5.  Expect: ONE short beep — the 880 Hz boot chirp.',
-            '6.  Expect: live preview + "NO MODEL - PREVIEW" on the panel.']):
+            '5.  Expect: THREE rising notes — the boot chime.',
+            '6.  Expect: SSID DrowsyGuard-XXXXXX, then a live preview at '
+            '192.168.4.1.']):
         c.text(880, 2372 + i * 24, t, size=14, fill=(58, 64, 76))
 
     c.rect(0, H - 34, W, 34, fill=NAVY)

@@ -19,7 +19,11 @@ is stable, rather than to a position in a drawing, which is not.
 from __future__ import annotations
 
 import math
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import diagram_fonts  # noqa: E402  (needs the sys.path line above)
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -63,11 +67,10 @@ PCB_GREEN_TERM = (86, 176, 86)
 BREADBOARD = (240, 236, 226)
 SCREEN = (12, 14, 18)
 
-FONT_DIR = Path('/usr/share/fonts/truetype/dejavu')
-_F_REG = FONT_DIR / 'DejaVuSans.ttf'
-_F_BOLD = FONT_DIR / 'DejaVuSans-Bold.ttf'
-_F_MONO = FONT_DIR / 'DejaVuSansMono.ttf'
-_F_MONO_BOLD = FONT_DIR / 'DejaVuSansMono-Bold.ttf'
+# Resolved at import time rather than hard-coded to a Linux path, so the artwork
+# can be regenerated on the same machine the firmware is flashed from. See
+# scripts/diagram_fonts.py for where it looks and why it insists on DejaVu.
+_F_REG, _F_BOLD, _F_MONO, _F_MONO_BOLD = diagram_fonts.faces()
 
 
 def _font(path: Path, size: int) -> ImageFont.FreeTypeFont:
@@ -219,18 +222,10 @@ class Canvas:
 # Verified hardware facts. These strings are what the tests compare against.
 # --------------------------------------------------------------------------- #
 
-# From firmware/esp32s3/main/board_display.h
-DISPLAY_WIRING = [
-    # (module pin, also printed as, esp32 pin, colour role, purpose)
-    ('GND', '', 'GND', 'gnd', 'Common ground - connect this first'),
-    ('VDD', 'VCC', '3V3', '3v3', '3.3 V logic and panel supply'),
-    ('SCL', 'SCK / CLK', 'GPIO14', 'sig', 'SPI clock'),
-    ('SDA', 'MOSI / DIN', 'GPIO21', 'sig', 'SPI data, host to panel'),
-    ('RST', 'RES', 'GPIO42', 'sig', 'Panel reset'),
-    ('DC', 'A0 / RS', 'GPIO41', 'sig', 'Data / command select'),
-    ('CS', '', 'GPIO47', 'sig', 'SPI chip select'),
-    ('BLK', 'LED / BL', '3V3', '3v3', 'Backlight, always on'),
-]
+# There is no display table. The SPI panel was removed from the build: the live
+# preview is served to a phone or laptop over the board's own Wi-Fi access point
+# (firmware/esp32s3/main/web_server.h), which costs no GPIOs and no wires. What
+# used to be figure 5 - eight wires to a 1.8" panel - is now a page in a browser.
 
 # From firmware/esp32s3/main/board_audio.h
 AUDIO_WIRING = [
@@ -261,26 +256,30 @@ for _n in (43, 44):
 for _n in (0, 45, 46):
     GPIO_ROLES[_n] = ('strap', 'strapping / BOOT')
 GPIO_ROLES[48] = ('led', 'on-board RGB LED')
-for _n in (14, 21, 41, 42, 47):
-    GPIO_ROLES[_n] = ('lcd', 'ST7735S display')
 for _n in (38, 39, 40):
     GPIO_ROLES[_n] = ('audio', 'MAX98357A I2S')
 GPIO_ROLES[2] = ('buzzer', 'buzzer fallback')
+# 14/21/41/42/47 were the SPI panel. Dropping it handed them back, which is worth
+# labelling rather than silently colouring grey: it is the headline change of the
+# headless build.
+for _n in (14, 21, 41, 42, 47):
+    GPIO_ROLES[_n] = ('free', 'free - was the panel')
 for _n in (1, 3):
     GPIO_ROLES[_n] = ('free', 'free')
 
 ROLE_COLOUR = {
     'camera': (52, 73, 94), 'flash': (192, 57, 43), 'usb': (127, 140, 141),
     'uart': (155, 89, 182), 'strap': (211, 84, 0), 'led': (22, 160, 133),
-    'lcd': (41, 128, 185), 'audio': (39, 174, 96), 'buzzer': (241, 196, 15),
+    'audio': (39, 174, 96), 'buzzer': (241, 196, 15),
     'free': (189, 195, 199), 'na': (222, 226, 230),
 }
 
+# Four items, not five. The 1.8" SPI panel (item 1885) is no longer part of the
+# build - the preview moved to a browser - so it is not listed and does not need
+# to be bought.
 PRODUCTS = [
     ('ESP32-S3 N16R8 development board with OV3660', '2991', '$7.50',
-     'Controller + camera', PCB_BLACK),
-    ('1.8 inch 128x160 ST7735S driver OLED color display 65K', '1885', '$3.50',
-     'Driver-facing display', PCB_BLUE),
+     'Controller + camera + Wi-Fi', PCB_BLACK),
     ('MAX98357 I2S audio amplifier filterless class D', '2724', '$2.00',
      'Spoken-alert amplifier', PCB_PURPLE),
     ('High quality speaker 3 watt 4 ohm 40mmX22mm', '2554', '$0.75',
@@ -325,11 +324,65 @@ def draw_esp32_board(c, x, y, w, h, labels=True):
         c.text(x + w / 2, y + h * 0.72, 'N16R8', size=10, fill=(150, 156, 166), anchor='mm')
 
 
-def draw_display_module(c, x, y, w, h):
-    c.rect(x, y, w, h, fill=PCB_BLUE, radius=4)
-    c.rect(x + w * 0.06, y + h * 0.12, w * 0.88, h * 0.72, fill=SCREEN, radius=2)
-    for i in range(8):
-        c.rect(x + w * 0.10 + i * (w * 0.104), y + 4, 7, 7, fill=(212, 176, 90), radius=1)
+def draw_preview_page(c, x, y, w, h, face=True):
+    """The page firmware/esp32s3/main/web/index.html serves, in miniature.
+
+    Drawn rather than screenshotted on purpose: a screenshot would pin the figure
+    to one firmware build and one phone, and would have to be retaken every time
+    a pill moves. The point of the figure is the shape of the page - preview on
+    top, risk underneath, status pills at the bottom - not its exact pixels.
+    """
+    c.rect(x, y, w, h, fill=(14, 17, 22))
+    # header strip with the live-link dot
+    c.rect(x, y, w, h * 0.09, fill=(22, 27, 34))
+    c.circle(x + w * 0.07, y + h * 0.045, max(2, w * 0.014), fill=(63, 185, 80))
+    c.text(x + w * 0.13, y + h * 0.045, 'DrowsyGuard', size=max(8, int(w * 0.045)),
+           bold=True, fill=(230, 237, 243), anchor='lm')
+
+    # live view
+    vx, vy, vw, vh = x + w * 0.05, y + h * 0.13, w * 0.90, h * 0.46
+    c.rect(vx, vy, vw, vh, fill=(6, 8, 11), radius=3)
+    if face:
+        # a head, so the frame reads as a camera feed and not as an empty box
+        hcx, hcy, hr = vx + vw / 2, vy + vh * 0.52, min(vw, vh) * 0.26
+        c.circle(hcx, hcy, hr, fill=(62, 70, 82))
+        c.circle(hcx - hr * 0.38, hcy - hr * 0.18, hr * 0.11, fill=(226, 232, 240))
+        c.circle(hcx + hr * 0.38, hcy - hr * 0.18, hr * 0.11, fill=(226, 232, 240))
+        c.rect(hcx - hr * 0.28, hcy + hr * 0.42, hr * 0.56, hr * 0.12,
+               fill=(206, 212, 220), radius=1)
+        c.rect(hcx - hr * 1.15, hcy - hr * 1.25, hr * 2.3, hr * 2.4,
+               outline=(63, 185, 80), width=max(1, int(w * 0.006)))
+        c.text(hcx - hr * 1.15, hcy - hr * 1.25 - h * 0.035, 'face 0.87',
+               size=max(7, int(w * 0.032)), fill=(63, 185, 80))
+
+    # risk score and bar
+    ty = vy + vh + h * 0.06
+    c.text(vx, ty, 'RISK', size=max(7, int(w * 0.032)), fill=(139, 148, 158))
+    c.text(vx + vw, ty, '0.18', size=max(7, int(w * 0.032)), fill=(230, 237, 243),
+           anchor='ra')
+    br = ty + h * 0.055
+    c.rect(vx, br, vw, h * 0.028, fill=(11, 15, 20), radius=3)
+    c.rect(vx, br, vw * 0.18, h * 0.028, fill=(63, 185, 80), radius=3)
+
+    # status pills
+    py = br + h * 0.075
+    for i, (label, col) in enumerate((('camera', (63, 185, 80)),
+                                      ('models', (63, 185, 80)),
+                                      ('eye model', (210, 153, 34)))):
+        pw = vw * 0.30
+        px = vx + i * (vw * 0.35)
+        c.rect(px, py, pw, h * 0.075, fill=(33, 38, 45), outline=col, width=1, radius=6)
+        c.text(px + pw / 2, py + h * 0.037, label, size=max(6, int(w * 0.026)),
+               fill=col, anchor='mm')
+
+
+def draw_phone(c, x, y, w, h, face=True):
+    """A phone with the preview page on it."""
+    c.rect(x, y, w, h, fill=(38, 41, 48), radius=int(min(w, h) * 0.09))
+    bez = max(4, w * 0.045)
+    draw_preview_page(c, x + bez, y + bez * 1.6, w - 2 * bez, h - bez * 3.2, face=face)
+    c.rect(x + w * 0.36, y + h - bez * 1.2, w * 0.28, max(2, bez * 0.28),
+           fill=(120, 126, 136), radius=2)
 
 
 def draw_amp_module(c, x, y, w, h):
@@ -367,12 +420,11 @@ def draw_breadboard(c, x, y, w, h, detail=True):
 
 def fig_components():
     c = Canvas(1680, 1080)
-    c.title('Figure 1 - The five purchased components',
-            'Every item below is one of the five khmeres.com order lines. Identify each one before wiring anything.')
-    drawers = [draw_esp32_board, draw_display_module, draw_amp_module, draw_speaker,
-               draw_breadboard]
-    positions = [(60, 150, 480, 400), (580, 150, 480, 400), (1100, 150, 520, 400),
-                 (60, 610, 480, 400), (580, 610, 1040, 400)]
+    c.title('Figure 1 - The four purchased components',
+            'Every item below is one khmeres.com order line. Identify each one before wiring anything. No display: the preview is a web page.')
+    drawers = [draw_esp32_board, draw_amp_module, draw_speaker, draw_breadboard]
+    positions = [(60, 150, 780, 400), (880, 150, 740, 400),
+                 (60, 610, 780, 400), (880, 610, 740, 400)]
     for (name, item, price, role, _), drawer, (x, y, w, h) in zip(PRODUCTS, drawers, positions):
         c.panel(x, y, w, h)
         pad = 30
@@ -391,7 +443,7 @@ def fig_components():
 def fig_pin_map():
     c = Canvas(1680, 1000)
     c.title('Figure 2 - ESP32-S3-WROOM-1 N16R8 GPIO allocation',
-            'Which of the 49 GPIOs are already taken, and the five that are still free. Read this before choosing any pin.')
+            'Which of the 49 GPIOs are taken, and the seven that are free. Five of those seven were freed by dropping the SPI panel.')
     cols, cw, ch = 7, 200, 74
     x0, y0 = 60, 150
     for n in range(49):
@@ -408,14 +460,13 @@ def fig_pin_map():
     c.legend(60, ly, [
         (ROLE_COLOUR['camera'], 'DVP camera bus (fixed by the board)'),
         (ROLE_COLOUR['flash'], 'SPI flash + octal PSRAM - never drive'),
-        (ROLE_COLOUR['lcd'], 'ST7735S display (this build)'),
         (ROLE_COLOUR['audio'], 'MAX98357A I2S (this build)'),
         (ROLE_COLOUR['buzzer'], 'Buzzer fallback (this build)'),
         (ROLE_COLOUR['uart'], 'UART0 console - idf.py monitor'),
         (ROLE_COLOUR['usb'], 'Native USB D-/D+'),
         (ROLE_COLOUR['strap'], 'Strapping / BOOT'),
         (ROLE_COLOUR['led'], 'On-board RGB LED'),
-        (ROLE_COLOUR['free'], 'Free - GPIO 1 and GPIO 3 only'),
+        (ROLE_COLOUR['free'], 'Free - GPIO 1, 3, 14, 21, 41, 42, 47'),
     ], cols=2, gap=560)
     c.note(1180, ly - 6, 440, [
         'GPIO 33-37 are fatal.',
@@ -550,24 +601,82 @@ def _wiring_figure(fname, fignum, title, subtitle, rows, module_name, module_dra
     return c.save(OUT / fname)
 
 
-def fig_display_wiring():
-    def labels(c, x, y, w, h):
-        draw_display_module(c, x, y, w, h)
-    return _wiring_figure(
-        '05-display-wiring.png', 5,
-        'Wiring the 1.8" ST7735S display  (8 wires)',
-        'Module silkscreen reads GND VDD SCL SDA RST DC CS BLK, left to right. Match the printed label, not the position.',
-        DISPLAY_WIRING, '1.8" 128x160 ST7735S  (item 1885)', labels,
-        [r[0] for r in DISPLAY_WIRING],
-        [('danger', [
-            'VDD goes to 3V3, never to 5V.',
-            'The ST7735S and its logic pins are 3.3 V parts. The ESP32-S3 header also offers 5V - putting that on VDD can destroy the panel.',
+def fig_web_preview():
+    """What used to be eight wires to a panel is now three taps on a phone."""
+    c = Canvas(1680, 1080)
+    c.title('Figure 5 - Watching the camera: join the board\'s own Wi-Fi  (0 wires)',
+            'The SPI panel was removed. The ESP32-S3 serves the live preview itself, so there is nothing to wire for this step.')
+
+    # -- the phone, with the page on it ------------------------------------ #
+    c.panel(60, 150, 460, 700, 'What you end up looking at')
+    draw_phone(c, 150, 220, 280, 560)
+    c.text(290, 800, 'Any phone, tablet or laptop browser', size=13, fill=MUTED,
+           anchor='ma')
+
+    # -- the three steps --------------------------------------------------- #
+    steps = [
+        ('1', 'Power the board', [
+            'Plug the UART USB-C port into a phone charger or',
+            'a laptop. You should hear the three-note boot chime.',
         ]),
-         ('info', [
-             'Change these pins in one place only: LCD_PIN_* in firmware/esp32s3/main/board_display.h.',
-             'If a pin below is not broken out on your board, pick GPIO 1 or GPIO 3 and edit that header - never GPIO 33-37.',
-         ])],
-        height=1080)
+        ('2', 'Join the Wi-Fi network', [
+            'SSID      DrowsyGuard-XXXXXX   (XXXXXX is the last three',
+            '          bytes of the board\'s MAC, so two boards differ)',
+            'Password  drowsyguard',
+            'Your phone will warn that this network has no internet.',
+            'That is correct - the board is the network.',
+        ]),
+        ('3', 'Open the page', [
+            'http://192.168.4.1/',
+            'The preview starts on its own. Everything else on the',
+            'page - risk, PERCLOS, event log, speaker test - is live.',
+        ]),
+    ]
+    y = 150
+    for num, head, lines in steps:
+        hh = 90 + 26 * len(lines)
+        c.panel(560, y, 1060, hh)
+        c.circle(600, y + 44, 22, fill=(41, 128, 185))
+        c.text(600, y + 44, num, size=20, bold=True, fill=(255, 255, 255), anchor='mm')
+        c.text(640, y + 32, head, size=19, bold=True)
+        for i, ln in enumerate(lines):
+            c.text(640, y + 74 + i * 26, ln, size=14, fill=(80, 86, 98),
+                   mono=ln.startswith(('SSID', 'Password', 'http', '   ')))
+        y += hh + 24
+
+    c.note(560, y, 1060, [
+        'One live stream at a time, and that is a design decision rather than a bug.',
+        'ESP-IDF\'s HTTP server answers one request per instance at a time, and an MJPEG stream never finishes, so the board runs a second',
+        'server on port 81 just for it. A second phone still gets the full page and a still image every 0.7 s from port 80.',
+    ], kind='info')
+
+    c.note(60, 880, 460, [
+        'Change the SSID or password in',
+        'firmware/esp32s3/main/board_wifi.h.',
+        'Set WIFI_AP_PASSWORD to "" for an open',
+        'network - convenient on the bench, wrong',
+        'in a car: the stream is the driver\'s face.',
+    ], kind='warn')
+
+    # The HTTP surface, which is the nearest thing a headless build has to a
+    # connector pinout: everything an examiner or a script can reach is here.
+    ey = 900
+    c.panel(560, ey, 1060, 150, 'Everything the board serves')
+    routes = [
+        ('GET  /', ':80', 'the page itself, linked into the firmware binary'),
+        ('GET  /stream', ':81', 'MJPEG live preview - one viewer at a time'),
+        ('GET  /api/snapshot', ':80', 'one JPEG; the fallback for extra viewers'),
+        ('GET  /api/status', ':80', 'risk, PERCLOS, face box, rates, heap, uptime'),
+        ('POST /api/settings', ':80', 'quality, stream fps, mute'),
+        ('POST /api/alert-test', ':80', 'play one warning - the speaker self-test'),
+    ]
+    for i, (route, port, what) in enumerate(routes):
+        ry = ey + 40 + (i % 3) * 34
+        rx = 580 + (i // 3) * 520
+        c.text(rx, ry, route, size=13, mono=True, bold=True)
+        c.text(rx + 190, ry, port, size=12, mono=True, fill=(41, 128, 185))
+        c.text(rx + 236, ry + 1, what, size=11, fill=MUTED)
+    return c.save(OUT / '05-web-preview.png')
 
 
 def fig_amp_wiring():
@@ -679,7 +788,6 @@ def fig_power():
     c.chip(470, 360, 260, 96, 'On-board LDO', sub='5 V -> 3.3 V', fill=C_3V3)
     c.chip(900, 120, 300, 84, 'ESP32-S3 module', sub='3.3 V logic', fill=PCB_BLACK)
     c.chip(900, 240, 300, 84, 'OV3660 camera', sub='3.3 V, via FPC', fill=PCB_BLACK)
-    c.chip(900, 360, 300, 84, 'ST7735S display', sub='VDD = 3V3 only', fill=PCB_BLUE)
     c.chip(900, 480, 300, 84, 'MAX98357A amp', sub='VIN = 5V preferred', fill=PCB_PURPLE)
     c.chip(1310, 480, 260, 84, 'Speaker 4 ohm', sub='3 W, BTL output', fill=(60, 60, 64))
 
@@ -687,8 +795,10 @@ def fig_power():
     c.wire((600, 286), (600, 360), C_5V, width=5, midx=600)
     c.wire((730, 402), (900, 162), C_3V3, label='3V3', width=5, midx=820)
     c.wire((730, 402), (900, 282), C_3V3, label='3V3', width=5, midx=850)
-    c.wire((730, 402), (900, 402), C_3V3, label='3V3', width=5, midx=815)
     c.wire((730, 238), (900, 522), C_5V, label='5V', width=5, midx=790)
+    c.callout(1050, 204, 1310, 250, '+ the 2.4 GHz radio, on-die', size=14)
+    c.text(1310, 274, 'Serving the preview is the largest', size=13, fill=MUTED)
+    c.text(1310, 296, 'current draw this build has.', size=13, fill=MUTED)
     c.wire((1200, 522), (1310, 522), C_SIG[0], width=5)
 
     c.text(80, 640, 'Common ground', size=17, bold=True)
@@ -700,9 +810,10 @@ def fig_power():
            size=13, fill=MUTED)
 
     c.note(80, 760, 740, [
-        'Do not put 5V on the display VDD.',
-        'The ST7735S module is a 3.3 V part. 5 V on VDD can',
-        'destroy the panel and is not recoverable.',
+        'Feed this from a real supply, not a laptop hub.',
+        'The camera, the class-D amplifier and Wi-Fi transmit',
+        'bursts peak together. A thin cable or a weak hub browns',
+        'the board out mid-boot, which reads as a camera fault.',
     ], kind='danger')
     c.note(860, 760, 740, [
         'Do not power the amplifier from a second supply',
@@ -756,21 +867,19 @@ def fig_breadboard():
 # --------------------------------------------------------------------------- #
 
 def fig_complete():
-    ROW_H, ROW_TOP = 44, 170
-    n_disp, n_audio = len(DISPLAY_WIRING), len(AUDIO_WIRING)
+    """Seven connections. It was fifteen while the build had a panel."""
+    ROW_H, ROW_TOP = 52, 172
 
-    dx, dy, dw = 120, 200, 300
-    dh = ROW_TOP + ROW_H * (n_disp - 1) + 44
     ax, aw = 120, 300
-    ay = dy + dh + 60
-    ah = ROW_TOP + ROW_H * (n_audio - 1) + 44
-    sx, sy, sw, sh = 120, ay + ah + 56, 300, 190
-    esp_x, esp_y, esp_w = 700, 200, 380
-    esp_h = (ay + ah) - esp_y
+    ay = 200
+    ah = ROW_TOP + ROW_H * (len(AUDIO_WIRING) - 1) + 44
+    sx, sy, sw, sh = 120, ay + ah + 60, 300, 200
+    esp_x, esp_y, esp_w = 760, 200, 380
+    esp_h = ah
 
-    c = Canvas(1780, int(sy + sh + 190))
-    c.title('Figure 10 - Complete wiring, all 15 connections',
-            'The definitive diagram. Every wire in the tutorial wiring table appears here exactly once.')
+    c = Canvas(1780, int(sy + sh + 200))
+    c.title('Figure 10 - Complete wiring, all 7 connections',
+            'The definitive diagram. Five wires to the amplifier, two from the amplifier to the speaker. Nothing else is wired at all.')
 
     c.rect(esp_x, esp_y, esp_w, esp_h, fill=PANEL, outline=HAIRLINE, width=2, radius=12)
     c.text(esp_x + esp_w / 2, esp_y + 26, 'ESP32-S3-WROOM-1 N16R8', size=16, bold=True,
@@ -779,27 +888,21 @@ def fig_complete():
            size=12, fill=MUTED, anchor='mm')
     draw_esp32_board(c, esp_x + 120, esp_y + 74, 140, 150, labels=False)
 
-    c.rect(dx, dy, dw, dh, fill=PANEL, outline=HAIRLINE, width=1, radius=10)
-    c.text(dx + dw / 2, dy + 22, '1.8" ST7735S  (1885)', size=14, bold=True, anchor='mm')
-    draw_display_module(c, dx + 90, dy + 46, 120, 96)
-
     c.rect(ax, ay, aw, ah, fill=PANEL, outline=HAIRLINE, width=1, radius=10)
     c.text(ax + aw / 2, ay + 22, 'MAX98357A  (2724)', size=14, bold=True, anchor='mm')
     draw_amp_module(c, ax + 90, ay + 46, 120, 76)
 
     c.rect(sx, sy, sw, sh, fill=PANEL, outline=HAIRLINE, width=1, radius=10)
     c.text(sx + sw / 2, sy + 22, 'Speaker 4 ohm 3 W  (2554)', size=14, bold=True, anchor='mm')
-    draw_speaker(c, sx + 90, sy + 50, 120, 120)
+    draw_speaker(c, sx + 90, sy + 56, 120, 120)
 
-    for base, table, mx, mw2 in ((dy, DISPLAY_WIRING, dx, dw),
-                                 (ay, AUDIO_WIRING, ax, aw)):
-        y = base + ROW_TOP
-        for (mpin, _alt, epin, role, _p) in table:
-            colour = _wire_colour(role, c)
-            a = c.pin(mx + mw2 - 22, y, mpin, side='left', colour=colour, size=12)
-            b = c.pin(esp_x + 22, y, epin, side='right', colour=colour, size=12)
-            c.wire(a, b, colour, label=f'{mpin}->{epin}', label_size=11)
-            y += ROW_H
+    y = ay + ROW_TOP
+    for (mpin, _alt, epin, role, _p) in AUDIO_WIRING:
+        colour = _wire_colour(role, c)
+        a = c.pin(ax + aw - 22, y, mpin, side='left', colour=colour, size=12)
+        b = c.pin(esp_x + 22, y, epin, side='right', colour=colour, size=12)
+        c.wire(a, b, colour, label=f'{mpin}->{epin}', label_size=11)
+        y += ROW_H
 
     # Amplifier screw terminal down to the speaker.
     term_y = ay + ah - 18
@@ -809,34 +912,40 @@ def fig_complete():
     c.text(ax + 200, term_y + 34, 'BTL pair, not polarity critical', size=11,
            fill=(41, 128, 185))
 
-    lx = 1180
-    c.legend(lx, esp_y + 40, [
+    # The preview replaces the eight wires that used to be in this figure, so it
+    # gets the space they occupied rather than being a footnote.
+    px, py, pw, ph = 1240, esp_y, 420, 300
+    c.rect(px, py, pw, ph, fill=PANEL, outline=HAIRLINE, width=1, radius=10)
+    c.text(px + pw / 2, py + 22, 'Live preview  -  0 wires', size=14, bold=True,
+           anchor='mm')
+    draw_phone(c, px + pw / 2 - 70, py + 50, 140, 230)
+
+    lx = 1240
+    c.legend(lx, py + ph + 30, [
         (C_GND, 'GND  - common ground, connect first'),
-        (C_3V3, '3V3  - 3.3 V logic and panel supply'),
-        (C_5V, '5V   - amplifier supply only'),
+        (C_5V, '5V   - amplifier supply'),
         ((120, 126, 138), 'signal wires - one colour each'),
     ])
-    c.note(lx, esp_y + 160, 520, [
+    c.note(lx, py + ph + 130, 420, [
         'Count before powering up.',
-        '8 wires to the display, 5 to the amplifier,',
-        '2 from the amplifier to the speaker: 15 total.',
-        'The camera adds none - it is the FPC ribbon.',
+        '5 wires to the amplifier and 2 from the',
+        'amplifier to the speaker: 7 total. The camera',
+        'adds none - it is the FPC ribbon - and the',
+        'preview adds none: it goes over Wi-Fi.',
     ], kind='ok')
-    c.note(lx, esp_y + 300, 520, [
+    c.note(120, sy + sh + 40, 1040, [
         'Connect GND first, disconnect it last.',
-        'That order means no module is ever powered',
-        'through a signal pin, which is what quietly',
-        'damages I2S inputs.',
+        'That order means no module is ever powered through a signal pin,',
+        'which is what quietly damages I2S inputs.',
     ], kind='warn')
-    c.note(lx, esp_y + 460, 520, [
-        'Nothing here needs a level shifter.',
-        'The ESP32-S3 drives 3.3 V logic; the ST7735S is',
-        'a 3.3 V part and the MAX98357A accepts 3.3 V',
-        'logic while its VIN runs at 5 V.',
+    c.note(1240, sy + sh + 40, 420, [
+        'No level shifter anywhere.',
+        'The ESP32-S3 drives 3.3 V logic and the',
+        'MAX98357A accepts it while its VIN runs at 5 V.',
     ], kind='info')
-    c.note(120, sy + sh + 40, 1580, [
-        'Every pin string in this diagram is generated from firmware/esp32s3/main/board_display.h and board_audio.h by scripts/generate_tutorial_diagrams.py,',
-        'and tests/test_tutorial_diagrams.py fails if the drawing and the firmware headers ever disagree.',
+    c.note(120, sy + sh + 140, 1540, [
+        'Every pin string in this diagram is generated from firmware/esp32s3/main/board_audio.h by scripts/generate_tutorial_diagrams.py,',
+        'and tests/test_tutorial_diagrams.py fails if the drawing and the firmware header ever disagree.',
     ], kind='info')
     return c.save(OUT / '10-complete-wiring.png')
 
@@ -846,62 +955,58 @@ def fig_complete():
 # --------------------------------------------------------------------------- #
 
 def fig_first_boot():
-    c = Canvas(1680, 900)
+    c = Canvas(1680, 940)
     c.title('Figure 11 - What a correct first power-on looks like',
-            'Stage 1 is preview-only: the models are not bound yet, and the firmware says so rather than pretending.')
+            'Two things to check, and they fail in different ways: the serial monitor, and the page on your phone. Neither needs the models to be bound.')
 
-    px, py, pw, ph = 110, 180, 320, 400
-    c.rect(px - 16, py - 16, pw + 32, ph + 32, fill=PCB_BLUE, radius=8)
-    c.rect(px, py, pw, ph, fill=SCREEN)
-    c.rect(px + 10, py + 10, pw - 20, ph * 0.45, fill=(48, 62, 84))
-    c.text(px + pw / 2, py + ph * 0.24, 'live camera preview', size=12,
-           fill=(180, 195, 215), anchor='mm')
-    c.rect(px + 60, py + 40, 120, 110, outline=(80, 220, 120), width=2)
-    rows = [('NO FACE', (235, 238, 243)), ('EYES OPEN', (235, 238, 243)),
-            ('PC 0%   RISK 0%', (235, 238, 243)), ('FPS 24.3', (150, 200, 250))]
-    for i, (t, col) in enumerate(rows):
-        c.text(px + 16, py + ph * 0.50 + i * 26, t, size=13, mono=True, fill=col)
-    c.rect(px + 16, py + ph * 0.50 + 4 * 26 + 6, pw - 32, 14, outline=(120, 130, 145), width=1)
-    c.text(px + pw / 2, py + ph - 26, 'NO MODEL - PREVIEW', size=13, mono=True,
-           bold=True, fill=(250, 200, 90), anchor='mm')
-    c.text(px, py + ph + 34, '128x160 ST7735S, portrait', size=13, fill=MUTED)
+    c.panel(80, 160, 400, 620, 'On your phone')
+    draw_phone(c, 160, 220, 240, 480)
+    c.text(280, 716, 'http://192.168.4.1/', size=14, mono=True, bold=True, anchor='ma')
+    c.text(280, 744, 'after joining DrowsyGuard-XXXXXX', size=12, fill=MUTED, anchor='ma')
 
-    tx, ty, tw, th = 520, 180, 1100, 400
+    tx, ty, tw, th = 520, 160, 1100, 440
     c.rect(tx, ty, tw, th, fill=(24, 26, 32), radius=10)
     c.text(tx + 20, ty + 16, 'idf.py -p COM5 flash monitor', size=13, mono=True,
            fill=(140, 200, 255))
     log = [
         ('I (312) esp_psram: Found 8MB PSRAM device', (120, 230, 150)),
         ('I (318) esp_psram: Adding pool of 8192K of PSRAM memory to heap', (120, 230, 150)),
-        ('I (402) audio: I2S up: BCLK=39 LRCLK=38 DIN=40 @ 16000 Hz 16-bit stereo', (120, 230, 150)),
-        ('I (410) voice_alert: Alert controller initialized; language=en '
-         'cooldown=30000 ms output=I2S/MAX98357A', (120, 230, 150)),
-        ('I (455) lcd: ST7735S 128x160 up on SPI2 @ 40 MHz', (120, 230, 150)),
+        ('I (402) wifi: SoftAP "DrowsyGuard-A1B2C3" up on channel 6, WPA2', (120, 230, 150)),
+        ('I (404) wifi: join it, then open http://192.168.4.1/', (120, 230, 150)),
+        ('I (452) audio: I2S up: BCLK=39 LRCLK=38 DIN=40 @ 16000 Hz 16-bit stereo', (120, 230, 150)),
+        ('I (460) voice_alert: Alert controller initialized; language=en '
+         'output=I2S/MAX98357A', (120, 230, 150)),
+        ('I (486) web: preview at http://192.168.4.1/  (stream on port 81)', (120, 230, 150)),
         ('I (690) drowsyguard: camera up: 240x240 RGB565, PSRAM free 8123456 B', (120, 230, 150)),
-        ('W (700) model_adapter: ESP-DL not bound - preview only', (250, 210, 100)),
-        ('I (1700) drowsyguard: fps 24.3  risk 0.00  perclos 0.00  heap ...  psram ...',
+        ('W (700) model_adapter: eye model not bound - alerting disabled', (250, 210, 100)),
+        ('I (1700) drowsyguard: fps 15.2  risk 0.00  perclos 0.00  viewers 1 ...',
          (220, 226, 235)),
     ]
     for i, (line, col) in enumerate(log):
-        c.text(tx + 20, ty + 56 + i * 40, line[:96], size=12, mono=True, fill=col)
+        c.text(tx + 20, ty + 52 + i * 38, line[:96], size=12, mono=True, fill=col)
 
-    c.note(110, 620, 740, [
-        'You should also HEAR one short beep at boot.',
-        'That is the 880 Hz chirp in main.cpp. It proves the',
-        'amplifier, the I2S pins and the speaker in one step.',
-        'Silence here means the audio path, not the camera.',
+    c.note(520, 630, 540, [
+        'You should HEAR three rising notes at boot.',
+        'That is the chime in main.cpp. It proves the amplifier,',
+        'the I2S pins and the speaker in one step. With no panel',
+        'it is also the only local sign the board came up at all.',
     ], kind='ok')
-    c.note(880, 620, 740, [
+    c.note(1080, 630, 540, [
         'If PSRAM reports 2 MB or nothing, stop.',
-        'Fix CONFIG_SPIRAM_MODE_OCT before anything else.',
-        'An R8 board in quad mode reports 0 B, and the failure',
-        'surfaces later as an unexplained camera error.',
+        'Fix CONFIG_SPIRAM_MODE_OCT before anything else. An R8',
+        'board in quad mode reports 0 B, and the failure surfaces',
+        'later as an unexplained camera error.',
     ], kind='danger')
+    c.note(80, 800, 1540, [
+        'No SSID in the phone\'s Wi-Fi list? The radio never started - look for the wifi: lines above, and check that PSRAM came up first.',
+        'SSID visible but the page will not load? You are on the right network but the wrong address: it is 192.168.4.1, not a .local name.',
+        'Page loads but the preview stays dark? That is the camera, not the network - the pills under the preview say which subsystem failed.',
+    ], kind='info')
     return c.save(OUT / '11-first-power-on.png')
 
 
 FIGURES = [fig_components, fig_pin_map, fig_usb_ports, fig_camera_ribbon,
-           fig_display_wiring, fig_amp_wiring, fig_amp_config, fig_power,
+           fig_web_preview, fig_amp_wiring, fig_amp_config, fig_power,
            fig_breadboard, fig_complete, fig_first_boot]
 
 

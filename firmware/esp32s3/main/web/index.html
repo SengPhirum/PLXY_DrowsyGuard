@@ -1,0 +1,568 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0e1116">
+<title>DrowsyGuard</title>
+<!--
+  Served from flash rodata by web_server.cpp. Everything is inline on purpose: the
+  device is an access point with no route to the internet, so a single self-contained
+  document is the only thing guaranteed to render. Palette and component shapes match
+  src/drowsyguard/static/index.html so the desktop dashboard and the device page read
+  as one system.
+
+  Dark only, deliberately. This page is looked at in a car, usually at night.
+-->
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b22; --line:#242c38; --text:#e6edf3; --muted:#8b949e;
+    --ok:#3fb950; --warn:#d29922; --bad:#f85149; --accent:#58a6ff; --ink:#0b0f14;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);
+       font:14px/1.5 ui-sans-serif,system-ui,"Segoe UI",Roboto,sans-serif;
+       padding-bottom:28px;-webkit-text-size-adjust:100%}
+  header{position:sticky;top:0;z-index:5;background:rgba(14,17,22,.92);
+         backdrop-filter:blur(6px);border-bottom:1px solid var(--line);
+         padding:10px 16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  h1{font-size:15px;margin:0;letter-spacing:.4px;font-weight:600}
+  h1 small{color:var(--muted);font-weight:400;font-size:11px;letter-spacing:.6px;
+           text-transform:uppercase;margin-left:6px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--bad);flex:none;
+       box-shadow:0 0 0 3px rgba(248,81,73,.15)}
+  .dot.on{background:var(--ok);box-shadow:0 0 0 3px rgba(63,185,80,.15)}
+  .net{color:var(--muted);font-size:11px;margin-left:auto;font-variant-numeric:tabular-nums;
+       text-align:right}
+  .wrap{padding:14px;display:grid;gap:12px;
+        grid-template-columns:minmax(300px,1.25fr) minmax(280px,1fr)}
+  @media(max-width:820px){.wrap{grid-template-columns:1fr;padding:10px}}
+  .col{display:grid;gap:12px;align-content:start}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px}
+  .card>h2{font-size:11px;text-transform:uppercase;letter-spacing:.9px;color:var(--muted);
+           margin:0 0 10px;display:flex;align-items:center;gap:8px}
+  .card>h2 .right{margin-left:auto;text-transform:none;letter-spacing:0}
+
+  /* live view */
+  .view{position:relative;border-radius:10px;overflow:hidden;background:#000;
+        aspect-ratio:1/1;display:grid;place-items:center}
+  .view img{width:100%;height:100%;object-fit:contain;display:block}
+  .view canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+  .view .msg{position:absolute;inset:0;display:grid;place-items:center;text-align:center;
+             color:var(--muted);font-size:12px;padding:20px;background:rgba(11,15,20,.72)}
+  .view .msg.hide{display:none}
+  .tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+
+  .pill{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:999px;
+        font-size:11px;font-weight:600;letter-spacing:.3px;background:#21262d;color:var(--muted);
+        border:1px solid var(--line);white-space:nowrap}
+  .pill.ok{background:rgba(63,185,80,.14);color:var(--ok);border-color:rgba(63,185,80,.3)}
+  .pill.warn{background:rgba(210,153,34,.14);color:var(--warn);border-color:rgba(210,153,34,.3)}
+  .pill.bad{background:rgba(248,81,73,.14);color:var(--bad);border-color:rgba(248,81,73,.3)}
+  .pill.info{background:rgba(88,166,255,.14);color:var(--accent);border-color:rgba(88,166,255,.3)}
+
+  .banner{display:none;padding:12px 14px;border-radius:12px;margin:0 14px;
+          font-weight:700;letter-spacing:1.2px;font-size:17px;text-align:center}
+  .banner.show{display:block;animation:pulse 1s ease-in-out infinite}
+  .banner.bad{background:rgba(248,81,73,.18);border:1px solid rgba(248,81,73,.55);color:#ff8781}
+  .banner.warn{background:rgba(210,153,34,.16);border:1px solid rgba(210,153,34,.5);color:#e5c07b}
+  @keyframes pulse{50%{opacity:.55}}
+
+  .score{display:flex;align-items:baseline;gap:10px}
+  .big{font-size:44px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1}
+  .bar{position:relative;height:10px;background:var(--ink);border-radius:999px;
+       overflow:hidden;margin:10px 0 4px}
+  .bar>i{display:block;height:100%;border-radius:999px;transition:width .15s linear;width:0}
+  .bar>b{position:absolute;top:-3px;width:2px;height:16px;background:var(--text);opacity:.75}
+  .barcap{display:flex;justify-content:space-between;font-size:11px;color:var(--muted)}
+  canvas.trend{width:100%;height:64px;display:block;margin-top:10px;border-radius:8px;
+               background:var(--ink)}
+
+  .meta{display:grid;grid-template-columns:1fr 1fr;gap:2px 14px}
+  .meta div{display:flex;justify-content:space-between;gap:8px;padding:5px 0;
+            border-bottom:1px dotted var(--line);min-width:0}
+  .meta span:first-child{color:var(--muted);overflow:hidden;text-overflow:ellipsis;
+                         white-space:nowrap}
+  .meta span:last-child{font-variant-numeric:tabular-nums;flex:none}
+  @media(max-width:420px){.meta{grid-template-columns:1fr}}
+
+  .ctl{display:block;margin:0 0 12px}
+  .ctl .lab{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);
+            margin-bottom:4px}
+  .ctl .lab b{color:var(--text);font-variant-numeric:tabular-nums}
+  input[type=range]{width:100%;accent-color:var(--accent);margin:0}
+  .btns{display:flex;gap:8px;flex-wrap:wrap}
+  button,select{background:#21262d;color:var(--text);border:1px solid var(--line);
+                border-radius:8px;padding:8px 13px;font-size:13px;cursor:pointer;
+                font-family:inherit}
+  button:hover,select:hover{border-color:var(--accent)}
+  button:active{transform:translateY(1px)}
+  button.on{background:rgba(210,153,34,.16);border-color:rgba(210,153,34,.5);color:#e5c07b}
+  button.pri{background:rgba(88,166,255,.16);border-color:rgba(88,166,255,.45);color:#9ecbff}
+  a.btn{display:inline-block;text-decoration:none;background:#21262d;color:var(--text);
+        border:1px solid var(--line);border-radius:8px;padding:8px 13px;font-size:13px}
+  a.btn:hover{border-color:var(--accent)}
+
+  ul.log{list-style:none;margin:0;padding:0;max-height:172px;overflow-y:auto;font-size:12px}
+  ul.log li{display:flex;gap:10px;padding:5px 0;border-bottom:1px solid var(--line);
+            font-variant-numeric:tabular-nums}
+  ul.log li:last-child{border-bottom:none}
+  ul.log time{color:var(--muted);flex:none}
+  .empty{color:var(--muted);font-size:12px;padding:4px 0}
+  footer{color:var(--muted);font-size:11px;padding:4px 16px;text-align:center}
+  code{background:var(--ink);padding:1px 5px;border-radius:4px;font-size:11px}
+</style>
+</head>
+<body>
+
+<header>
+  <span class="dot" id="link"></span>
+  <h1>DrowsyGuard <small id="mode">connecting</small></h1>
+  <span class="net" id="net">&mdash;</span>
+</header>
+
+<div class="banner bad" id="banner"></div>
+
+<div class="wrap">
+  <div class="col">
+    <div class="card">
+      <h2>Live view <span class="right pill" id="fpsPill">&mdash; fps</span></h2>
+      <div class="view">
+        <img id="feed" alt="camera preview">
+        <canvas id="overlay"></canvas>
+        <div class="msg" id="viewMsg">waiting for the first frame&hellip;</div>
+      </div>
+      <div class="tags">
+        <span class="pill" id="facePill">face &mdash;</span>
+        <span class="pill" id="camPill">camera &mdash;</span>
+        <span class="pill" id="modelPill">models &mdash;</span>
+        <span class="pill" id="eyePill">eye model &mdash;</span>
+        <span class="pill" id="srcPill">source &mdash;</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Fused drowsiness risk <span class="right pill" id="statePill">&mdash;</span></h2>
+      <div class="score">
+        <span class="big" id="risk">0.00</span>
+        <span style="color:var(--muted);font-size:12px">trigger <b id="trigger">0.55</b>
+          &middot; streak <b id="streak">0</b></span>
+      </div>
+      <div class="bar"><i id="riskBar"></i><b id="riskMark" style="left:55%"></b></div>
+      <div class="barcap"><span>calm</span><span>drowsy</span></div>
+      <canvas class="trend" id="trend" width="600" height="128"></canvas>
+      <div class="barcap" style="margin-top:4px">
+        <span>last 2 minutes</span><span>dashed = trigger</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Eyes &amp; cues</h2>
+      <div class="ctl">
+        <span class="lab">PERCLOS &mdash; share of the window with eyes closed
+          <b id="perclosTxt">0%</b></span>
+        <div class="bar"><i id="perclosBar" style="background:var(--accent)"></i></div>
+      </div>
+      <div class="tags" style="margin:0 0 10px">
+        <span class="pill" id="cueMouth">mouth &mdash;</span>
+        <span class="pill" id="cueHead">head &mdash;</span>
+        <span class="pill" id="cueBase">baselines &mdash;</span>
+        <span class="pill" id="cueSup">sneeze filter &mdash;</span>
+      </div>
+      <div class="meta">
+        <div><span>p(eyes closed)</span><span id="eyeClosed">&mdash;</span></div>
+        <div><span>current closure</span><span id="closure">&mdash;</span></div>
+        <div><span>blinks / min</span><span id="rBlink">&mdash;</span></div>
+        <div><span>long blinks / min</span><span id="rLong">&mdash;</span></div>
+        <div><span>yawns / min</span><span id="rYawn">&mdash;</span></div>
+        <div><span>nods / min</span><span id="rNod">&mdash;</span></div>
+        <div><span>sneezes suppressed</span><span id="rSneeze">&mdash;</span></div>
+        <div><span>head roll</span><span id="gRoll">&mdash;</span></div>
+        <div><span>jaw drop</span><span id="gJaw">&mdash;</span></div>
+        <div><span>pitch proxy</span><span id="gNose">&mdash;</span></div>
+        <div><span>eye distance</span><span id="gEye">&mdash;</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col">
+    <div class="card">
+      <h2>Controls</h2>
+      <div class="btns" style="margin-bottom:12px">
+        <button id="muteBtn">Mute alerts</button>
+        <button id="testBtn" class="pri">Test speaker</button>
+        <select id="testReason" title="which warning to play">
+          <option value="0">drowsy</option>
+          <option value="1">microsleep</option>
+          <option value="2">yawning</option>
+          <option value="3">head nod</option>
+        </select>
+      </div>
+      <label class="ctl">
+        <span class="lab">Stream rate <b id="fpsVal">12 fps</b></span>
+        <input type="range" id="fpsCtl" min="1" max="20" step="1" value="12">
+      </label>
+      <label class="ctl">
+        <span class="lab">JPEG quality <b id="qVal">80</b></span>
+        <input type="range" id="qCtl" min="10" max="95" step="5" value="80">
+      </label>
+      <div class="btns">
+        <button id="srcBtn">Use still photos</button>
+        <a class="btn" id="saveBtn" href="/api/snapshot" download="drowsyguard.jpg">Save frame</a>
+      </div>
+      <div class="empty" id="ctlNote">
+        One live stream at a time. A second viewer falls back to still photos.
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Event log <span class="right pill" id="alertCount">0 alerts</span></h2>
+      <ul class="log" id="log"></ul>
+      <div class="empty" id="logEmpty">nothing yet &mdash; events appear here as they fire</div>
+    </div>
+
+    <div class="card">
+      <h2>Device</h2>
+      <div class="meta">
+        <div><span>uptime</span><span id="uptime">&mdash;</span></div>
+        <div><span>frames</span><span id="frames">&mdash;</span></div>
+        <div><span>detector fps</span><span id="dfps">&mdash;</span></div>
+        <div><span>stream viewers</span><span id="viewers">&mdash;</span></div>
+        <div><span>wi-fi clients</span><span id="clients">&mdash;</span></div>
+        <div><span>frame size</span><span id="fsize">&mdash;</span></div>
+        <div><span>internal heap</span><span id="heap">&mdash;</span></div>
+        <div><span>psram free</span><span id="psram">&mdash;</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  ESP32-S3 &middot; OV3660 &middot; MAX98357A &mdash; preview <code>/stream</code>,
+  telemetry <code>/api/status</code>
+</footer>
+
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const clamp = (v, a, b) => v < a ? a : (v > b ? b : v);
+const pct = v => (clamp(v, 0, 1) * 100).toFixed(0) + '%';
+
+let streamPort = 81;      // corrected from /api/status on the first poll
+let source = 'live';      // 'live' (MJPEG) or 'photo' (polled snapshots)
+let firstFrame = false;
+let photoTimer = null;
+let lastAlerts = 0;
+let lastEvents = 0;
+const trend = [];         // risk history for the sparkline
+const TREND_MAX = 240;
+
+// --- video source ----------------------------------------------------------
+// The MJPEG stream lives on its own port because the device serves it from a
+// second HTTP instance (one esp_http_server instance handles one request at a
+// time, and a stream never ends). If it does not start within a few seconds -
+// usually because another phone already holds the single stream slot - fall back
+// to polling stills, which the control server can serve to everyone.
+function startLive() {
+  source = 'live';
+  stopPhotos();
+  firstFrame = false;
+  $('viewMsg').textContent = 'opening live stream…';
+  $('viewMsg').classList.remove('hide');
+  $('feed').src = `${location.protocol}//${location.hostname}:${streamPort}/stream?t=${Date.now()}`;
+  $('srcBtn').textContent = 'Use still photos';
+  setTimeout(() => { if (source === 'live' && !firstFrame) startPhotos(true); }, 6000);
+}
+
+function startPhotos(auto) {
+  source = 'photo';
+  $('feed').removeAttribute('src');
+  $('srcBtn').textContent = 'Use live stream';
+  $('viewMsg').textContent = auto ? 'live stream busy — showing still photos'
+                                  : 'still photos';
+  $('viewMsg').classList.remove('hide');
+  const tick = () => { $('feed').src = '/api/snapshot?t=' + Date.now(); };
+  tick();
+  photoTimer = setInterval(tick, 700);
+}
+
+function stopPhotos() { if (photoTimer) { clearInterval(photoTimer); photoTimer = null; } }
+
+$('feed').addEventListener('load', () => {
+  firstFrame = true;
+  $('viewMsg').classList.add('hide');
+  $('srcPill').textContent = source === 'live' ? 'source live stream' : 'source still photos';
+  $('srcPill').className = 'pill ' + (source === 'live' ? 'ok' : 'warn');
+});
+$('feed').addEventListener('error', () => {
+  if (source === 'live' && !firstFrame) return;   // the 6 s timer handles this
+  $('viewMsg').textContent = 'no frame — is the camera up?';
+  $('viewMsg').classList.remove('hide');
+});
+$('srcBtn').onclick = () => source === 'live' ? startPhotos(false) : startLive();
+
+// --- face box overlay ------------------------------------------------------
+// Drawn client-side from the JSON rather than burned into the JPEG: the device
+// keeps encoding pixels it already has, and the box stays crisp at any zoom.
+function drawOverlay(s) {
+  const c = $('overlay'), img = $('feed');
+  const w = img.clientWidth || c.clientWidth, h = img.clientHeight || c.clientHeight;
+  if (!w || !h) return;
+  if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+  const g = c.getContext('2d');
+  g.clearRect(0, 0, w, h);
+  if (!s || !s.face || !s.face.found || !s.frame.w || !s.frame.h) return;
+
+  // The frame is square and object-fit:contain, so one scale factor covers both
+  // axes; the letterbox offset is whatever is left over.
+  const k = Math.min(w / s.frame.w, h / s.frame.h);
+  const ox = (w - s.frame.w * k) / 2, oy = (h - s.frame.h * k) / 2;
+  const x = ox + s.face.x * k, y = oy + s.face.y * k;
+  const bw = s.face.w * k, bh = s.face.h * k;
+
+  const alert = s.alert && s.alert.active;
+  g.strokeStyle = alert ? '#f85149' : (s.face.held ? '#d29922' : '#3fb950');
+  g.lineWidth = 2;
+  g.strokeRect(x, y, bw, bh);
+  g.font = '600 11px ui-sans-serif,system-ui,sans-serif';
+  g.fillStyle = g.strokeStyle;
+  const label = (s.face.held ? 'tracking ' : 'face ') + s.face.score.toFixed(2);
+  g.fillText(label, x, Math.max(11, y - 4));
+}
+
+// --- risk sparkline --------------------------------------------------------
+function drawTrend(trigger) {
+  const c = $('trend'), g = c.getContext('2d');
+  const w = c.width, h = c.height;
+  g.clearRect(0, 0, w, h);
+  const y = v => h - 4 - clamp(v, 0, 1) * (h - 8);
+
+  g.setLineDash([4, 4]);
+  g.strokeStyle = 'rgba(230,237,243,.35)';
+  g.lineWidth = 1;
+  g.beginPath(); g.moveTo(0, y(trigger)); g.lineTo(w, y(trigger)); g.stroke();
+  g.setLineDash([]);
+  if (trend.length < 2) return;
+
+  const step = w / (TREND_MAX - 1);
+  g.beginPath();
+  trend.forEach((v, i) => {
+    const px = i * step, py = y(v);
+    i ? g.lineTo(px, py) : g.moveTo(px, py);
+  });
+  g.strokeStyle = '#58a6ff';
+  g.lineWidth = 2;
+  g.stroke();
+  g.lineTo(((trend.length - 1) * step), h);
+  g.lineTo(0, h);
+  g.closePath();
+  g.fillStyle = 'rgba(88,166,255,.12)';
+  g.fill();
+}
+
+// --- event log -------------------------------------------------------------
+const EVENT_BITS = [
+  [1, 'blink', ''], [2, 'long blink', 'warn'], [4, 'MICROSLEEP', 'bad'],
+  [8, 'yawn', 'warn'], [16, 'head nod', 'warn'], [32, 'sneeze (suppressed)', ''],
+];
+function logLine(text, kind) {
+  const li = document.createElement('li');
+  const t = document.createElement('time');
+  t.textContent = new Date().toLocaleTimeString();
+  const s = document.createElement('span');
+  s.textContent = text;
+  if (kind) s.style.color = kind === 'bad' ? 'var(--bad)' : 'var(--warn)';
+  li.append(t, s);
+  const ul = $('log');
+  ul.prepend(li);
+  while (ul.children.length > 40) ul.lastChild.remove();
+  $('logEmpty').style.display = 'none';
+}
+
+// --- status polling --------------------------------------------------------
+function setPill(el, text, cls) {
+  const e = $(el);
+  e.textContent = text;
+  e.className = 'pill' + (cls ? ' ' + cls : '');
+}
+
+function render(s) {
+  streamPort = s.stream.port || streamPort;
+
+  // header
+  $('link').classList.add('on');
+  $('mode').textContent = s.camera ? 'monitoring' : 'no camera';
+  $('net').innerHTML = `${s.net.ssid}<br>${s.net.ip}` +
+      (s.net.sta ? ` &middot; ${s.net.sta_ip} (${s.net.rssi} dBm)` : '');
+
+  // alert banner
+  const b = $('banner');
+  if (s.alert.active) {
+    b.textContent = s.alert.text || 'DROWSY';
+    b.className = 'banner bad show';
+  } else if (s.alert.muted) {
+    b.textContent = 'ALERTS MUTED';
+    b.className = 'banner warn show';
+  } else {
+    b.className = 'banner';
+  }
+
+  // live view badges
+  setPill('fpsPill', s.fps.toFixed(1) + ' fps', s.fps >= 8 ? 'ok' : 'warn');
+  setPill('facePill', s.face.found ? (s.face.held ? 'face tracking' : 'face locked')
+                                   : 'no face',
+          s.face.found ? (s.face.held ? 'warn' : 'ok') : '');
+  setPill('camPill', s.camera ? 'camera ok' : 'camera FAILED', s.camera ? 'ok' : 'bad');
+  setPill('modelPill', s.models ? 'face model ok' : 'no face model',
+          s.models ? 'ok' : 'bad');
+  setPill('eyePill', s.eye_model ? 'eye model ok' : 'eye model missing',
+          s.eye_model ? 'ok' : 'warn');
+
+  // risk
+  const r = s.risk.score;
+  $('risk').textContent = r.toFixed(2);
+  $('trigger').textContent = s.risk.trigger.toFixed(2);
+  $('streak').textContent = `${s.risk.streak}/${s.risk.required}`;
+  const bar = $('riskBar');
+  bar.style.width = pct(r);
+  bar.style.background = r >= s.risk.trigger ? 'var(--bad)'
+                       : r >= s.risk.trigger * 0.6 ? 'var(--warn)' : 'var(--ok)';
+  $('riskMark').style.left = pct(s.risk.trigger);
+  setPill('statePill',
+          !s.eye_model ? 'eye model missing' : r >= s.risk.trigger ? 'DROWSY' : 'alert',
+          !s.eye_model ? 'warn' : r >= s.risk.trigger ? 'bad' : 'ok');
+  trend.push(r);
+  while (trend.length > TREND_MAX) trend.shift();
+  drawTrend(s.risk.trigger);
+
+  // eyes and cues
+  $('perclosTxt').textContent = pct(s.eyes.perclos);
+  $('perclosBar').style.width = pct(s.eyes.perclos);
+  $('eyeClosed').textContent = s.eyes.closed.toFixed(2);
+  $('closure').textContent = s.eyes.closure_s.toFixed(2) + ' s';
+  setPill('cueMouth', s.cues.mouth_open ? 'mouth open' : 'mouth closed',
+          s.cues.mouth_open ? 'warn' : '');
+  setPill('cueHead', s.cues.head_down ? 'head down' : 'head up',
+          s.cues.head_down ? 'warn' : '');
+  setPill('cueBase', s.cues.baselines_ready ? 'baselines ready' : 'learning baselines',
+          s.cues.baselines_ready ? 'ok' : 'info');
+  setPill('cueSup', s.cues.suppressed ? 'sneeze filter active' : 'sneeze filter idle',
+          s.cues.suppressed ? 'info' : '');
+  $('rBlink').textContent = s.rates.blink.toFixed(1);
+  $('rLong').textContent = s.rates.long_blink.toFixed(1);
+  $('rYawn').textContent = s.rates.yawn.toFixed(1);
+  $('rNod').textContent = s.rates.nod.toFixed(1);
+  $('rSneeze').textContent = s.rates.sneeze;
+  $('gRoll').textContent = s.geom.valid ? s.geom.roll.toFixed(1) + '°' : '—';
+  $('gJaw').textContent = s.geom.valid ? s.geom.jaw_drop.toFixed(3) : '—';
+  $('gNose').textContent = s.geom.valid ? s.geom.nose_frac.toFixed(3) : '—';
+  $('gEye').textContent = s.geom.valid ? s.geom.eye_dist.toFixed(1) + ' px' : '—';
+
+  // controls that the device owns the truth for
+  const mute = $('muteBtn');
+  mute.textContent = s.alert.muted ? 'Unmute alerts' : 'Mute alerts';
+  mute.classList.toggle('on', s.alert.muted);
+  if (document.activeElement !== $('fpsCtl')) {
+    $('fpsCtl').value = s.stream.fps;
+    $('fpsVal').textContent = s.stream.fps + ' fps';
+  }
+  if (document.activeElement !== $('qCtl')) {
+    $('qCtl').value = s.stream.quality;
+    $('qVal').textContent = s.stream.quality;
+  }
+
+  // device
+  const up = Math.floor(s.uptime_ms / 1000);
+  $('uptime').textContent =
+      `${String(Math.floor(up / 3600)).padStart(2, '0')}:` +
+      `${String(Math.floor(up / 60) % 60).padStart(2, '0')}:` +
+      `${String(up % 60).padStart(2, '0')}`;
+  $('frames').textContent = s.frames.toLocaleString();
+  $('dfps').textContent = s.fps.toFixed(1);
+  $('viewers').textContent = s.stream.viewers;
+  $('clients').textContent = s.net.clients;
+  $('fsize').textContent = `${s.frame.w}×${s.frame.h}`;
+  $('heap').textContent = (s.mem.heap / 1024).toFixed(0) + ' kB';
+  $('psram').textContent = (s.mem.psram / 1024).toFixed(0) + ' kB';
+  $('alertCount').textContent = s.alert.count + (s.alert.count === 1 ? ' alert' : ' alerts');
+
+  // log: new announcements, and behaviour events on their rising edge
+  if (s.alert.count > lastAlerts) {
+    logLine(`alert: ${s.alert.text || 'drowsy'} (${s.alert.reason})`, 'bad');
+    lastAlerts = s.alert.count;
+  }
+  const fresh = s.cues.events & ~lastEvents;
+  EVENT_BITS.forEach(([bit, name, kind]) => {
+    if (fresh & bit && bit !== 1) logLine(name, kind);   // blinks are too frequent to log
+  });
+  lastEvents = s.cues.events;
+
+  drawOverlay(s);
+}
+
+let failures = 0;
+async function poll() {
+  try {
+    const ctl = new AbortController();
+    const kill = setTimeout(() => ctl.abort(), 2500);
+    const res = await fetch('/api/status', {signal: ctl.signal, cache: 'no-store'});
+    clearTimeout(kill);
+    if (!res.ok) throw new Error(res.status);
+    render(await res.json());
+    failures = 0;
+  } catch (e) {
+    if (++failures > 2) {
+      $('link').classList.remove('on');
+      $('mode').textContent = 'disconnected';
+    }
+  }
+}
+
+// --- control actions -------------------------------------------------------
+const post = q => fetch(q, {method: 'POST'}).catch(() => {});
+$('muteBtn').onclick = () => {
+  const muting = $('muteBtn').textContent.startsWith('Mute');
+  post('/api/settings?muted=' + (muting ? 1 : 0)).then(poll);
+};
+$('testBtn').onclick = async () => {
+  const btn = $('testBtn');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/alert-test?reason=' + $('testReason').value,
+                            {method: 'POST'});
+    const j = await res.json();
+    logLine(j.played ? `speaker test: ${j.text}` : 'speaker test skipped (muted)',
+            j.played ? '' : 'warn');
+  } catch (e) {
+    logLine('speaker test failed to reach the device', 'bad');
+  }
+  setTimeout(() => { btn.disabled = false; }, 1200);
+};
+$('fpsCtl').oninput = e => {
+  $('fpsVal').textContent = e.target.value + ' fps';
+  post('/api/settings?fps=' + e.target.value);
+};
+$('qCtl').oninput = e => {
+  $('qVal').textContent = e.target.value;
+  post('/api/settings?quality=' + e.target.value);
+};
+
+// A tab left in the background keeps a stream socket open for nothing, and that
+// socket is the scarce resource here.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    stopPhotos();
+    $('feed').removeAttribute('src');
+  } else {
+    source === 'live' ? startLive() : startPhotos(false);
+  }
+});
+window.addEventListener('resize', () => drawOverlay(null));
+
+startLive();
+poll();
+setInterval(poll, 300);
+</script>
+</body>
+</html>

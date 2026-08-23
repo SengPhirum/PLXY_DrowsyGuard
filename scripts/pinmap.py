@@ -5,6 +5,12 @@ tutorial tables - reads from here, and here reads `#define` values straight out 
 firmware/esp32s3/main/board_*.h. That is the whole point: a GPIO can only be
 changed in one place, and every artefact follows.
 
+There is no display table any more. The SPI panel was removed from the build: the
+preview is served to a browser over the ESP32-S3's own Wi-Fi access point (see
+firmware/esp32s3/main/web_server.h), which needs no GPIOs at all. That handed
+GPIO 14, 21, 41, 42 and 47 back to the free list and cut the wire count from 15
+to 7.
+
 tests/test_tutorial_diagrams.py asserts the parse still works and that nothing
 double-books a pin.
 """
@@ -18,9 +24,9 @@ FIRMWARE = Path(__file__).resolve().parents[1] / 'firmware/esp32s3/main'
 
 
 def load_pins() -> dict:
-    """All `#define NAME <int>` pairs from the three board headers."""
+    """All `#define NAME <int>` pairs from the board headers."""
     out = {}
-    for name in ('board_display.h', 'board_audio.h', 'board_camera.h'):
+    for name in ('board_audio.h', 'board_camera.h'):
         text = (FIRMWARE / name).read_text(encoding='utf-8')
         for m in re.finditer(r'^#define\s+(\w+)\s+(-?\d+)', text, re.M):
             out[m.group(1)] = int(m.group(2))
@@ -40,19 +46,6 @@ class Wire:
 
 _P = load_pins()
 
-
-# Silkscreen order on the 1.8" ST7735S module, read off the owner's photograph of
-# the actual part: GND VDD SCL SDA RST DC CS BLK, left to right.
-DISPLAY_WIRING = (
-    Wire('GND', 'GND', 'gnd', 'connect this one first'),
-    Wire('VDD', '3V3', '3v3', '3.3 V only — never 5 V', alt='VCC'),
-    Wire('SCL', f"GPIO {_P['LCD_PIN_SCK']}", 'sig', 'SPI clock', alt='SCK / CLK'),
-    Wire('SDA', f"GPIO {_P['LCD_PIN_MOSI']}", 'sig', 'SPI data out', alt='MOSI / DIN'),
-    Wire('RST', f"GPIO {_P['LCD_PIN_RST']}", 'sig', 'panel reset', alt='RES'),
-    Wire('DC', f"GPIO {_P['LCD_PIN_DC']}", 'sig', 'data / command', alt='A0 / RS'),
-    Wire('CS', f"GPIO {_P['LCD_PIN_CS']}", 'sig', 'chip select'),
-    Wire('BLK', '3V3', '3v3', 'BACKLIGHT — 3V3, not GND', alt='LED / BL'),
-)
 
 # MAX98357A breakout. GAIN and SD are deliberately absent: both are left floating.
 AMP_WIRING = (
@@ -91,11 +84,15 @@ RESERVED = {
 
 BUZZER_GPIO = 2
 
+# The five GPIOs the SPI panel used to hold. Nothing in this build claims them, and
+# they are listed by name so the tutorial can say what became free and why.
+FREED_BY_WEB_PREVIEW = (14, 21, 41, 42, 47)
+
 
 def wired_gpios() -> dict:
     """GPIO number -> what claims it, for every wire in this build."""
     out = {}
-    for w in DISPLAY_WIRING + AMP_WIRING:
+    for w in AMP_WIRING:
         m = re.fullmatch(r'GPIO (\d+)', w.esp)
         if m:
             out[int(m.group(1))] = w.module

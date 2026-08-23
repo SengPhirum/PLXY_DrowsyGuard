@@ -31,9 +31,55 @@ CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
 CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
 
 # --- camera ---
+# Three sensors, because the board does not reliably ship the one it is sold as.
+# khmeres item 2991 is listed with an OV3660; the unit verified on 2026-08-23
+# (MAC 80:b5:4e:c5:e0:18) actually carries an **OV5640** and reports
+# "ov3660: Mismatch PID=0x5640" on the way to detecting it correctly. Both are
+# pinned here rather than left to the component's defaults: OV5640 happens to
+# default to y today, and losing it would look like a dead camera rather than a
+# missing driver.
 CONFIG_OV3660_SUPPORT=y
+CONFIG_OV5640_SUPPORT=y
 CONFIG_OV2640_SUPPORT=y
 CONFIG_CAMERA_TASK_STACK_SIZE=4096
+
+# --- models ---
+# The face detector's weights are linked into the app binary rather than loaded
+# from a partition. partitions.csv sizes the app partition at 6 MB for exactly this.
+CONFIG_HUMAN_FACE_DETECT_MODEL_IN_FLASH_RODATA=y
+
+# --- Wi-Fi + HTTP preview -------------------------------------------------
+# The panel was replaced by a browser, so the radio and the TCP stack are now on
+# the critical path for everything a developer or examiner can see. These are the
+# esp32-camera web-server settings, and they are not optional decoration: with the
+# stock buffer counts an MJPEG stream stalls for hundreds of milliseconds at a time
+# and reads as a camera that cannot keep up.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
+# TX buffers are STATIC here, and that is forced rather than chosen: ESP-IDF makes
+# ESP_WIFI_DYNAMIC_TX_BUFFER unavailable whenever SPIRAM_TRY_ALLOCATE_WIFI_LWIP is
+# set (which it is, a few lines up), because dynamic buffers cannot be guaranteed
+# once the Wi-Fi stack is allowed into PSRAM. Setting the derived
+# CONFIG_ESP_WIFI_TX_BUFFER_TYPE directly does nothing - it is computed from the
+# choice - so the knob that actually matters is the static count below.
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=24
+CONFIG_ESP_WIFI_CACHE_TX_BUFFER_NUM=32
+CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=y
+CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=y
+
+# Two HTTP servers (control on :80, stream on :81), each with a handful of
+# sockets, plus the DHCP server for the SoftAP.
+CONFIG_LWIP_MAX_SOCKETS=16
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=65534
+CONFIG_LWIP_TCP_WND_DEFAULT=65534
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=64
+CONFIG_LWIP_UDP_RECVMBOX_SIZE=64
+CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64
+
+# The status JSON is a single ~1 kB response and the query strings are short, but
+# a browser's own request headers are not: leave room for them.
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_HTTPD_MAX_URI_LEN=512
 
 # --- app ---
 # app_main runs the capture loop directly, and BehaviorAnalyzer/Perclos keep a few

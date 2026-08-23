@@ -10,7 +10,11 @@ coordinate ("E24") instead of an approximate position on the picture.
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import diagram_fonts  # noqa: E402  (needs the sys.path line above)
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -43,11 +47,10 @@ BOARD_EDGE = (208, 202, 188)
 HOLE = (108, 104, 96)
 HOLE_DARK = (72, 69, 63)
 
-FONT_DIR = Path('/usr/share/fonts/truetype/dejavu')
-_F_REG = FONT_DIR / 'DejaVuSans.ttf'
-_F_BOLD = FONT_DIR / 'DejaVuSans-Bold.ttf'
-_F_MONO = FONT_DIR / 'DejaVuSansMono.ttf'
-_F_MONO_BOLD = FONT_DIR / 'DejaVuSansMono-Bold.ttf'
+# Resolved at import time rather than hard-coded to a Linux path, so the artwork
+# can be regenerated on the same machine the firmware is flashed from. See
+# scripts/diagram_fonts.py for where it looks and why it insists on DejaVu.
+_F_REG, _F_BOLD, _F_MONO, _F_MONO_BOLD = diagram_fonts.faces()
 
 
 def _font(path: Path, size: int) -> ImageFont.FreeTypeFont:

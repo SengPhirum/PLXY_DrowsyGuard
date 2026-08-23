@@ -5,8 +5,10 @@ Low-cost, camera-based driver drowsiness detection research project designed for
 ## Target
 - MCU: ESP32-S3-WROOM-1 **N16R8** (16 MB flash, 8 MB octal PSRAM)
 - Camera: **OV3660** on the board's DVP/FPC connector
-- Display: 1.8" 128x160 **ST7735S** SPI TFT
 - Audio: **MAX98357A** I2S class-D amplifier + 4 ohm / 3 W speaker
+- Interface: **no display.** The board serves a live MJPEG preview and all its
+  telemetry over its own Wi-Fi access point — join `DrowsyGuard-XXXXXX` and open
+  `http://192.168.4.1/`
 - Runtime: ESP-IDF + ESP-DL
 - Model: tiny grayscale CNN, INT8 quantized to `.espdl`
 - Safety logic: temporal smoothing + sustained-risk trigger + cooldown
@@ -18,10 +20,28 @@ unopened parts and ending at a working system — see:
 
 **[Hardware Setup Tutorial](./docs/tutorials/hardware-setup/README.md)**
 
-It covers all five purchased components, a full wiring table, eleven labelled
-wiring diagrams, first power-on, per-component tests and troubleshooting.
+It covers all four purchased components, a full wiring table, eleven labelled
+diagrams, first power-on, per-component tests and troubleshooting.
 [`docs/HARDWARE_SETUP.md`](./docs/HARDWARE_SETUP.md) is the shorter reference for
 the toolchain and the ESP-DL binding stages.
+
+The whole build is **seven wires**: five to the amplifier and two to the speaker.
+The camera is a ribbon and the preview is a web page, so neither needs any.
+
+## Firmware dev loop
+
+`plxy.sh` wraps everything the board needs. It works around two things that bite
+on this hardware: ESP-IDF cannot run under Git Bash at all (it refuses on
+`MSYSTEM`), and this board's UART bridge cannot put the chip into download mode
+by itself, so `flash` detects that and tells you to press BOOT once.
+
+```bash
+./plxy.sh dev        # build, flash, monitor
+./plxy.sh wifi       # how to reach the preview from a phone
+./plxy.sh watch      # live risk/PERCLOS/fps from the device API
+./plxy.sh doctor     # toolchain, port and device check
+./plxy.sh help       # everything else
+```
 
 ## Workflow
 ```bash
