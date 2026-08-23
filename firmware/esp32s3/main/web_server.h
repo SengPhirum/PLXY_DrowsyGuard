@@ -74,6 +74,16 @@ struct WebStatus {
     int face_x = 0, face_y = 0, face_w = 0, face_h = 0;
     float face_score = 0.0f;
     int frame_w = 0, frame_h = 0;
+    // The five landmarks, in frame pixels and canonical order (image-left eye,
+    // image-right eye, nose, mouth corner, mouth corner). Sent so the page can draw
+    // the eyes and the mouth rather than just a box round the head: the box says a
+    // face was found, these say the thing the cues are actually measured from was
+    // found in the right place, which is a different and more useful claim.
+    Landmarks lm{};
+    // Whether there is a driver at all. Not the same as face_found, which goes false
+    // for a frame or two whenever detection misses: this stays true across a held box
+    // and only drops when the face has really been given up on.
+    bool driver_present = false;
 
     BehaviorState state{};
     FaceGeometry geom{};
@@ -82,6 +92,19 @@ struct WebStatus {
     int required = 0;
 
     float fps = 0.0f;
+    // Where the frame time actually goes. Here because the frame budget in main.cpp
+    // was an estimate off a model card for a long time, and when it was finally
+    // measured it was wrong by a factor of six. A budget nobody can see is a comment.
+    float ms_detect = 0.0f;   // last face detection
+    float ms_eye = 0.0f;      // last eye inference, one eye
+    // What the detector was handed, and what the plausibility gate threw away. "No
+    // face in the frame" and "a face the gate rejected" look identical without this
+    // and have completely different fixes.
+    bool detect_roi = false;  // searched a crop rather than the whole frame
+    int detect_roi_w = 0;     // that crop's side, in pixels
+    int detect_rejected = 0;  // candidates that failed face_gate_check()
+    // Which check the first failing candidate failed. Points at a string literal.
+    const char *detect_reject = nullptr;
     // Mean luminance of the frame, 0-255, plus the extremes. Here because a
     // preview that flashes white and a preview that flashes for some other reason
     // are indistinguishable by eye, and this is the number that separates them:

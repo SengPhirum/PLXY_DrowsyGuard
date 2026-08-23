@@ -122,13 +122,22 @@ foreach ($line in $kv) {
 
 Set-Location $env:PLXY_FW
 
-# --esptool: run esptool directly instead of idf.py. Needed because this board
-# cannot be put into download mode by any reset-line sequence, so flashing has
-# to be told not to try (--before no_reset).
+# --esptool: run esptool directly instead of idf.py. Needed because esptool's own
+# reset sequences cannot reach download mode on this board, so flashing has to be told
+# not to try (--before no_reset) once something else has put it there.
 if ($Args.Count -gt 0 -and $Args[0] -eq '--esptool') {
     $rest = @($Args[1..($Args.Count - 1)])
     Remove-Item Env:ESPTOOL_CUSTOM_RESET_SEQUENCE -ErrorAction SilentlyContinue
     & $py -m esptool @rest
+    exit $LASTEXITCODE
+}
+
+# --python: run a project script with ESP-IDF's interpreter, which has pyserial.
+# scripts/board_reset.py is the caller - it drives the reset lines directly, which is
+# what puts this board in the loader without the BOOT button.
+if ($Args.Count -gt 0 -and $Args[0] -eq '--python') {
+    $rest = @($Args[1..($Args.Count - 1)])
+    & $py @rest
     exit $LASTEXITCODE
 }
 
@@ -160,6 +169,25 @@ esptool() {
 in_download_mode() {
     esptool --chip esp32s3 -p "$1" --before no_reset --after no_reset \
         --connect-attempts 2 chip_id >/dev/null 2>&1
+}
+
+# Runs a project script with ESP-IDF's Python, which has pyserial. The project venv
+# does not, and installing it there would be a second copy for one caller.
+idf_python() {
+    write_idf_helper
+    PLXY_FW="$(cygpath -w "$REPO")" \
+        powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$IDF_PS")" \
+        --python "$@"
+}
+
+# Put the chip in the ROM loader by driving the reset lines directly.
+#
+# This board's auto-reset lines are INVERTED relative to esptool's convention, which
+# is the whole reason esptool cannot do it and why the instructions below used to be
+# the only route. scripts/board_reset.py has the measurements. It verifies the ROM
+# banner, so a false success is not possible.
+enter_download_mode() {
+    idf_python "scripts/board_reset.py" "$1" --download --quiet >/dev/null 2>&1
 }
 
 # --------------------------------------------------------------------------- #
@@ -293,6 +321,11 @@ cmd_flash() {
     if in_download_mode "$PORT"; then
         ok "already in the ROM loader - flashing without touching the reset lines"
         flash_binaries no_reset || die "flash failed"
+    elif enter_download_mode "$PORT" && in_download_mode "$PORT"; then
+        # The lines are inverted on this board, so the sequence esptool will not try
+        # is the one that works. No BOOT press needed.
+        ok "put it in the ROM loader over the serial lines - no BOOT press needed"
+        flash_binaries no_reset || die "flash failed"
     else
         say "flashing $PORT"
         # esptool walks every other serial port when the one it was given fails,
@@ -302,11 +335,13 @@ cmd_flash() {
             '^Serial port COM|failed to connect: (Could not open|Write timeout)|^Failed to get PID|^No serial ports found|^\(could not open port'
         if [ "${PIPESTATUS[0]}" -ne 0 ]; then
             echo
-            warn "the board would not enter download mode by itself"
+            warn "the board would not enter download mode, even over the raw lines"
             cat <<EOF
 
-  This board's UART bridge resets the chip but cannot pull GPIO0 low, so esptool
-  reports ${B}Wrong boot mode detected (0x28)${Z}. Put it in the loader by hand:
+  esptool cannot do this on its own here, and ${B}scripts/board_reset.py${Z} - which
+  drives the lines directly, with the inverted polarity this board actually uses -
+  did not manage it either. Something is different about the connection this time.
+  Put it in the loader by hand:
 
       1. ${B}Hold BOOT down${Z}   (may be labelled IO0)
       2. ${B}Tap RESET${Z}        (or unplug and replug USB) while still holding BOOT

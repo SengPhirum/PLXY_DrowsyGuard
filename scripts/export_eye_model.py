@@ -47,6 +47,7 @@ TENSORS = ['conv1.weight', 'conv1.bias', 'conv2.weight', 'conv2.bias',
            'conv3.weight', 'conv3.bias', 'conv4.weight']
 
 
+
 def c_name(onnx_name: str) -> str:
     return 'kEye_' + onnx_name.replace('.', '_')
 
@@ -90,6 +91,11 @@ def main() -> int:
              f'// Source: models/detectors/{ONNX.name}',
              '// open-closed-eye-0001, OpenVINO Model Zoo (Intel), Apache-2.0.',
              f'// {total} parameters, float32.',
+             '',
+             '// Weights are in ONNX order throughout: (out, in, ky, kx) for the',
+             '// 3x3 convolutions, (out, in) for the 1x1. eye_model.cpp reads them',
+             '// with that stride. A channel-last layout was tried and measured 20%',
+             '// slower - see the note at the top of eye_model.cpp.',
              '',
              '// Shapes, so the forward pass can assert against them.',
              '#define EYE_IN_C 3',

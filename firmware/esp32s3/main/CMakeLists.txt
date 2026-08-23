@@ -3,7 +3,7 @@
 idf_component_register(SRCS "main.cpp" "risk_filter.cpp" "model_adapter.cpp"
                             "voice_alert.cpp" "voice_clips.cpp" "behavior.cpp"
                             "board_audio.cpp" "board_wifi.cpp" "board_sdcard.cpp"
-                            "web_server.cpp" "eye_model.cpp"
+                            "web_server.cpp" "eye_model.cpp" "face_gate.cpp"
                        INCLUDE_DIRS "."
                        REQUIRES esp_http_server esp_wifi esp_netif nvs_flash
                                 esp_timer driver fatfs

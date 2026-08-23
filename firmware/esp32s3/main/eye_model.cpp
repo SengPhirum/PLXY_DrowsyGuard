@@ -46,17 +46,24 @@ static void conv1_pool_relu(const float *in) {
                     for (int dx = 0; dx < 2; ++dx) {
                         const int oy = py * 2 + dy;   // 0..29
                         const int ox = px * 2 + dx;
-                        float sum = bias;
+                        // One accumulator per kernel row, joined at the end, so the
+                        // three rows do not queue up behind each other on a single
+                        // running sum. Same arithmetic in a different order, and it
+                        // produces bit-identical output - it was the only one of
+                        // four restructurings that measured faster. eye_model.h
+                        // records the other three, so they are not tried again.
+                        float a0 = bias, a1 = 0.0f, a2 = 0.0f;
                         for (int ic = 0; ic < EYE_IN_C; ++ic) {
                             const float *plane = in + ic * (EYE_IN_HW * EYE_IN_HW);
                             const float *k = w + ic * 9;
-                            for (int ky = 0; ky < 3; ++ky) {
-                                const float *row = plane + (oy + ky) * EYE_IN_HW + ox;
-                                sum += row[0] * k[ky * 3 + 0] +
-                                       row[1] * k[ky * 3 + 1] +
-                                       row[2] * k[ky * 3 + 2];
-                            }
+                            const float *r0 = plane + (oy + 0) * EYE_IN_HW + ox;
+                            const float *r1 = plane + (oy + 1) * EYE_IN_HW + ox;
+                            const float *r2 = plane + (oy + 2) * EYE_IN_HW + ox;
+                            a0 += r0[0] * k[0] + r0[1] * k[1] + r0[2] * k[2];
+                            a1 += r1[0] * k[3] + r1[1] * k[4] + r1[2] * k[5];
+                            a2 += r2[0] * k[6] + r2[1] * k[7] + r2[2] * k[8];
                         }
+                        const float sum = (a0 + a1) + a2;
                         if (sum > best) best = sum;
                     }
                 }
@@ -80,17 +87,18 @@ static void conv2_pool_relu() {
                     for (int dx = 0; dx < 2; ++dx) {
                         const int oy = py * 2 + dy;   // 0..11
                         const int ox = px * 2 + dx;
-                        float sum = bias;
+                        float a0 = bias, a1 = 0.0f, a2 = 0.0f;
                         for (int ic = 0; ic < EYE_C1; ++ic) {
                             const float *plane = s_p1 + ic * 225;
                             const float *k = w + ic * 9;
-                            for (int ky = 0; ky < 3; ++ky) {
-                                const float *row = plane + (oy + ky) * 15 + ox;
-                                sum += row[0] * k[ky * 3 + 0] +
-                                       row[1] * k[ky * 3 + 1] +
-                                       row[2] * k[ky * 3 + 2];
-                            }
+                            const float *r0 = plane + (oy + 0) * 15 + ox;
+                            const float *r1 = plane + (oy + 1) * 15 + ox;
+                            const float *r2 = plane + (oy + 2) * 15 + ox;
+                            a0 += r0[0] * k[0] + r0[1] * k[1] + r0[2] * k[2];
+                            a1 += r1[0] * k[3] + r1[1] * k[4] + r1[2] * k[5];
+                            a2 += r2[0] * k[6] + r2[1] * k[7] + r2[2] * k[8];
                         }
+                        const float sum = (a0 + a1) + a2;
                         if (sum > best) best = sum;
                     }
                 }
@@ -107,17 +115,18 @@ static void conv3() {
         const float *w = kEye_conv3_weight + oc * (EYE_C2 * 9);
         for (int oy = 0; oy < 4; ++oy) {
             for (int ox = 0; ox < 4; ++ox) {
-                float sum = bias;
+                float a0 = bias, a1 = 0.0f, a2 = 0.0f;
                 for (int ic = 0; ic < EYE_C2; ++ic) {
                     const float *plane = s_p2 + ic * 36;
                     const float *k = w + ic * 9;
-                    for (int ky = 0; ky < 3; ++ky) {
-                        const float *row = plane + (oy + ky) * 6 + ox;
-                        sum += row[0] * k[ky * 3 + 0] +
-                               row[1] * k[ky * 3 + 1] +
-                               row[2] * k[ky * 3 + 2];
-                    }
+                    const float *r0 = plane + (oy + 0) * 6 + ox;
+                    const float *r1 = plane + (oy + 1) * 6 + ox;
+                    const float *r2 = plane + (oy + 2) * 6 + ox;
+                    a0 += r0[0] * k[0] + r0[1] * k[1] + r0[2] * k[2];
+                    a1 += r1[0] * k[3] + r1[1] * k[4] + r1[2] * k[5];
+                    a2 += r2[0] * k[6] + r2[1] * k[7] + r2[2] * k[8];
                 }
+                const float sum = (a0 + a1) + a2;
                 s_a3[oc * 16 + oy * 4 + ox] = sum;
             }
         }

@@ -29,10 +29,15 @@ const mkEl = (id) => ({
   addEventListener() {}, prepend() {}, append() {}, remove() {},
   children: {length: 0}, lastChild: null,
   clientWidth: 320, clientHeight: 320, width: 320, height: 320,
+  // A 2D context stub. Every method the page calls has to be here or the page throws
+  // on a path a browser would have rendered - which is the whole point of this
+  // harness, so a missing method is a real failure rather than a stub to widen
+  // without thinking. `arc` and `fillRect` were added for the landmark overlay.
   getContext: () => ({
-    clearRect() {}, strokeRect() {}, fillText() {}, beginPath() {}, moveTo() {},
-    lineTo() {}, stroke() {}, fill() {}, closePath() {}, setLineDash() {},
-    save() {}, restore() {}, drawImage() {},
+    clearRect() {}, strokeRect() {}, fillRect() {}, fillText() {}, measureText: () => ({width: 0}),
+    beginPath() {}, moveTo() {}, lineTo() {}, arc() {}, ellipse() {}, rect() {},
+    stroke() {}, fill() {}, closePath() {}, setLineDash() {},
+    save() {}, restore() {}, translate() {}, rotate() {}, scale() {}, drawImage() {},
   }),
   removeAttribute() {}, setAttribute() {}, dataset: {},
 });
@@ -71,15 +76,23 @@ const page = factory();
 // --- a payload shaped exactly like web_server.cpp emits ------------------- //
 const status = {
   uptime_ms: 3723456, frames: 55842, fps: 15.2,
+  ms: {detect: 39.4, eye: 21.8},
   camera: true, models: true, eye_model: false,
   frame: {w: 240, h: 240},
-  face: {found: true, held: false, x: 62, y: 48, w: 118, h: 118, score: 0.87},
+  face: {found: true, held: false, x: 62, y: 48, w: 118, h: 118, score: 0.87,
+         roi: true, roi_w: 188, rejected: 0, reject: 'ok'},
+  driver: true,
+  // Canonical order and frame pixels: image-left eye, image-right eye, nose, then
+  // the two mouth corners. Placed consistently with the face box above.
+  lm: {valid: true, x: [90, 133, 111, 96, 127], y: [86, 86, 108, 132, 132]},
   risk: {score: 0.41, trigger: 0.55, streak: 3, required: 8},
-  eyes: {closed: 0.12, perclos: 0.07, closure_s: 0.13},
+  eyes: {closed: 0.12, smooth: 0.11, shut: false, perclos: 0.07, closure_s: 0.13},
   cues: {mouth_open: false, head_down: false, suppressed: false,
-         baselines_ready: true, events: 8},
+         baselines_ready: true, stale: false, events: 8,
+         open_index: 0.014, pitch_dev: -0.006},
   rates: {blink: 14.5, long_blink: 1.2, yawn: 0.9, nod: 0.0, sneeze: 2},
-  geom: {valid: true, roll: -3.4, jaw_drop: 0.612, nose_frac: 0.481, eye_dist: 46.2},
+  geom: {valid: true, roll: -3.4, jaw_drop: 0.612, nose_frac: 0.481,
+         nose_norm: 0.294, mouth_ratio: 0.583, eye_dist: 46.2},
   alert: {active: false, text: 'DROWSY', reason: 'drowsy', count: 1, muted: false,
           lang: 'en', lang_stored: true,
           clips: {drowsy: 'embedded', microsleep: 'embedded',
@@ -114,15 +127,71 @@ run('every event bit set', () => page.render({...status,
   cues: {...status.cues, events: 63}}));
 run('zeros everywhere', () => page.render({
   ...status, fps: 0, frames: 0,
-  face: {found: false, held: false, x: 0, y: 0, w: 0, h: 0, score: 0},
+  ms: {detect: 0, eye: 0},
+  face: {found: false, held: false, x: 0, y: 0, w: 0, h: 0, score: 0,
+         roi: false, roi_w: 240, rejected: 0},
   risk: {score: 0, trigger: 0.55, streak: 0, required: 8},
-  eyes: {closed: 0, perclos: 0, closure_s: 0},
+  eyes: {closed: 0, smooth: 0, shut: false, perclos: 0, closure_s: 0},
+  cues: {...status.cues, open_index: 0, pitch_dev: 0},
   rates: {blink: 0, long_blink: 0, yawn: 0, nod: 0, sneeze: 0},
   mem: {heap: 0, psram: 0}}));
+
+// The states the new cues exist to distinguish. Each one used to be reported
+// wrongly or not at all - see behavior.h - so each gets a render.
+run('landmarks held, geometry frozen', () => page.render({...status,
+  face: {...status.face, held: true},
+  cues: {...status.cues, stale: true}}));
+run('eyes shut, mid-microsleep', () => page.render({...status,
+  eyes: {closed: 0.96, smooth: 0.95, shut: true, perclos: 0.62, closure_s: 1.34},
+  cues: {...status.cues, events: 4}}));
+run('mouth wide open, head still', () => page.render({...status,
+  cues: {...status.cues, mouth_open: true, open_index: 0.24, pitch_dev: -0.11},
+  geom: {...status.geom, jaw_drop: 0.86, mouth_ratio: 0.42, nose_norm: 0.294}}));
+run('head genuinely down', () => page.render({...status,
+  cues: {...status.cues, head_down: true, pitch_dev: -0.12},
+  geom: {...status.geom, nose_frac: 0.36, nose_norm: 0.21}}));
+run('full-frame sweep, gate rejecting', () => page.render({...status,
+  face: {...status.face, roi: false, roi_w: 240, rejected: 2,
+         reject: 'roll-too-steep'}}));
+
+// The states the landmark overlay and the idle gate exist for.
+run('no driver present', () => page.render({...status, driver: false,
+  face: {...status.face, found: false},
+  lm: {...status.lm, valid: false}}));
+run('driver gone but box still held', () => page.render({...status, driver: false,
+  face: {...status.face, held: true}}));
+run('eyes shut - lids drawn', () => page.render({...status,
+  eyes: {...status.eyes, closed: 0.96, smooth: 0.95, shut: true, closure_s: 1.2}}));
+run('mouth open - corners drop and close in', () => page.render({...status,
+  cues: {...status.cues, mouth_open: true, open_index: 0.24},
+  lm: {valid: true, x: [90, 133, 111, 101, 122], y: [86, 86, 108, 145, 145]}}));
+run('landmarks absent (older firmware)', () => {
+  const o = {...status}; delete o.lm; delete o.driver; page.render(o);
+});
+run('landmarks invalid', () => page.render({...status,
+  lm: {valid: false, x: [0, 0, 0, 0, 0], y: [0, 0, 0, 0, 0]}}));
+run('tiny face, marker floor applies', () => page.render({...status,
+  face: {...status.face, x: 100, y: 100, w: 18, h: 18},
+  lm: {valid: true, x: [103, 114, 109, 105, 112], y: [104, 104, 109, 114, 114]}}));
+run('negative opening index', () => page.render({...status,
+  cues: {...status.cues, open_index: -0.08}}));
 
 // 300 ticks, to make sure the sparkline ring buffer and the event-log trim behave.
 run('no card', () => page.render({...status, card: {mounted: false, events: 0, free_mb: 0, stored: 0}}));
 run('card field absent (older firmware)', () => { const o = {...status}; delete o.card; page.render(o); });
+// The page guards every field added after it shipped, so the guards are exercised
+// too rather than being taken on trust.
+run('timing and cue fields absent', () => {
+  const o = {...status, cues: {...status.cues}, geom: {...status.geom},
+             face: {...status.face}, eyes: {...status.eyes}};
+  delete o.ms;
+  delete o.cues.stale; delete o.cues.open_index; delete o.cues.pitch_dev;
+  delete o.geom.nose_norm; delete o.geom.mouth_ratio;
+  delete o.face.roi; delete o.face.roi_w; delete o.face.rejected;
+  delete o.eyes.smooth; delete o.eyes.shut;
+  delete o.lm; delete o.driver; delete o.face.reject;
+  page.render(o);
+});
 run('stream slot taken - viewers 0', () => page.render({...status, stream: {...status.stream, viewers: 0}}));
 run('openShot lightbox', () => page.openShot(
   {id: '0000042', uptime_ms: 3723456, size: 12345, risk: 0.71, perclos: 0.42, reason: 'microsleep'}));

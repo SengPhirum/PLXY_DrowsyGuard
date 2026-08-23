@@ -65,12 +65,23 @@ idf.py build
 idf.py -p COM9 flash monitor
 ```
 
-> **Flashing needs the BOOT button on this board.** Its CH343 UART bridge drives
-> EN but not GPIO0, so esptool cannot reach download mode and reports
-> `Wrong boot mode detected (0x28)`. Hold BOOT, tap RESET, release BOOT - the
-> chip then waits in the ROM loader indefinitely, so there is no window to hit -
-> then run `./plxy.sh flash`, which detects the loader and flashes with the reset
-> lines left alone.
+> **Flashing no longer needs the BOOT button** (fixed 2026-08-23). It used to,
+> and the reason it appeared to was wrong: this board's auto-reset lines are
+> **inverted** relative to esptool's convention, so esptool's own sequences leave
+> the chip in the application and it reports `Wrong boot mode detected (0x28)`.
+> Driving the lines directly works fine - `dtr = False` pulls GPIO0 low, which is
+> what holding BOOT does, and `rts = False` holds EN low.
+>
+> `./plxy.sh flash` now does that itself via `scripts/board_reset.py` and prints
+> *"put it in the ROM loader over the serial lines - no BOOT press needed"*. The
+> manual route is still there as a fallback: hold BOOT, tap RESET, release BOOT -
+> the chip then waits in the loader indefinitely, so there is no window to hit.
+>
+> The same inversion explains a symptom that looks like a dead board: pyserial
+> de-asserts both lines when it opens a port, which here means "hold in reset with
+> BOOT pressed". So opening the port just to read the log drops the chip into the
+> loader and it goes silent. Use `python scripts/board_reset.py COM9` to boot the
+> application, or `--download` to put it back in the loader.
 
 `curl` is often faster than a browser for checking a change:
 

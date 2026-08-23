@@ -4,6 +4,11 @@
 // open-closed-eye-0001, OpenVINO Model Zoo (Intel), Apache-2.0.
 // 11250 parameters, float32.
 
+// Weights are in ONNX order throughout: (out, in, ky, kx) for the
+// 3x3 convolutions, (out, in) for the 1x1. eye_model.cpp reads them
+// with that stride. A channel-last layout was tried and measured 20%
+// slower - see the note at the top of eye_model.cpp.
+
 // Shapes, so the forward pass can assert against them.
 #define EYE_IN_C 3
 #define EYE_IN_HW 32

@@ -361,27 +361,38 @@ static esp_err_t status_handler(httpd_req_t *req) {
     // reason about in a 5 Hz polling path than a tree of nodes, and the shape of
     // this object is fixed by the page that consumes it.
     // static, not on the stack: the control server has a 6 KB task stack and this
-    // object measures ~1.1 kB in practice and 1754 B with every field at its widest.
-    // Only one task ever serves port 80, so there is nothing to race with.
-    static char buf[2816];
+    // object measures ~1.4 kB in practice and about 2.1 kB with every field at its
+    // widest. Only one task ever serves port 80, so there is nothing to race with.
+    // The truncation check below is not decoration - it fires as a 500 rather than
+    // letting the page parse half an object, which is how it was caught last time
+    // this grew past its buffer.
+    static char buf[3584];
     const int n = snprintf(buf, sizeof(buf),
         "{"
         "\"uptime_ms\":%llu,"
         "\"frames\":%lu,"
         "\"fps\":%.1f,"
+        "\"ms\":{\"detect\":%.1f,\"eye\":%.1f},"
         "\"camera\":%s,"
         "\"models\":%s,"
         "\"eye_model\":%s,"
         "\"frame\":{\"w\":%d,\"h\":%d},"
-        "\"face\":{\"found\":%s,\"held\":%s,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"score\":%.2f},"
+        "\"face\":{\"found\":%s,\"held\":%s,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,"
+                  "\"score\":%.2f,\"roi\":%s,\"roi_w\":%d,\"rejected\":%d,"
+                  "\"reject\":\"%s\"},"
+        "\"driver\":%s,"
+        "\"lm\":{\"valid\":%s,\"x\":[%.1f,%.1f,%.1f,%.1f,%.1f],"
+                 "\"y\":[%.1f,%.1f,%.1f,%.1f,%.1f]},"
         "\"risk\":{\"score\":%.3f,\"trigger\":%.3f,\"streak\":%d,\"required\":%d},"
-        "\"eyes\":{\"closed\":%.3f,\"perclos\":%.3f,\"closure_s\":%.2f},"
+        "\"eyes\":{\"closed\":%.3f,\"smooth\":%.3f,\"shut\":%s,\"perclos\":%.3f,"
+                  "\"closure_s\":%.2f},"
         "\"cues\":{\"mouth_open\":%s,\"head_down\":%s,\"suppressed\":%s,"
-                  "\"baselines_ready\":%s,\"events\":%u},"
+                  "\"baselines_ready\":%s,\"stale\":%s,\"events\":%u,"
+                  "\"open_index\":%.3f,\"pitch_dev\":%.3f},"
         "\"rates\":{\"blink\":%.1f,\"long_blink\":%.1f,\"yawn\":%.1f,\"nod\":%.1f,"
                    "\"sneeze\":%u},"
         "\"geom\":{\"valid\":%s,\"roll\":%.1f,\"jaw_drop\":%.3f,\"nose_frac\":%.3f,"
-                  "\"eye_dist\":%.1f},"
+                  "\"nose_norm\":%.3f,\"mouth_ratio\":%.3f,\"eye_dist\":%.1f},"
         "\"alert\":{\"active\":%s,\"text\":\"%s\",\"reason\":\"%s\",\"count\":%lu,"
                    "\"muted\":%s,\"lang\":\"%s\",\"lang_stored\":%s,"
                    "\"clips\":{\"drowsy\":\"%s\",\"microsleep\":\"%s\","
@@ -395,23 +406,37 @@ static esp_err_t status_handler(httpd_req_t *req) {
         "}",
         static_cast<unsigned long long>(esp_timer_get_time() / 1000),
         static_cast<unsigned long>(st.frames), json_float(st.fps),
+        json_float(st.ms_detect), json_float(st.ms_eye),
         st.camera_ok ? "true" : "false",
         st.models_ok ? "true" : "false",
         st.eye_model_ok ? "true" : "false",
         st.frame_w, st.frame_h,
         st.face_found ? "true" : "false", st.face_held ? "true" : "false",
         st.face_x, st.face_y, st.face_w, st.face_h, json_float(st.face_score),
+        st.detect_roi ? "true" : "false", st.detect_roi_w, st.detect_rejected,
+        st.detect_reject != nullptr ? st.detect_reject : "ok",
+        st.driver_present ? "true" : "false",
+        st.lm.valid ? "true" : "false",
+        json_float(st.lm.x[0]), json_float(st.lm.x[1]), json_float(st.lm.x[2]),
+        json_float(st.lm.x[3]), json_float(st.lm.x[4]),
+        json_float(st.lm.y[0]), json_float(st.lm.y[1]), json_float(st.lm.y[2]),
+        json_float(st.lm.y[3]), json_float(st.lm.y[4]),
         json_float(st.state.score), json_float(st.trigger), st.streak, st.required,
-        json_float(st.state.eye_closed), json_float(st.state.perclos), json_float(st.state.closure_s),
+        json_float(st.state.eye_closed), json_float(st.state.eye_smooth),
+        st.state.closed ? "true" : "false",
+        json_float(st.state.perclos), json_float(st.state.closure_s),
         st.state.mouth_open ? "true" : "false",
         st.state.head_down ? "true" : "false",
         st.state.suppressed ? "true" : "false",
         st.state.baselines_ready ? "true" : "false",
+        st.state.stale ? "true" : "false",
         static_cast<unsigned>(st.state.events),
+        json_float(st.state.open_index), json_float(st.state.pitch_dev),
         json_float(st.state.blink_rate), json_float(st.state.long_blink_rate), json_float(st.state.yawn_rate),
         json_float(st.state.nod_rate), static_cast<unsigned>(st.state.sneeze_count),
         st.geom.valid ? "true" : "false", json_float(st.geom.roll), json_float(st.geom.jaw_drop),
-        json_float(st.geom.nose_frac), json_float(st.geom.eye_dist),
+        json_float(st.geom.nose_frac), json_float(st.geom.nose_norm),
+        json_float(st.geom.mouth_ratio), json_float(st.geom.eye_dist),
         st.alerting ? "true" : "false",
         st.alert_text != nullptr ? st.alert_text : "",
         st.alert_reason != nullptr ? st.alert_reason : "",

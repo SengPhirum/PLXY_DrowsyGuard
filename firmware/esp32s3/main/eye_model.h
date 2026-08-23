@@ -27,6 +27,31 @@ Conv+MaxPool pairs are fused so the 10x30x30 and 20x13x13 intermediates are neve
 materialised, which keeps the whole thing inside ~15 kB of activations and lets
 them live in internal RAM instead of PSRAM.
 
+**What has been tried, so it is not tried again.** Measured on the host with
+vectorisation disabled - the closer proxy, because the ESP32-S3's 128-bit vector
+unit is 8/16-bit integer only and cannot touch float at all - over 3000 inferences,
+best of five runs:
+
+    as written here (three row accumulators)          142 us   1.08x
+    one accumulator threaded through the loop         153 us   1.00x  (was this)
+    channel-last activations, patch gathered once
+      into a contiguous buffer, four accumulators     187 us   0.83x
+    the same gather with one accumulator              433 us   0.36x
+
+The gather is the interesting failure. It does cut input re-reads by an order of
+magnitude, which was the reason for trying it, but the premise underneath was wrong:
+the loop below is not a serial accumulate. `sum += r[0]*k[0] + r[1]*k[1] + r[2]*k[2]`
+is summed as a tree, and with the ky loop unrolled there are already several
+independent products in flight - so the gather bought no parallelism and paid for the
+copy. Splitting the accumulator by kernel row is the same idea at zero cost, and it
+produces bit-identical output.
+
+Where the remaining time actually goes is not yet known, and guessing again would be
+a waste: the frame loop now reports per-stage timings, so measure first. The two
+routes with real headroom left are int8 or int16 arithmetic through the vector unit
+(which is what ESP-DL does, and what a quantized .espdl would unlock) and running
+this on the second core in parallel with the face detector.
+
 **Accuracy warning, which binding this does not fix.** This model is IR-trained
 and scores AUC 0.62 on DDD's visible-light eye crops against its claimed 95.84%
 in-domain (gap 6 in PROJECT_STATE.md). Mechanically correct, still weak in

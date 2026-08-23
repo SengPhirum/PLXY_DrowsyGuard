@@ -141,6 +141,22 @@ everything downstream of the (still unbound) eye model remain unverified.
    jaw delta) are literature-informed defaults. Their logic is unit-tested on synthetic
    traces but none are tuned or validated on labelled yawn/nod/sneeze video, which the
    project does not have. `yaw` is computed but unvalidated - needs a head-turn test.
+
+   Reworked on 2026-08-23, and what changed is worth separating from what did not.
+   Four defects in the *logic* were found and fixed, each demonstrated by running a
+   synthetic trace through the previous version straight out of git: a microsleep was
+   only announced once the driver reopened their eyes; one noisy frame split a closure,
+   a yawn or a nod, and a split nod was then counted twice; any mouth movement shorter
+   than `NOD_MAX_S` registered as a head nod, because the pitch proxy divides by the
+   eye-to-mouth distance; and held landmarks were fed in as fresh evidence. The
+   CHANGELOG entry has the before/after counts.
+
+   Those were correctness bugs, not tuning. **The thresholds themselves are still
+   untuned against real video** - the new ones (`YAWN_PEAK_DELTA`, `NOD_PEAK_DELTA`,
+   `NOD_MIN_S`, `NOD_NORM_DELTA`, `MOUTH_NARROW_W`, `CLOSED_HYSTERESIS`, `CUE_GAP_S`)
+   rest on the same literature-informed basis as the originals and are validated the
+   same way, on synthetic traces with known ground truth. Fixing the logic does not
+   make the numbers right; it makes them worth tuning.
 9. No whole-face drowsiness checkpoint ships with the repo; all were removed on
    2026-08-10. Only fetched detectors live under `models/detectors/` (not tracked).
    Durable lesson worth keeping: `TinyDrowsyNet` trained from scratch on DDD reached
@@ -152,6 +168,19 @@ everything downstream of the (still unbound) eye model remain unverified.
 11. On this Windows machine the installed `drowsyguard` console script throttles
    webcam capture to ~1 fps (both MSMF and DSHOW); `python -m drowsyguard.cli`
    runs the identical code at 30 fps. Root cause in the launcher is unresolved.
+12. The 2026-08-23 firmware **has now been run on hardware**, and doing so found two
+   bugs that host testing could not. The detection gate rejected 100% of real
+   candidates, and the cause was not the gate: the frame is horizontally mirrored (the
+   sensor is mounted upside down, so vflip is applied without hmirror), which reversed
+   the eye pair and inverted the sign of every vertical cue - `jaw_drop` read -1.2
+   instead of +1.2 and *fell* as the mouth opened, so **the yawn cue had never been
+   able to fire**. Fixed by `behavior_orient_landmarks()`; the gate is enabled and
+   reports `ok` on every detection. Measured: 15.7 ms per eye, 39 ms per detection,
+   19.7 fps idle and 10.7-13.6 fps while tracking, 20/20 detections at score 1.00.
+
+   Still unexercised on hardware: a real drowsiness alert firing end to end, the
+   behaviour cues against an actual yawn or nod (the logic is now correct and the signs
+   are now right, but no one has yawned in front of it), and heap over hours.
 
 ## Next best action
 Model: get eye-state labels in the target (visible-light) domain and fine-tune the

@@ -422,7 +422,7 @@ eventual fix, and it also matches the base model's training domain.
 | `idf.py not found` / `not recognized` | ESP-IDF not installed, or a plain terminal | install per section 3; use the **ESP-IDF PowerShell** shortcut, or dot-source `export.ps1` |
 | `idf.py` works in one terminal, not another | `export.ps1` is per-session, not permanent | re-run it in each new terminal; do not add it to your profile |
 | No COM port | charge-only cable, or missing CH34x driver | data cable; install driver; try the other USB-C port |
-| `Failed to connect ... Wrong boot mode` | not in download mode | hold BOOT, tap RESET, release BOOT, reflash |
+| `Failed to connect ... Wrong boot mode` | esptool's reset sequence cannot reach the loader: this board's auto-reset lines are inverted | `./plxy.sh flash` drives them directly now (`scripts/board_reset.py`); if that fails, hold BOOT, tap RESET, release BOOT, reflash |
 | `esp_camera_init failed: 0x105` (`ESP_ERR_NOT_FOUND`) | ribbon half-seated, PSRAM off, or wrong pin map | reseat the ribbon; check the 8 MB PSRAM boot line; check `CONFIG_OV3660_SUPPORT` |
 | `esp_camera_init failed: 0x101` (`ESP_ERR_NO_MEM`) | PSRAM not enabled | `CONFIG_SPIRAM=y` **and** `CONFIG_SPIRAM_MODE_OCT=y` |
 | Boot loop, `Brownout detector was triggered` | USB port cannot supply camera + radio + amp | powered hub, shorter/thicker cable, or a 5 V bench supply |

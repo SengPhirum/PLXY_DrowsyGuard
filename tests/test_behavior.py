@@ -1,29 +1,53 @@
 """Behaviour event logic, driven by synthetic traces with known ground truth."""
 import math
 
-from drowsyguard.behavior import (BehaviorAnalyzer, Baseline, EventRate, FaceGeometry,
+from drowsyguard.behavior import (BehaviorAnalyzer, Baseline, EventRate, EyeGate,
+                                  FaceGeometry, MICROSLEEP_MIN_S, NOD_PITCH_DELTA,
                                   face_geometry)
 
 FPS = 30.0
 
 
-def upright_landmarks(jaw=1.05, nose_frac=0.55, roll_deg=0.0, eye_dist=60.0, cx=320, cy=200):
-    """Synthesize landmarks with a chosen jaw drop / pitch / roll."""
+def upright_landmarks(jaw=1.05, nose_frac=0.55, roll_deg=0.0, eye_dist=60.0, cx=320, cy=200,
+                      mouth_w=0.60):
+    """Synthesize landmarks with a chosen jaw drop / pitch / roll / mouth width.
+
+    `mouth_w` is the corner separation as a fraction of eye distance, i.e. exactly
+    FaceGeometry.mouth_ratio. It is a knob because a real mouth opening moves the
+    corners inward as well as down, and that inward motion is half the yawn signal
+    five landmarks carry - see MOUTH_NARROW_W.
+    """
     half = eye_dist / 2.0
     mouth_y = jaw * eye_dist
     nose_y = nose_frac * mouth_y
-    pts = [(-half, 0.0), (half, 0.0), (0.0, nose_y), (-half * 0.6, mouth_y), (half * 0.6, mouth_y)]
+    mouth_x = eye_dist * mouth_w / 2.0
+    pts = [(-half, 0.0), (half, 0.0), (0.0, nose_y), (-mouth_x, mouth_y), (mouth_x, mouth_y)]
     a = math.radians(roll_deg)
     ca, sa = math.cos(a), math.sin(a)
     return [(cx + ca * x - sa * y, cy + sa * x + ca * y) for x, y in pts]
 
 
-def feed(an, frames, p_closed=0.0, jaw=1.05, nose_frac=0.55, perclos=0.0):
+def feed(an, frames, p_closed=0.0, jaw=1.05, nose_frac=0.55, perclos=0.0, mouth_w=0.60,
+         fresh=True):
     out = []
     for _ in range(frames):
-        g = face_geometry(upright_landmarks(jaw=jaw, nose_frac=nose_frac))
-        out.append(an.update(p_closed, g, perclos))
+        g = face_geometry(upright_landmarks(jaw=jaw, nose_frac=nose_frac, mouth_w=mouth_w))
+        out.append(an.update(p_closed, g, perclos, fresh=fresh))
     return out
+
+
+def events_of(states):
+    return [e for s in states for e in s.events]
+
+
+def nose_frac_holding_nose_still(jaw, base_jaw=1.05, base_nose_frac=0.55):
+    """The nose_frac that leaves the nose where it was when only the jaw moved.
+
+    nose_frac is measured against the eye-to-mouth span, so opening the jaw shrinks
+    it even with the head perfectly still. This inverts that so a test can open the
+    mouth without moving the head at all.
+    """
+    return base_nose_frac * base_jaw / jaw
 
 
 # ---------- geometry ----------
@@ -75,8 +99,10 @@ def test_short_closure_is_a_blink_not_a_microsleep():
     an = BehaviorAnalyzer(fps=FPS)
     feed(an, 60)                                   # settle baselines, eyes open
     feed(an, 6, p_closed=0.9)                      # 0.2 s closure
-    states = feed(an, 5)
-    fired = [e for s in states for e in s.events]
+    # A closure is only classified once it is over, and CUE_GAP_S of open frames is
+    # what makes it over - so the trailing window has to outlast the tolerance.
+    states = feed(an, 15)
+    fired = events_of(states)
     assert 'blink' in fired
     assert 'microsleep' not in fired
 
@@ -84,10 +110,9 @@ def test_short_closure_is_a_blink_not_a_microsleep():
 def test_sustained_closure_is_a_microsleep():
     an = BehaviorAnalyzer(fps=FPS)
     feed(an, 60)
-    feed(an, 45, p_closed=0.95)                    # 1.5 s closure
-    states = feed(an, 5)
-    fired = [e for s in states for e in s.events]
-    assert 'microsleep' in fired
+    states = feed(an, 45, p_closed=0.95)           # 1.5 s closure
+    states += feed(an, 15)
+    assert 'microsleep' in events_of(states)
 
 
 def test_closure_duration_is_reported_while_closed():
@@ -129,8 +154,8 @@ def test_head_pitch_excursion_is_a_nod():
     an = BehaviorAnalyzer(fps=FPS)
     feed(an, 90, nose_frac=0.55)
     feed(an, 15, nose_frac=0.44)                   # head drops
-    states = feed(an, 5, nose_frac=0.55)           # and returns
-    assert 'nod' in [e for s in states for e in s.events]
+    states = feed(an, 12, nose_frac=0.55)          # and returns, past CUE_GAP_S
+    assert 'nod' in events_of(states)
 
 
 def test_prolonged_head_down_is_not_counted_as_a_nod():
@@ -217,3 +242,190 @@ def test_reset_clears_state():
     an.reset()
     s = feed(an, 1)[-1]
     assert s.yawn_rate == 0 and s.sneeze_count == 0 and not s.baselines_ready
+
+
+# ---------- the eye gate ----------
+
+def test_eye_gate_removes_an_isolated_flip_without_moving_the_edges():
+    g = EyeGate(threshold=0.5, hysteresis=0.10)
+    seq = [0.0, 0.0, 0.9, 0.9, 0.9, 0.02, 0.9, 0.9, 0.9, 0.0, 0.0, 0.0]
+    out = [g.update(v) for v in seq]
+    assert out[5] is True             # the flipped frame is filtered out entirely
+    assert out[:3] == [False, False, False]
+    assert out[3] is True             # one frame of lag on the closing edge
+    assert out[9] is True             # and one on the opening edge
+    assert out[10] is False
+
+
+def test_a_probability_sitting_on_the_threshold_does_not_emit_a_burst_of_blinks():
+    """Hysteresis, not smoothing, is what this fixes. A probability dithering across
+    0.5 used to produce one counted blink per frame - 30 a second into a rate window
+    whose full scale is 12 a minute."""
+    an = BehaviorAnalyzer(fps=FPS)
+    feed(an, 60)
+    states = []
+    for i in range(60):
+        states += feed(an, 1, p_closed=0.45 + 0.1 * (i % 2))
+    states += feed(an, 15)
+    assert 'blink' not in events_of(states)
+    assert states[-1].blink_rate == 0
+
+
+# ---------- microsleep: the alarm must not wait for the driver to wake up ----------
+
+def test_microsleep_is_announced_while_the_eyes_are_still_shut():
+    """The defect this replaces: closures were classified only on release, so the
+    warning for "the driver is asleep" was gated on the driver waking up. Eyes shut
+    for five seconds produced five seconds of silence."""
+    an = BehaviorAnalyzer(fps=FPS)
+    feed(an, 60)
+    states = feed(an, 45, p_closed=0.95)          # 1.5 s, and they never reopen
+    fired = events_of(states)
+    assert fired.count('microsleep') == 1         # once, not once per frame
+
+    at = next(i for i, st in enumerate(states) if 'microsleep' in st.events)
+    # At the threshold, plus at most the gate's one frame of lag on each edge.
+    assert MICROSLEEP_MIN_S <= (at + 1) / FPS <= MICROSLEEP_MIN_S + 3.0 / FPS
+    assert states[at].closed                      # still shut when it fired
+
+
+def test_one_noisy_frame_does_not_split_a_microsleep():
+    """The eye model is IR-trained and scores AUC 0.62 on visible light, so a single
+    frame reading "open" inside a real closure is its normal behaviour. That frame
+    used to cut a 1.5 s closure into two 0.7 s long blinks, which is to say the most
+    dangerous event was the one a single noisy frame erased."""
+    an = BehaviorAnalyzer(fps=FPS)
+    feed(an, 60)
+    states = feed(an, 20, p_closed=0.95)
+    states += feed(an, 1, p_closed=0.02)          # one frame flips
+    states += feed(an, 24, p_closed=0.95)
+    states += feed(an, 15)
+    fired = events_of(states)
+    assert fired.count('microsleep') == 1
+    assert 'blink' not in fired                   # nor is the flip its own blink
+
+
+def test_the_gap_tolerance_does_not_promote_a_long_blink_to_a_microsleep():
+    """A closure is measured to where the eyes reopened, not to where the tolerance
+    expired. Measuring to the latter would add CUE_GAP_S to every closure and turn a
+    0.9 s long blink into a 1.1 s microsleep."""
+    an = BehaviorAnalyzer(fps=FPS)
+    feed(an, 60)
+    states = feed(an, 27, p_closed=0.95)          # 0.9 s
+    states += feed(an, 15)
+    fired = events_of(states)
+    assert 'long_blink' in fired
+    assert 'microsleep' not in fired
+
+
+# ---------- yawn: use both halves of the signal five landmarks carry ----------
+
+def test_a_mouth_that_narrows_is_a_yawn_even_when_the_jaw_drop_is_small():
+    """The corners pull inward as the jaw opens wide, and that inward motion is half
+    the yawn signal available from five landmarks. jaw_drop alone cannot see this
+    opening at all."""
+    an = BehaviorAnalyzer(fps=FPS)
+    feed(an, 90, jaw=1.05, mouth_w=0.60)
+    states = feed(an, 60, jaw=1.12, mouth_w=0.42)
+    states += feed(an, 15)
+    assert 'yawn' in events_of(states)
+
+    # Same jaw drop, corners unmoved: under JAW_OPEN_DELTA, and correctly ignored.
+    lonely = BehaviorAnalyzer(fps=FPS)
+    feed(lonely, 90, jaw=1.05, mouth_w=0.60)
+    quiet = feed(lonely, 60, jaw=1.12, mouth_w=0.60)
+    quiet += feed(lonely, 15)
+    assert 'yawn' not in events_of(quiet)
+
+
+def test_one_noisy_frame_does_not_split_a_yawn():
+    """YAWN_MIN_S is 1.2 s of continuous opening; one frame of landmark noise used to
+    reset the timer and lose the yawn."""
+    an = BehaviorAnalyzer(fps=FPS)
+    feed(an, 90, jaw=1.05)
+    states = feed(an, 20, jaw=1.30)
+    states += feed(an, 1, jaw=1.05)               # one frame of noise
+    states += feed(an, 20, jaw=1.30)
+    states += feed(an, 15, jaw=1.05)
+    assert events_of(states).count('yawn') == 1
+
+
+# ---------- nod ----------
+
+def test_a_mouth_movement_with_the_head_still_is_not_a_nod():
+    """nose_frac divides by the eye-to-mouth span, so a jaw drop shrinks it even with
+    the head perfectly still: a 0.25 jaw drop reads as a 0.11 pitch drop, well past
+    NOD_PITCH_DELTA.
+
+    Measured against the previous version with the head held still, a mouth open for
+    0.5 s fired a nod and one open for 1.0 s fired a nod - so ordinary speech and
+    chewing were being reported as head nods. Openings past NOD_MAX_S escaped only by
+    outlasting it.
+
+    Both durations are checked here because they exercise different halves of the
+    fix: the 1.0 s case is a false nod on its own, and the 1.4 s case used to fire a
+    yawn AND a nod, which is double-counted in the fused score and announced as the
+    nod, because that bit is tested first."""
+    for frames, expect_yawn in ((30, False), (42, True)):        # 1.0 s, 1.4 s
+        an = BehaviorAnalyzer(fps=FPS)
+        feed(an, 90, jaw=1.05, nose_frac=0.55)
+        nf = nose_frac_holding_nose_still(1.30)   # the nose does not move at all
+        states = feed(an, frames, jaw=1.30, nose_frac=nf)
+        states += feed(an, 15, jaw=1.05, nose_frac=0.55)
+        fired = events_of(states)
+        assert 'nod' not in fired, frames
+        assert ('yawn' in fired) is expect_yawn, frames
+        assert not any(st.head_down for st in states)
+        # The single-channel cue really did cross its threshold; the second channel
+        # is what rejects it, so this would fail against the old logic.
+        assert any(st.pitch_dev <= -NOD_PITCH_DELTA for st in states)
+
+
+def test_single_frame_pitch_jitter_is_not_a_nod():
+    """The pitch proxy is a ratio of two five-point distances, so one frame of keypoint
+    noise can carry it past the threshold and back. Without NOD_MIN_S, six such
+    frames a minute drive the nod cue to full scale on their own."""
+    an = BehaviorAnalyzer(fps=FPS)
+    feed(an, 90)
+    states = []
+    for _ in range(8):
+        states += feed(an, 1, nose_frac=0.40)
+        states += feed(an, 20)
+    assert 'nod' not in events_of(states)
+    assert states[-1].nod_rate == 0
+
+
+def test_a_shallow_pitch_excursion_is_not_a_nod():
+    """Over the threshold that starts an excursion, under the peak a nod must reach."""
+    an = BehaviorAnalyzer(fps=FPS)
+    feed(an, 90)
+    states = feed(an, 15, nose_frac=0.47)
+    states += feed(an, 12)
+    assert 'nod' not in events_of(states)
+
+
+def test_one_noisy_frame_does_not_split_a_nod_into_two():
+    """Over-counting is the worse failure here: two counted nods are twice the
+    contribution to the fused risk score of the one that actually happened."""
+    an = BehaviorAnalyzer(fps=FPS)
+    feed(an, 90)
+    states = feed(an, 12, nose_frac=0.44)
+    states += feed(an, 1, nose_frac=0.55)         # one frame back up
+    states += feed(an, 12, nose_frac=0.44)
+    states += feed(an, 12, nose_frac=0.55)
+    assert events_of(states).count('nod') == 1
+
+
+# ---------- held landmarks ----------
+
+def test_held_landmarks_do_not_advance_the_geometric_cues():
+    """A held box is byte-identical to the last real one, so it is evidence about a
+    moment that has passed. Feeding it in pushed duplicate samples into a 10 s
+    baseline window and kept the mouth and nod timers running - and a head pitching
+    far enough down to lose the detector is exactly when that happened."""
+    an = BehaviorAnalyzer(fps=FPS)
+    feed(an, 90, jaw=1.05)
+    states = feed(an, 60, jaw=1.30, fresh=False)
+    assert 'yawn' not in events_of(states)
+    assert all(st.stale for st in states)
+    assert not any(st.mouth_open for st in states)

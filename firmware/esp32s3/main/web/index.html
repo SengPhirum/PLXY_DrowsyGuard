@@ -72,6 +72,7 @@
   .pill.w-luma{min-width:132px}
   .pill.w-state{min-width:104px}
   .pill.w-card{min-width:112px}
+  .pill.w-hold{min-width:124px}
   /* The tag row is a fixed two lines high, so a pill wrapping onto a second line
      cannot shove the preview around. */
   .tags{min-height:46px;align-content:flex-start}
@@ -218,6 +219,7 @@
         <span class="pill" id="cueHead">head &mdash;</span>
         <span class="pill" id="cueBase">baselines &mdash;</span>
         <span class="pill" id="cueSup">sneeze filter &mdash;</span>
+        <span class="pill w-hold" id="cueFresh">landmarks &mdash;</span>
       </div>
       <div class="meta">
         <div><span>p(eyes closed)</span><span id="eyeClosed">&mdash;</span></div>
@@ -229,7 +231,10 @@
         <div><span>sneezes suppressed</span><span id="rSneeze">&mdash;</span></div>
         <div><span>head roll</span><span id="gRoll">&mdash;</span></div>
         <div><span>jaw drop</span><span id="gJaw">&mdash;</span></div>
-        <div><span>pitch proxy</span><span id="gNose">&mdash;</span></div>
+        <div><span>mouth width</span><span id="gWidth">&mdash;</span></div>
+        <div title="jaw drop plus mouth narrowing, against this driver&#39;s baseline. This is what the yawn test actually reads."><span>opening index</span><span id="cOpen">&mdash;</span></div>
+        <div title="nose height over the eye-to-mouth span. Opening the mouth lowers this even with the head still, which is why it is not used alone."><span>pitch proxy</span><span id="gNose">&mdash;</span></div>
+        <div title="nose height over eye distance. The jaw cannot change eye distance, so a head nod has to move this one too."><span>pitch, mouth-free</span><span id="gNoseN">&mdash;</span></div>
         <div><span>eye distance</span><span id="gEye">&mdash;</span></div>
       </div>
     </div>
@@ -301,6 +306,10 @@
         <div><span>uptime</span><span id="uptime">&mdash;</span></div>
         <div><span>frames</span><span id="frames">&mdash;</span></div>
         <div><span>detector fps</span><span id="dfps">&mdash;</span></div>
+        <div title="One face detection. Runs on every third frame."><span>face detect</span><span id="msDetect">&mdash;</span></div>
+        <div title="One eye. The two eyes alternate, so this is the per-frame cost."><span>eye model</span><span id="msEye">&mdash;</span></div>
+        <div title="Side of the crop the detector searched, or the whole frame when there is no track to follow."><span>search window</span><span id="dRoi">&mdash;</span></div>
+        <div title="Detections whose five landmarks did not describe a face. A few is normal - the coarse stage runs at a deliberately loose threshold."><span>gate rejected</span><span id="dRej">&mdash;</span></div>
         <div><span>stream viewers</span><span id="viewers">&mdash;</span></div>
         <div><span>wi-fi clients</span><span id="clients">&mdash;</span></div>
         <div><span>frame size</span><span id="fsize">&mdash;</span></div>
@@ -525,6 +534,56 @@ function drawOverlay(s) {
   g.fillStyle = g.strokeStyle;
   const label = (s.face.held ? 'tracking ' : 'face ') + s.face.score.toFixed(2);
   g.fillText(label, x, Math.max(11, y - 4));
+
+  // The landmarks, which are the thing every cue is actually measured from. The box
+  // only says a face was found somewhere; these say the eyes and mouth were found in
+  // the right places, and that is what decides whether a PERCLOS or jaw-drop reading
+  // means anything. A box sitting neatly on a face with its landmarks scattered
+  // across it looks identical to a good detection until they are drawn.
+  if (!s.lm || !s.lm.valid) return;
+  const P = i => ({x: ox + s.lm.x[i] * k, y: oy + s.lm.y[i] * k});
+  const eyeShut = s.eyes && s.eyes.shut;
+  const mouthOpen = s.cues && s.cues.mouth_open;
+
+  // Eyes. Radius tracks the face box so the markers stay proportionate as the driver
+  // moves nearer, with a floor so they do not vanish at a distance.
+  const r = Math.max(3, Math.min(bw, bh) * 0.07);
+  g.lineWidth = 2;
+  g.strokeStyle = eyeShut ? '#f85149' : '#58a6ff';
+  for (const i of [0, 1]) {
+    const p = P(i);
+    g.beginPath();
+    g.arc(p.x, p.y, r, 0, Math.PI * 2);
+    g.stroke();
+    if (eyeShut) {                       // a lid: filled means shut, at a glance
+      g.beginPath();
+      g.moveTo(p.x - r, p.y);
+      g.lineTo(p.x + r, p.y);
+      g.stroke();
+    }
+  }
+
+  // Mouth: the two corners joined, so an opening is visible as the line dropping and
+  // shortening - which is exactly the pair of signals the yawn cue reads.
+  const m0 = P(3), m1 = P(4);
+  g.strokeStyle = mouthOpen ? '#d29922' : '#58a6ff';
+  g.beginPath();
+  g.moveTo(m0.x, m0.y);
+  g.lineTo(m1.x, m1.y);
+  g.stroke();
+  for (const p of [m0, m1]) {
+    g.beginPath();
+    g.arc(p.x, p.y, Math.max(2, r * 0.45), 0, Math.PI * 2);
+    g.fillStyle = g.strokeStyle;
+    g.fill();
+  }
+
+  // Nose, as the pitch reference the two head-down channels are measured against.
+  const n = P(2);
+  g.fillStyle = 'rgba(230,237,243,.75)';
+  g.beginPath();
+  g.arc(n.x, n.y, Math.max(2, r * 0.4), 0, Math.PI * 2);
+  g.fill();
 }
 
 // --- risk sparkline --------------------------------------------------------
@@ -736,9 +795,13 @@ function render(s) {
     setPill('lumaPill', `light ${lumaShown} peak ${peak}`,
             peak > 200 ? 'bad' : (peak > 175 || lumaShown < 40) ? 'warn' : 'ok');
   }
-  setPill('facePill', s.face.found ? (s.face.held ? 'face tracking' : 'face locked')
-                                   : 'no face',
-          s.face.found ? (s.face.held ? 'warn' : 'ok') : '');
+  // "no driver" rather than "no face": with nobody there the pipeline is not failing
+  // to see a face, it is correctly idle, and the firmware freezes the analyzer to
+  // match. Those are different states and they used to look the same.
+  const present = s.driver !== undefined ? s.driver : s.face.found;
+  setPill('facePill', present ? (s.face.held ? 'face tracking' : 'face locked')
+                              : 'no driver',
+          present ? (s.face.held ? 'warn' : 'ok') : 'info');
   setPill('camPill', s.camera ? 'camera ok' : 'camera FAILED', s.camera ? 'ok' : 'bad');
   setPill('modelPill', s.models ? 'face model ok' : 'no face model',
           s.models ? 'ok' : 'bad');
@@ -758,8 +821,10 @@ function render(s) {
   if (bar.dataset.c !== riskColour) { bar.style.background = riskColour; bar.dataset.c = riskColour; }
   $('riskMark').style.left = pct(s.risk.trigger);
   setPill('statePill',
-          !s.eye_model ? 'no eye model' : riskBand === 'bad' ? 'DROWSY' : 'alert',
-          !s.eye_model ? 'warn' : riskBand === 'bad' ? 'bad' : 'ok');
+          !s.eye_model ? 'no eye model'
+            : !present ? 'idle'
+            : riskBand === 'bad' ? 'DROWSY' : 'alert',
+          !s.eye_model ? 'warn' : !present ? 'info' : riskBand === 'bad' ? 'bad' : 'ok');
   trend.push(r);
   while (trend.length > TREND_MAX) trend.shift();
   drawTrend(s.risk.trigger);
@@ -769,14 +834,25 @@ function render(s) {
   $('perclosBar').style.width = pct(s.eyes.perclos);
   setText('eyeClosed', s.eyes.closed.toFixed(2));
   setText('closure', s.eyes.closure_s.toFixed(2) + ' s');
-  setPill('cueMouth', s.cues.mouth_open ? 'mouth open' : 'mouth closed',
-          s.cues.mouth_open ? 'warn' : '');
-  setPill('cueHead', s.cues.head_down ? 'head down' : 'head up',
-          s.cues.head_down ? 'warn' : '');
+  setPill('cueMouth', !present ? 'mouth \u2014'
+            : s.cues.mouth_open ? 'mouth open' : 'mouth closed',
+          present && s.cues.mouth_open ? 'warn' : '');
+  setPill('cueHead', !present ? 'head \u2014'
+            : s.cues.head_down ? 'head down' : 'head up',
+          present && s.cues.head_down ? 'warn' : '');
   setPill('cueBase', s.cues.baselines_ready ? 'baselines ready' : 'learning baselines',
           s.cues.baselines_ready ? 'ok' : 'info');
   setPill('cueSup', s.cues.suppressed ? 'sneeze filter active' : 'sneeze filter idle',
           s.cues.suppressed ? 'info' : '');
+  // Held landmarks are the last real ones repeated, so the geometric cues are
+  // deliberately frozen while this says "held". Worth showing rather than hiding:
+  // a mouth or nod reading that will not move is otherwise indistinguishable from
+  // one that is genuinely steady.
+  if (s.cues.stale !== undefined) {
+    setPill('cueFresh', !present ? 'landmarks \u2014'
+              : s.cues.stale ? 'landmarks held' : 'landmarks fresh',
+            !present ? 'info' : s.cues.stale ? 'warn' : 'ok');
+  }
   setText('rBlink', s.rates.blink.toFixed(1));
   setText('rLong', s.rates.long_blink.toFixed(1));
   setText('rYawn', s.rates.yawn.toFixed(1));
@@ -787,8 +863,18 @@ function render(s) {
   // is noise, not signal.
   setText('gRoll', s.geom.valid ? s.geom.roll.toFixed(0) + '\u00b0' : '\u2014');
   setText('gJaw', s.geom.valid ? s.geom.jaw_drop.toFixed(2) : '\u2014');
+  setText('gWidth', s.geom.valid && s.geom.mouth_ratio !== undefined
+            ? s.geom.mouth_ratio.toFixed(2) : '\u2014');
   setText('gNose', s.geom.valid ? s.geom.nose_frac.toFixed(2) : '\u2014');
+  setText('gNoseN', s.geom.valid && s.geom.nose_norm !== undefined
+            ? s.geom.nose_norm.toFixed(2) : '\u2014');
   setText('gEye', s.geom.valid ? s.geom.eye_dist.toFixed(0) + ' px' : '\u2014');
+  // Signed, and shown with its sign, because which way it moved is the whole point:
+  // the opening index rises as the mouth opens, the pitch deviation goes negative as
+  // the head drops.
+  setText('cOpen', s.cues.open_index !== undefined
+            ? (s.cues.open_index >= 0 ? '+' : '') + s.cues.open_index.toFixed(2)
+            : '\u2014');
 
   // controls that the device owns the truth for
   const mute = $('muteBtn');
@@ -830,6 +916,18 @@ function render(s) {
   setText('viewers', s.stream.viewers);
   setText('clients', s.net.clients);
   setText('fsize', `${s.frame.w}\u00d7${s.frame.h}`);
+  // Timings are held rather than blanked between measurements: face detect only
+  // runs on every third frame, so a poll that lands between two of them would
+  // otherwise flash an em dash over a number that is perfectly current.
+  if (s.ms) {
+    if (s.ms.detect > 0) setText('msDetect', s.ms.detect.toFixed(0) + ' ms');
+    if (s.ms.eye > 0) setText('msEye', s.ms.eye.toFixed(0) + ' ms');
+  }
+  if (s.face.roi !== undefined) {
+    setText('dRoi', s.face.roi ? s.face.roi_w + ' px crop'
+                               : s.frame.w + ' px full');
+    setText('dRej', s.face.rejected);
+  }
   setText('heap', (s.mem.heap / 1024).toFixed(0) + ' kB');
   setText('psram', (s.mem.psram / 1024).toFixed(0) + ' kB');
   setText('stored', s.card

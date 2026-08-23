@@ -1,5 +1,250 @@
 # Changelog
 
+## 2026-08-23 (night) - on hardware, and the mirror that inverted every cue
+
+Flashed and run. Three things came out of it that no amount of host testing would
+have: one regression I had just introduced, one bug that had been live for a long
+time, and one piece of received wisdom about this board that turned out to be wrong.
+
+### The regression, and how it was found in one flash cycle
+
+The new plausibility gate rejected **100% of real candidates**: `face 0/20 ... gate
+dropped 2`, with detection time climbing 39.6 -> 73.9 ms in the same intervals,
+because the refinement stage runs per candidate - so the candidates were certainly
+real. Face detection went from working to never working.
+
+The first version of the gate reported only a count, which is indistinguishable from
+an empty frame. It now reports **which check failed, with the numbers it failed on**,
+rate-limited to once a second. That single log line is what turned a guess into a
+diagnosis:
+
+    gate: 1 cand, #0 would fail roll-too-steep | box 14,35 87x118 score 0.71
+        | eye_dist 36.0 (0.41 of box w) roll -178.4 jaw -1.16 nose_frac 0.47
+
+### The bug it uncovered: the frame is mirrored
+
+Every magnitude there is right and every sign is wrong. The sensor is mounted upside
+down, so `board_camera.h` applies vflip and leaves hmirror off - and a vertical flip of
+an upside-down image is an upright image that is **horizontally mirrored**. The preview
+looks perfectly correct, which is exactly why this survived.
+
+In a mirrored frame the detector's "right eye" is at the larger x, so the canonical
+order is reversed, roll reads +/-170 instead of 0, and `behavior_face_geometry()`
+de-rotates by 180 degrees - which negates every vertical measurement:
+
+- `jaw_drop` read about **-1.2 instead of +1.2**, and it *fell* as the mouth opened.
+  `mouth_open` requires a rise of `JAW_OPEN_DELTA`, so **the yawn cue could never fire
+  at all** - not in the new code and not in any version before it.
+- `nose_frac` survived as a ratio of two negatives. That is why this hid so well: the
+  one geometry number on the page that looked sane was the only one that could not
+  reveal it.
+
+`behavior_orient_landmarks()` orders the eye pair by x instead of trusting the label,
+so it is correct for a mirrored frame, an unmirrored one, and any later change to the
+flip settings. What it gives up is the anatomical meaning of "right eye" - index 0 is
+now the image-left eye - and nothing downstream depends on it.
+
+After the fix the device reports `gate would drop 0 ok` on every detection, so the gate
+is enabled, with the measured values now well inside its limits.
+
+### The BOOT button is not actually required
+
+`plxy.sh` and the firmware README both said this board cannot be put into download mode
+by any reset-line sequence. Not so: **its auto-reset lines are inverted** relative to
+esptool's convention. Found by trying all four combinations of assignment and polarity:
+
+    dtr = False -> GPIO0 LOW    dtr = True -> GPIO0 high
+    rts = False -> EN LOW       rts = True -> EN high
+
+New `scripts/board_reset.py` drives that, and `./plxy.sh flash` now uses it before
+falling back to the printed instructions: *"put it in the ROM loader over the serial
+lines - no BOOT press needed"*. Verified end to end from a board running the
+application.
+
+It also explains a symptom that had looked like a dead board: pyserial de-asserts both
+lines on open, which on this board means "hold in reset with BOOT pressed", so simply
+opening the port to read the log dropped the chip into the loader.
+
+The script deliberately does **not** certify the result. An early version tried, and
+got it wrong in both directions - reporting the application while the board was in the
+loader, because a single unflushed read returned the *previous* reset's bytes, and then
+reporting failure on a successful run because a reset caught mid-byte prints garbage a
+cp1252 console cannot display. esptool is the authority on whether the chip is in the
+loader, and `plxy.sh` asks it immediately afterwards.
+
+### Measured, at last
+
+| | |
+| --- | --- |
+| eye model, boot benchmark on a fixed tensor | **15.7 ms per eye** |
+| eye model, in the capture loop | 17.8-18.4 ms |
+| face detect, full frame | 39.1-39.5 ms |
+| face detect, with candidates to refine | 46-74 ms |
+| frame rate, no face | 19.7 fps |
+| frame rate, tracking a face | 10.7-13.6 fps |
+| detection hit rate, face present | 20/20, score 1.00 |
+
+The old figure was "roughly 45 ms for the pair". One eye per frame plus the accumulator
+split puts the per-frame eye cost at ~18 ms, and the ROI engages as expected
+(`roi 156`, `roi 164`, `roi 168`).
+
+### A second bug of mine, from the log
+
+`retuned for 109.3 fps: perclos window 45 -> 300 frames, risk needs 60 frames`. The
+camera's DMA queue starts full, so the first frames arrive far faster than the loop can
+sustain, and an average seeded at `TARGET_FPS` was dragged along with them - setting the
+PERCLOS window to its 20-second ceiling and making the alarm demand 60 consecutive
+frames. Retuning now ignores anything outside 5-40 fps, waits two log intervals for the
+estimate to settle, and only acts on a change of more than 10%.
+
+### Also in this pass
+
+- **Eye and mouth tracking is drawn on the preview.** The box only says a face was
+  found somewhere; the landmarks say the eyes and mouth were found in the right places,
+  which is what decides whether a PERCLOS or jaw-drop reading means anything. Eyes get
+  a lid stroke when shut, the mouth corners are joined so an opening is visible as the
+  line dropping and shortening, and the nose is marked as the pitch reference.
+- **Nothing is measured when nobody is there.** The loop was feeding `p_closed = 0`
+  into PERCLOS every frame with no face, and a zero there does not mean "no driver", it
+  means "eyes wide open" - so an empty cabin was recorded as the most alert possible
+  driver, and the first seconds after someone sat down were averaged against it. The
+  analyzer is now frozen while no face is present, the risk streak decays so a
+  confirmation cannot survive the driver leaving, and the page says `no driver` and
+  `idle` rather than showing zeros that look like measurements.
+- The page harness's canvas stub was missing `arc`, which the landmark overlay needs.
+  It failed loudly, which is what that stub is for.
+- 191 tests pass, up from 185.
+
+## 2026-08-23 (late) - the cues, measured against what they used to do
+
+Four detection defects, each reproduced on a synthetic trace before and after, by
+running the traces through the previous version of `behavior.py` straight out of git.
+Counts are events fired:
+
+| trace | before | after |
+| --- | --- | --- |
+| eyes shut 1.5 s and never reopened | nothing | 1 microsleep |
+| the same closure with one frame reading "open" | 2 long blinks | 1 microsleep |
+| probability dithering across 0.5 for 2 s | 30 blinks | nothing |
+| mouth open 1.0 s, head perfectly still | 1 nod | nothing |
+| mouth open 1.4 s, head perfectly still | 1 yawn + 1 nod | 1 yawn |
+| jaw barely drops but the mouth narrows | nothing | 1 yawn |
+| eight single-frame pitch spikes | 8 nods | nothing |
+| one head drop with a frame of noise mid-way | 2 nods | 1 nod |
+
+### The one that mattered most
+
+**A microsleep waited for the driver to wake up.** Closures were only classified when
+the eyes reopened, so the alarm for "the driver is asleep" was gated on the event it
+exists to interrupt: eyes shut for five seconds produced five seconds of silence. It
+now fires at `MICROSLEEP_MIN_S` into the closure, while the eyes are still shut. The
+wait is longer only when the mouth says it could still be a sneeze - a sneeze resolves
+inside `SNEEZE_MAX_S`, so outlasting that is itself the proof it was not one.
+
+### The rest
+
+**Speech was being reported as head nods.** `nose_frac` divides by the eye-to-mouth
+distance, so opening the mouth lowers it with the head perfectly still - a 0.25 jaw
+drop reads as a 0.11 pitch drop, well past the threshold. Measured against the old
+code, a mouth open for 0.5 s or 1.0 s fired a nod, and 1.4 s fired a yawn *and* a nod,
+announced as the nod because that bit is tested first. Openings past `NOD_MAX_S`
+escaped only by outlasting it. `nose_norm` divides by eye distance instead, which the
+jaw cannot change, and both channels must now agree.
+
+**One noisy frame destroyed the event it landed in.** A microsleep is 15 frames at
+15 fps and one frame reading "open" split it into two long blinks; the same single
+frame reset a yawn's 1.2 s timer, and split one nod into two counted nods - twice the
+contribution to the fused score of the one that happened. `CUE_GAP_S` tolerates a
+brief lapse in all three. The closure's duration is still measured to where the eyes
+reopened, not to where the tolerance expired, so the tolerance cannot promote a 0.9 s
+long blink into a 1.1 s microsleep.
+
+**Half the yawn signal was unused.** Five landmarks give the mouth corners and nothing
+else, so there is no lip gap and no mouth aspect ratio - but the corners carry two
+signals, not one: they drop *and* they pull inward as the jaw opens wide. `jaw_drop`
+used only the first. `MOUTH_NARROW_W` combines them, and a yawn now has to reach a
+peak (`YAWN_PEAK_DELTA`) rather than merely cross the threshold that starts it.
+
+**Landmark jitter was a head nod.** The pitch proxy is a ratio of two five-point
+distances, so a single frame of keypoint noise carries it past the threshold and back.
+With `NOD_RATE_FULL` at 6/min, six such frames pegged the nod cue on their own. A nod
+now needs `NOD_MIN_S` of duration and `NOD_PEAK_DELTA` of depth.
+
+**A held box was being counted as fresh evidence.** When detection missed, the last
+landmarks were re-fed for up to a second - identical values, pushing duplicate samples
+into a 10 s baseline window and keeping the mouth and nod timers running on a pose
+that no longer existed. A head pitching far enough down to lose the detector is
+exactly when that happened. The geometric cues now pause on held frames; the eye path
+still runs, because the eye crop comes from the current frame.
+
+**A probability sitting on the threshold emitted a blink per frame.** `EyeGate` adds a
+3-tap median and hysteresis. A median rather than an EMA on purpose: an EMA smooths
+the edges of a closure and so distorts its duration, and duration is exactly what
+`MICROSLEEP_MIN_S` and `BLINK_MAX_S` measure. PERCLOS is deliberately left on a plain
+threshold - it is a fraction over a window, already an averaging operation, so
+filtering its input would only add lag and shift the numbers the risk trigger was
+tuned against.
+
+### Which detection to believe
+
+New `face_gate.cpp`, kept free of ESP-IDF headers so `tests/test_face_gate.py` can
+compile it on the host - the crop-and-map-back is the kind of arithmetic where an
+origin applied twice still produces plausible-looking boxes, and the only symptom
+would be every eye crop landing a few pixels off, which reads as a weak eye model.
+
+- **Landmark plausibility.** The coarse stage has to run at a score threshold of 0.10
+  on this camera, so weak candidates arrive. Five points have structure - eyes roughly
+  level, mouth below, nose between, interocular distance a fair fraction of face width
+  - and anything violating it is rejected before anything is measured from it.
+- **The driver, not the biggest face.** A passenger leaning forward is a bigger face.
+  Candidates are now chosen by overlap with the previously accepted box.
+- **A region of interest.** While tracking, the detector searches a padded square
+  around the last box: 1.4x more linear resolution at an 80-pixel box, 2.5x for a
+  small one, nothing past ~93 pixels where the crop is not worth taking - so it helps
+  exactly where landmark precision is worst. Every tenth detection sweeps the whole
+  frame anyway, or a drifted crop would keep confirming itself inside its own window.
+
+### Speed, and one honest failure
+
+**One eye per frame, alternating**, halves the dominant cost. The two eyes of a face
+close together, so there is still one closure measurement per frame - it is the
+per-eye refresh that goes to two frames, not the closure's time resolution.
+
+**Three accumulators in the convolution inner loop**: 8% on the host, bit-identical
+output. Three other restructurings were tried and measured slower. The interesting one
+gathered each patch into a contiguous buffer to cut input re-reads by an order of
+magnitude, and lost 20% - the premise was wrong, because the inner loop was never a
+serial accumulate, so there was no stall to remove. `eye_model.h` records all four
+with their numbers so they are not tried again.
+
+**The loop measures itself now.** `ms.detect` and `ms.eye` are in `/api/status`, on the
+Device card and in the log line, and the eye model is benchmarked once at boot on a
+fixed tensor. The frame budget in this repo carried an estimate for a long time that
+turned out to be wrong by a factor of six.
+
+**Frame rate was silently a threshold.** The PERCLOS window and the risk filter's
+confirmation and cooldown were frame counts chosen as durations, so making the loop
+faster made the alarm twitchier and the PERCLOS window shorter without anyone editing
+a threshold. They are durations now, converted from the measured rate once a second.
+`Perclos::set_window()` keeps its samples across the resize rather than clearing,
+which is what `PerclosTracker.resize()` already did on the desktop - a PERCLOS of zero
+is indistinguishable from eyes wide open.
+
+### Also
+
+- 185 tests pass, up from 149: 12 new behaviour regressions and a 17-case host test
+  for the detection gate.
+- `behavior.cpp` no longer uses `M_PI`, a POSIX extension libc++ does not define under
+  strict conformance - that is what lets it host-compile.
+- `FaceDetection` carries canonical `Landmarks` instead of a raw ESP-DL keypoint array,
+  so the reorder happens once inside the adapter and no caller can index it wrongly.
+
+**Not yet run on hardware.** The board was disconnected when this was written: the
+build is clean and the host tests pass, but the on-device numbers - the boot
+benchmark, `ms.eye`, `ms.detect` and the resulting frame rate - have not been read
+back yet. Everything in the speed section above is a host measurement or an
+arithmetic consequence of one, and is labelled as such.
+
 ## 2026-08-23 (night) — Khmer alerts, synthesised online
 
 All four Khmer clips now ship embedded alongside the English, so the language

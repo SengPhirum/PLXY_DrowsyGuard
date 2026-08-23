@@ -7,9 +7,11 @@
 
 #include "behavior.h"
 #include "board_audio.h"
+#include "eye_model.h"
 #include "board_camera.h"
 #include "board_sdcard.h"
 #include "board_wifi.h"
+#include "face_gate.h"
 #include "model_adapter.h"
 #include "risk_filter.h"
 #include "voice_alert.h"
@@ -37,25 +39,45 @@ they shaped everything below:
      nobody is watching.
 */
 
-// Frame budget on ESP32-S3, from ESP-DL's published latencies:
-//   msr_s8_v1 (face, 120x160)   33.1 ms  -- run every DETECT_EVERY frames only
-//   mnp_s8_v1 (refine, 48x48)    5.8 ms  -- same cadence
-//   open_closed_eye (32x32) x2  ~4-8 ms  -- every frame, both eyes
-//   behaviour + PERCLOS          ~1-2 ms -- integer/float arithmetic
-//   frame copy for the preview   ~1-2 ms -- only while a browser is watching
-// Detecting every 3rd frame and tracking in between amortises the detector to ~13 ms,
-// giving roughly 25 ms/frame => a comfortable 15-20 fps. PERCLOS needs temporal
-// resolution, not high frame rate: 15 fps still resolves a 1 s closure into 15 samples.
+// Frame budget. The loop now measures itself - ui.ms_detect and ui.ms_eye are on the
+// status page and in the log line below - because the last set of estimates here was
+// wrong by a factor of six, and an estimate that is never checked is just a comment.
+//
+// What is known, measured on this board:
+//   face detect (msr_s8_v1 + mnp_s8_v1)  ~39 ms  -- every DETECT_EVERY frames
+//   open_closed_eye, per eye             ~22 ms  -- ONE eye per frame, alternating
+//   behaviour + PERCLOS                   <1 ms  -- plain arithmetic
+//   frame copy for the preview           ~1-2 ms -- only while a browser is watching
+//
+// The eye model dominates, and it used to run on BOTH eyes every frame. Alternating
+// them halves that for almost nothing: the two eyes of one face close together, so
+// sampling one per frame still yields one closure measurement per frame - it is the
+// per-eye refresh that drops to 2 frames, not the closure's time resolution. What
+// feeds PERCLOS is the mean of the two most recent readings, which is the same
+// quantity as before, one frame staler on one side.
 static constexpr int DETECT_EVERY = 3;
+
+// Even while tracking, sweep the whole frame this often (counted in detections, so
+// every 30 frames). Two failures need it: a track that has drifted onto something
+// else would otherwise keep confirming itself inside its own crop, and a driver who
+// moved outside the crop would never be re-found.
+static constexpr int FULL_SWEEP_EVERY = 10;
+
+// Starting frame rate, used only until the loop has measured itself.
 static constexpr float TARGET_FPS = 15.0f;
 
-// PERCLOS window in frames. At 15 fps, 45 frames is a 3 s window.
-static constexpr int PERCLOS_WINDOW = 45;
+// Windows and confirmation delays, in SECONDS. They used to be frame counts, which
+// silently coupled the alarm's sensitivity to the frame rate: 8 frames is half a
+// second at 15 fps and a third of a second at 25, so making the loop faster made the
+// alarm twitchier without anyone editing a threshold. They are converted to frames
+// from the measured rate once a second - see retune_for_fps() below.
+static constexpr float PERCLOS_WINDOW_S = 3.0f;
+static constexpr float RISK_REQUIRED_S = 0.55f;
+static constexpr float RISK_COOLDOWN_S = 4.0f;
 
 // Risk is the fused behaviour score, so the trigger is a risk level rather than a
-// raw probability. Tune these on the desktop dashboard and paste them here.
+// raw probability. Tune this on the desktop dashboard and paste it here.
 static constexpr float RISK_TRIGGER = 0.55f;
-static constexpr int RISK_REQUIRED = 8;
 
 // Bring-up aid, off by default. Runs the face detector over the captured frames in
 // test_frames.h - the same bytes every boot, at three face scales - which separates
@@ -69,12 +91,68 @@ static constexpr int RISK_REQUIRED = 8;
 static void model_selftest() {
     for (int i = 0; i < kTestFrameCount; ++i) {
         FaceDetection d{};
-        const bool hit = model_detect_face(kTestFrames[i].data, CAM_FRAME_W, CAM_FRAME_H, &d);
+        const bool hit = model_detect_face(kTestFrames[i].data, CAM_FRAME_W, CAM_FRAME_H,
+                                           true, &d);
         ESP_LOGW(TAG, "selftest scale %.2f -> %s score %.2f box %d,%d %dx%d",
                  kTestFrames[i].scale, hit ? "FACE" : "none", d.score, d.x, d.y, d.w, d.h);
     }
 }
 #endif
+
+// Frames per second -> frame counts, so the windows above stay the durations they
+// were tuned as. Called once a second with a smoothed rate; both objects keep their
+// history across the change.
+//
+// The bounds and the deadband are not defensive padding, they are both from
+// hardware. The first retune after boot reported **109 fps** and duly set the PERCLOS
+// window to its 300-frame ceiling - 20 seconds - and made the alarm demand 60
+// consecutive frames. The camera's DMA queue starts full, so the first frames arrive
+// far faster than the loop can sustain, and an average seeded at TARGET_FPS is
+// dragged along with them. Anything outside what this pipeline can physically do is
+// therefore not a reading, it is an artefact, and acting on it is worse than ignoring
+// it: these numbers decide how sensitive the alarm is.
+static constexpr float FPS_PLAUSIBLE_MIN = 5.0f;
+static constexpr float FPS_PLAUSIBLE_MAX = 40.0f;
+
+static void retune_for_fps(float fps, Perclos *perclos, RiskFilter *filter) {
+    if (fps < FPS_PLAUSIBLE_MIN || fps > FPS_PLAUSIBLE_MAX) return;
+
+    const int win = static_cast<int>(PERCLOS_WINDOW_S * fps + 0.5f);
+    const int req = static_cast<int>(RISK_REQUIRED_S * fps + 0.5f);
+    const int cool = static_cast<int>(RISK_COOLDOWN_S * fps + 0.5f);
+
+    // Deadband. The estimate wanders by a frame or two between intervals and
+    // resizing the window every second is churn for no gain, so only a change worth
+    // acting on is acted on.
+    const int have = perclos->window();
+    if (win > 0 && (win - have > have / 10 || have - win > have / 10)) {
+        perclos->set_window(win);
+    }
+    filter->retune(req, cool);
+}
+
+// One number, at boot, for the thing that dominates the frame budget.
+//
+// Worth its 30 ms because every previous figure for this was an estimate off a model
+// card, and the one measurement that got taken came in six times higher. It runs on
+// a fixed synthetic tensor, so it is a property of the board and the build rather
+// than of whatever happened to be in front of the camera.
+static void bench_eye_model(void) {
+    static float tensor[EYE_INPUT_FLOATS];
+    uint32_t seed = 12345u;
+    for (int i = 0; i < EYE_INPUT_FLOATS; ++i) {
+        seed = seed * 1103515245u + 12345u;
+        tensor[i] = static_cast<float>((seed >> 16) & 0xFFFF) / 65535.0f - 0.5f;
+    }
+    eye_model_infer_closed(tensor);              // warm the caches
+    const int reps = 20;
+    const int64_t t0 = esp_timer_get_time();
+    float sink = 0.0f;
+    for (int i = 0; i < reps; ++i) sink += eye_model_infer_closed(tensor);
+    const int64_t us = (esp_timer_get_time() - t0) / reps;
+    ESP_LOGI(TAG, "eye model: %lld us per eye (%.0f eyes/s), checksum %.3f",
+             us, us > 0 ? 1e6 / static_cast<double>(us) : 0.0, static_cast<double>(sink));
+}
 
 // Keeps the status endpoint answering when the pipeline cannot run, so the page
 // says which subsystem failed instead of timing out. Never returns.
@@ -141,7 +219,6 @@ extern "C" void app_main(void) {
 
     WebStatus ui{};
     ui.trigger = RISK_TRIGGER;
-    ui.required = RISK_REQUIRED;
     ui.frame_w = CAM_FRAME_W;
     ui.frame_h = CAM_FRAME_H;
 
@@ -171,14 +248,35 @@ extern "C" void app_main(void) {
     if (models) model_selftest();
 #endif
 
-    RiskFilter filter(RISK_TRIGGER, RISK_REQUIRED, static_cast<int>(TARGET_FPS * 4));
-    Perclos perclos(PERCLOS_WINDOW, 0.5f);
+    if (eye_model) bench_eye_model();
+
+    RiskFilter filter(RISK_TRIGGER,
+                      static_cast<int>(RISK_REQUIRED_S * TARGET_FPS + 0.5f),
+                      static_cast<int>(RISK_COOLDOWN_S * TARGET_FPS + 0.5f));
+    Perclos perclos(static_cast<int>(PERCLOS_WINDOW_S * TARGET_FPS + 0.5f), 0.5f);
     BehaviorAnalyzer behavior(0.5f, TARGET_FPS);
+    ui.required = filter.required();
 
     Landmarks last_lm{};
     FaceDetection det{};
     uint32_t frame_no = 0;
     int misses = 0;
+    int detections = 0;
+
+    // Latest reading for each eye, and which one is due. Held across frames because
+    // only one is refreshed per frame; both are dropped when the face is lost, so a
+    // stale closure from before the driver moved cannot leak into the new one.
+    float p_eye[2] = {0.0f, 0.0f};
+    int next_eye = 0;
+
+    // Last state computed while a driver was actually present, so the page can keep
+    // showing the numbers instead of flashing to zero the moment detection blinks.
+    BehaviorState last_state{};
+
+    // Smoothed frame rate, for retuning the windows. Smoothed because a single
+    // frame that took twice as long - a full-frame sweep, an SD write - must not
+    // resize the PERCLOS window.
+    float fps_avg = TARGET_FPS;
     // The cumulative pair matters: it decouples "does the detector ever work" from
     // "was anyone in front of the camera when the log was sampled", which a
     // per-interval count cannot tell apart.
@@ -199,9 +297,11 @@ extern "C" void app_main(void) {
         last_us = now_us;
 
         bool found = false;
+        bool fresh = false;                 // landmarks from THIS frame, not held
         float p_closed = 0.0f;
         BehaviorState st{};
         FaceGeometry geom{};
+        int64_t detect_us = 0, eye_us = 0;
 
         if (models) {
             // 1. Face + landmarks, only every DETECT_EVERY frames; hold the last box
@@ -210,50 +310,92 @@ extern "C" void app_main(void) {
             if (frame_no % DETECT_EVERY == 0) {
                 FaceDetection d{};
                 ++det_tries;
-                if (model_detect_face(fb->buf, fb->width, fb->height, &d)) {
+                // Periodically ignore the track and sweep the whole frame, so a crop
+                // that has drifted cannot keep confirming itself.
+                const bool sweep = (detections % FULL_SWEEP_EVERY) == 0;
+                const int64_t t_det = esp_timer_get_time();
+                const bool hit = model_detect_face(fb->buf, fb->width, fb->height, sweep, &d);
+                detect_us = esp_timer_get_time() - t_det;
+                ++detections;
+                if (hit) {
                     ++det_hits;
                     ++det_hits_total;
                     if (d.score > det_best_score) det_best_score = d.score;
                     det = d;
-                    last_lm = behavior_from_espdl_keypoints(d.keypoint);
+                    last_lm = d.lm;         // canonical order, frame coordinates
                     found = true;
+                    fresh = true;
                     misses = 0;
                 } else if (++misses < DETECT_EVERY * 5) {
                     found = last_lm.valid;                 // hold
                 } else {
+                    // Give up on the face rather than keep scoring a stale pose, and
+                    // tell the detector to stop searching where it used to be.
                     last_lm.valid = false;
                     det.valid = false;
+                    model_detect_forget();
+                    p_eye[0] = p_eye[1] = 0.0f;
                 }
             } else {
                 found = last_lm.valid;
             }
 
-            // 2. Eye state on both eyes, every frame (cheap: 11.3k-parameter model).
+            // 2. Eye state - ONE eye per frame, alternating. See the frame budget
+            //    note above: this is the single most expensive thing in the loop and
+            //    the two eyes of a face close together, so refreshing one per frame
+            //    costs nothing that matters and halves the bill.
             if (found && eye_model) {
-                // Both eyes, averaged. det.w is the face box side the crop is
-                // sized from, so it has to be the box the landmarks came from -
-                // which is why the held box is used on tracked frames too.
+                // det.w is the face box side the crop is sized from, so it has to be
+                // the box the landmarks came from - which is why the held box is used
+                // on tracked frames too.
                 const int face_side = det.w > 0 ? det.w : fb->width / 3;
-                p_closed = 0.5f * (model_eye_closed_prob(fb->buf, fb->width, fb->height,
-                                                         last_lm, 0, face_side) +
-                                   model_eye_closed_prob(fb->buf, fb->width, fb->height,
-                                                         last_lm, 1, face_side));
+                const int64_t t_eye = esp_timer_get_time();
+                p_eye[next_eye] = model_eye_closed_prob(fb->buf, fb->width, fb->height,
+                                                        last_lm, next_eye, face_side);
+                eye_us = esp_timer_get_time() - t_eye;
+                next_eye ^= 1;
+                // Mean of both eyes, as before, so the 0.5 threshold and the fusion
+                // weights still mean what they were tuned to mean.
+                p_closed = 0.5f * (p_eye[0] + p_eye[1]);
             }
 
             // 3. Behaviour fusion: PERCLOS + long blinks + yawn + nod, sneeze-suppressed.
-            //    Still runs without the eye model: the geometry half (jaw drop, head
-            //    pitch, roll) is real and worth showing. Only the eye-derived half is
-            //    missing, and PERCLOS reads a flat zero because of it.
-            const float pc = perclos.update(p_closed);
-            geom = behavior_face_geometry(last_lm);
-            st = behavior.update(p_closed, geom, pc, dt);
+            //    Still runs without the eye model: the geometry half (jaw drop, mouth
+            //    width, both pitch channels, roll) is real and worth showing. Only the
+            //    eye-derived half is missing, and PERCLOS reads a flat zero because
+            //    of it.
+            //
+            //    `fresh` is what stops held landmarks being counted as evidence. They
+            //    are identical to the last real ones, so feeding them in pushed up to
+            //    a second of duplicate samples into a 10 s baseline and kept the mouth
+            //    and nod timers running on a pose that no longer existed.
+            //
+            //    Nothing runs at all when there is no driver. Feeding p_closed = 0 in
+            //    was worse than skipping: a zero there does not mean "nobody is
+            //    there", it means "eyes wide open", so an empty cabin was being
+            //    recorded as the most alert possible driver and the PERCLOS window
+            //    filled with evidence about no one. The first seconds after a driver
+            //    sat down were then averaged against that.
+            if (found) {
+                const float pc = perclos.update(p_closed);
+                geom = behavior_face_geometry(last_lm);
+                st = behavior.update(p_closed, geom, pc, dt, fresh);
+                last_state = st;
+            } else {
+                // Hold the last reading for the page, marked absent, and let the
+                // streak decay so a confirmation in progress cannot survive the
+                // driver leaving.
+                st = last_state;
+                st.events = EVENT_NONE;
+                filter.update(0.0f);
+            }
 
             // 4. Alert, naming the reason so the spoken message is actionable.
             //    Gated on the eye model: with PERCLOS pinned at zero the fused score
             //    can only under-report, and for a drowsiness alarm silence is the
             //    dangerous way to be wrong. The web page says EYE MODEL MISSING
             //    rather than shipping an alarm that quietly never fires.
-            if (eye_model) {
+            if (eye_model && found) {
                 const uint32_t now_ms = static_cast<uint32_t>(now_us / 1000);
                 if (filter.update(st.score)) {
                     last_reason = AlertReason::Drowsy;
@@ -279,7 +421,7 @@ extern "C" void app_main(void) {
         web_server_publish_frame(fb->buf, fb->width, fb->height, fb->len);
 
         ui.face_found = found;
-        ui.face_held = found && (frame_no % DETECT_EVERY != 0);
+        ui.face_held = found && !fresh;
         ui.face_x = det.x;
         ui.face_y = det.y;
         ui.face_w = found ? det.w : 0;
@@ -287,10 +429,24 @@ extern "C" void app_main(void) {
         ui.face_score = det.score;
         ui.frame_w = fb->width;
         ui.frame_h = fb->height;
+        ui.lm = found ? last_lm : Landmarks{};
+        ui.driver_present = found;
         ui.state = st;
         ui.geom = geom;
         ui.streak = filter.streak();
+        ui.required = filter.required();
         ui.fps = (dt > 0.0f) ? (1.0f / dt) : 0.0f;
+        if (ui.fps > 0.0f) fps_avg += 0.05f * (ui.fps - fps_avg);
+        if (detect_us > 0) ui.ms_detect = static_cast<float>(detect_us) / 1000.0f;
+        if (eye_us > 0) ui.ms_eye = static_cast<float>(eye_us) / 1000.0f;
+        {
+            ModelDetectStats ds{};
+            model_detect_stats(&ds);
+            ui.detect_roi = ds.used_roi;
+            ui.detect_roi_w = ds.roi_w;
+            ui.detect_rejected = ds.rejected;
+            ui.detect_reject = face_gate_reject_name(ds.reject);
+        }
 
         // Frame brightness, on a 1024-pixel stride sample so it costs nothing.
         // Decoded properly rather than averaging the raw uint16: RGB565 packs the
@@ -323,7 +479,8 @@ extern "C" void app_main(void) {
                 ui.luma_peak = static_cast<int>(ui.luma);
             }
         }
-        ui.alerting = voice_alert_is_active(static_cast<uint32_t>(now_us / 1000));
+        ui.alerting = found &&
+                      voice_alert_is_active(static_cast<uint32_t>(now_us / 1000));
         ui.alert_text = voice_alert_banner_text(last_reason);
         ui.alert_reason = voice_alert_clip_name(last_reason);
         ui.alert_count = voice_alert_count();
@@ -335,13 +492,30 @@ extern "C" void app_main(void) {
         // One line a second is enough to record the numbers the acceptance tests in
         // docs/DEPLOYMENT.md ask for, without flooding the monitor.
         if (++frame_no % 60 == 0) {
-            ESP_LOGI(TAG, "fps %.1f  risk %.2f  perclos %.2f  luma %.0f (%d-%d) peak %d"
-                          "  face %d/%d (total %d, best %.2f)"
+            // Windows are durations, frames are what the objects count, and the frame
+            // rate is not a constant - so re-derive one from the other before the
+            // mismatch quietly changes how sensitive the alarm is.
+            //
+            // Not for the first two intervals: the estimate has not settled yet, and
+            // retune_for_fps() explains what happened when it was trusted early.
+            const int was = perclos.window();
+            if (frame_no >= 120) retune_for_fps(fps_avg, &perclos, &filter);
+            if (perclos.window() != was) {
+                ESP_LOGI(TAG, "retuned for %.1f fps: perclos window %d -> %d frames, "
+                              "risk needs %d frames",
+                         fps_avg, was, perclos.window(), filter.required());
+            }
+
+            ESP_LOGI(TAG, "fps %.1f  detect %.1f ms  eye %.1f ms  risk %.2f  perclos %.2f"
+                          "  luma %.0f (%d-%d) peak %d"
+                          "  face %d/%d (total %d, best %.2f, roi %d, gate would drop %d %s)"
                           "  viewers %d  heap %u  psram %u",
-                     ui.fps, st.score, st.perclos, ui.luma, ui.luma_min, ui.luma_max,
-                     ui.luma_peak,
-                     det_hits, det_tries, det_hits_total,
-                     det_best_score, web_server_has_viewer() ? 1 : 0,
+                     ui.fps, ui.ms_detect, ui.ms_eye, st.score, st.perclos,
+                     ui.luma, ui.luma_min, ui.luma_max, ui.luma_peak,
+                     det_hits, det_tries, det_hits_total, det_best_score,
+                     ui.detect_roi ? ui.detect_roi_w : 0, ui.detect_rejected,
+                     ui.detect_reject != nullptr ? ui.detect_reject : "ok",
+                     web_server_has_viewer() ? 1 : 0,
                      static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
                      static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
             det_tries = 0;

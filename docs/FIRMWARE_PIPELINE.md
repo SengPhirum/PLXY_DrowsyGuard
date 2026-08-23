@@ -44,23 +44,64 @@ skipping quantization, and the observable effect is direct:
 | face held (eye model on both eyes, every frame) | 10.2-10.7 |
 | a browser streaming as well | 16-19, dipping to 10 while tracking |
 
-Still above the 15 fps target on average, and 10 fps while actively tracking is
-enough for PERCLOS - a 1 s closure is 10 samples. But it is the obvious next thing
-to optimise, and there are two known routes: ESP-DSP's `dsps_dotprod_f32` for the
-inner loops (it is already a dependency, pulled in by esp-dl), or running the eye
-model every second frame and halving the cost for a PERCLOS sampling rate of
-~8 Hz.
+### What was done about it
+
+**One eye per frame, alternating.** The eye model ran on both eyes every frame; it
+now runs on one, and PERCLOS is fed the mean of the two most recent readings. This is
+an exact halving of the dominant cost for almost nothing: the two eyes of one face
+close together, so there is still one closure measurement per frame - it is the
+per-eye refresh interval that goes to two frames, not the time resolution of the
+closure. The quantity handed to PERCLOS is the same mean of two eyes as before, one
+frame staler on one side.
+
+**Three accumulators in the convolution inner loop.** Worth 8% on the host, and
+bit-identical output. Three other restructurings were tried and were slower;
+`eye_model.h` lists all four with their numbers so they are not tried again. The
+interesting failure was gathering each patch into a contiguous buffer to cut input
+re-reads by an order of magnitude - it lost 20%, because the premise was wrong: the
+inner loop was never a serial accumulate, so there was no stall to remove.
+
+**The loop now measures itself.** `ms.detect` and `ms.eye` are in `/api/status`, on
+the Device card and in the once-a-second log line, and `bench_eye_model()` prints one
+figure for the eye model at boot on a fixed synthetic tensor. This section existed
+for a long time with an estimate in it that was wrong by a factor of six; an estimate
+nobody checks is a comment.
+
+Still open, and now measurable rather than guessed at: int8 or int16 arithmetic
+through the S3's vector unit - which is what ESP-DL does and what a quantized
+`.espdl` would unlock - and running the eye model on the second core in parallel with
+the face detector. ESP-DSP's `dsps_dotprod_f32` is *not* on that list: the S3's
+128-bit vector unit is 8- and 16-bit integer only, so there is no float SIMD on this
+part to reach.
+
+### Frame rate is not a free parameter
+
+Making the loop faster used to change how sensitive the alarm was, silently. The
+PERCLOS window and the risk filter's confirmation and cooldown were all frame counts
+chosen as durations - 8 frames is about half a second at 15 fps and a third of a
+second at 25 - so a speed-up made the alarm twitchier and shortened the PERCLOS
+window without anyone editing a threshold.
+
+They are now durations (`PERCLOS_WINDOW_S`, `RISK_REQUIRED_S`, `RISK_COOLDOWN_S` in
+`main.cpp`) converted to frames once a second from the measured rate. `Perclos`
+keeps its samples across a resize rather than clearing - a PERCLOS of zero is
+indistinguishable from eyes wide open, which is the one way that estimator must never
+be wrong - and the risk filter keeps its streak.
 
 | stage | model | input | cost | cadence |
 | --- | --- | --- | --- | --- |
 | face detect stage 1 | `msr_s8_v1` | 120x160x3 | 33.1 ms | every 3rd frame |
 | face detect stage 2 | `mnp_s8_v1` | 48x48x3 | 5.8 ms | every 3rd frame |
-| eye state x2 | `open_closed_eye` | 32x32x3 | **~45 ms measured** | every frame a face is held |
+| crop staging for the detector | — | up to 240x240 RGB565 | <0.1 ms | every 3rd frame, while tracking |
+| eye state | `open_closed_eye` | 32x32x3 | **~22 ms measured, per eye** | one eye per frame, alternating |
 | behaviour + PERCLOS | — | — | <1 ms | every frame |
 | frame copy for the preview | — | 240x240 RGB565 | ~1-2 ms | only while a browser is connected |
 
-Amortised: `(33.1 + 5.8) / 3 ≈ 13 ms` detector + ~6 ms eyes + ~2 ms handoff ≈
-**21 ms/frame, so 15-20 fps** with headroom on a 240 MHz dual-core part.
+Amortised: `(33.1 + 5.8) / 3 ≈ 13 ms` detector + ~22 ms for one eye + ~2 ms handoff
+≈ **37 ms/frame while tracking**. Take the fps column above as the record of what the
+board produced before this change; the numbers after it are what `ms.detect`,
+`ms.eye` and the boot benchmark now report, and they should be re-read off the device
+rather than copied from here.
 
 The JPEG encode for the preview — roughly 20 ms for a 240x240 frame at quality 80
 — is deliberately *not* in that table. It runs in the stream task, pinned to
@@ -78,10 +119,52 @@ Two decisions make that budget work:
 2. **15 fps is enough, by design.** PERCLOS needs temporal *coverage*, not a high frame
    rate: at 15 fps a 1 s microsleep is still 15 samples. Blink counting degrades at low
    frame rates, which is why blinks carry only 0.20 of the fused score and PERCLOS 0.55.
+3. **Detections are gated, not just scored.** The coarse detector stage has to run at
+   a score threshold of 0.10 on this camera, so weak candidates arrive; `face_gate.cpp`
+   checks that the five landmarks actually describe a face before anything is measured
+   from them, and picks the candidate that overlaps the previous one rather than the
+   biggest. See the detection-gate section below.
 
 Memory: the eye model is 46 KB and the detectors are a few hundred KB, all comfortable
 in 8 MB PSRAM. The preview adds two 115 KB RGB565 snapshot buffers and two 48 KB
 JPEG buffers, all in PSRAM, allocated once at boot by `web_server_start()`.
+
+## The detection gate
+
+Everything downstream - jaw drop, mouth width, both pitch channels, the eye crops -
+is computed from five landmark positions, so which detection is believed and how
+precisely it is placed is not a detail. `face_gate.cpp` holds three decisions, and it
+is deliberately free of ESP-IDF headers so `tests/test_face_gate.py` can compile it on
+the host and check the arithmetic.
+
+**Plausibility.** A five-point landmark set has structure: the eyes are roughly level,
+the mouth is below them, the nose is between them, and the interocular distance is a
+fairly fixed fraction of face width. `face_gate_plausible()` rejects anything that
+violates it. This is what pays for the loose 0.10 stage threshold - lowering a score
+gate without it is how a headrest ends up driving PERCLOS.
+
+**Which face is the driver.** Previously the largest box won. A passenger leaning
+forward is a bigger face than the driver, so that rule handed them the box, the
+landmarks, the eye crops and the alarm. The gate now prefers the candidate that
+overlaps the previously accepted one, and falls back to largest only when there is no
+live track.
+
+**Where to look.** While tracking, the detector is given a padded square crop around
+the last box instead of the whole frame. Two effects: the face gets more pixels in the
+detector's fixed-size input (1.4x linear at an 80-pixel box, 2.5x for a small one,
+and nothing past ~93 pixels where the crop is not worth taking - so it helps exactly
+where landmark precision is worst), and a face outside the window cannot be proposed
+at all, which excludes a passenger geometrically.
+
+Every tenth detection ignores the track and sweeps the whole frame anyway. Without
+that, a crop that had drifted onto something else would keep confirming itself inside
+its own window, and a driver who moved outside it would never be re-found. A miss
+inside a crop costs the track rather than triggering a retry, so the next detection is
+a full sweep - one detect interval later, which the held box already covers.
+
+`/api/status` reports `face.roi`, `face.roi_w` and `face.rejected`, because "no face
+in the frame" and "a face the gate threw away" look identical without them and have
+completely different fixes.
 
 ## Landmark order differs between desktop and device
 
