@@ -51,24 +51,33 @@ theme:
     - content.action.edit
     - content.tooltips
   palette:
+    # primary/accent are repeated here, not just on the two entries below: this
+    # is the palette a first-time visitor gets, and an entry that omits them
+    # falls back to Material's stock indigo rather than inheriting anything.
     - media: "(prefers-color-scheme)"
+      primary: custom
+      accent: deep orange
       toggle:
         icon: material/brightness-auto
         name: Follow system theme
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: teal
+      primary: custom
       accent: deep orange
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: teal
+      primary: custom
       accent: deep orange
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
+
+# Defines the dodgerblue primary that `primary: custom` above refers to.
+extra_css:
+  - stylesheets/extra.css
 
 plugins:
   - search

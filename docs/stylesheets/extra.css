@@ -1,0 +1,32 @@
+/* Custom primary colour.
+ *
+ * Material only accepts its own named primaries (teal, indigo, blue, ...), so a
+ * specific colour has to go through `primary: custom` in mkdocs.yml plus the
+ * token overrides below. Changing the hex here changes the header, the active
+ * nav item, the search bar and the focus rings in one place.
+ */
+
+[data-md-color-primary=custom] {
+  --md-primary-fg-color:        #1e90ff;   /* dodgerblue */
+  --md-primary-fg-color--light: #5aabff;
+  --md-primary-fg-color--dark:  #0b6ecb;
+
+  /* Text drawn *on* the primary colour - the header title and icons. */
+  --md-primary-bg-color:        #ffffff;
+  --md-primary-bg-color--light: #ffffffb3;
+}
+
+/* Body links.
+ *
+ * Material derives these from the primary colour, and dodgerblue on white is
+ * only 3.2:1 - fine for the large header title, short of the 4.5:1 that body
+ * text needs. These are the same hue darkened (light) and lightened (dark)
+ * until they clear it: 5.1:1 on white, 5.9:1 on the slate background.
+ */
+[data-md-color-scheme=default] {
+  --md-typeset-a-color: #0b6ecb;
+}
+
+[data-md-color-scheme=slate] {
+  --md-typeset-a-color: #4da3ff;
+}
