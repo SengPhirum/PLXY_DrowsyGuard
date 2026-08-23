@@ -7,6 +7,7 @@
 #include <cstring>
 
 #include "board_camera.h"
+#include "board_sdcard.h"
 #include "board_wifi.h"
 #include "esp_camera.h"
 #include "esp_heap_caps.h"
@@ -14,10 +15,12 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "img_converters.h"
 #include "voice_alert.h"
+#include "voice_clips.h"
 
 static const char *TAG = "web";
 
@@ -47,10 +50,27 @@ static size_t s_snap_bytes = 0;      // capacity of each buffer
 static size_t s_snap_len = 0;        // bytes actually in the newest snapshot
 static int s_snap_w = 0, s_snap_h = 0;
 static int s_ready = -1;             // index of the newest complete snapshot
-static bool s_busy[2] = {false, false};
+// A hold COUNT per buffer, not a flag. Two consumers can be encoding at once -
+// the stream task on port 81 and a /api/snapshot on port 80 - and with a bool the
+// second one to finish would clear the flag while the first was still reading,
+// letting the capture loop overwrite the buffer mid-encode. The result is a
+// half-old, half-new frame: a corrupt JPEG, which a browser renders as a torn or
+// blank image. Rare, because the page only fetches stills when the stream slot is
+// taken, but a counter costs nothing and removes the failure mode.
+static int s_hold[2] = {0, 0};
 static uint32_t s_seq = 0;           // bumped on every publish, so the streamer
                                      // can tell a new frame from the same one twice
 static SemaphoreHandle_t s_frame_lock = nullptr;
+
+// Frame delivery is demand-driven, and that is the whole point. The capture loop
+// used to copy 115 kB into a snapshot buffer on every single frame the moment a
+// viewer existed - 19 fps of copying to feed a 12 fps stream - and the wasted
+// PSRAM bandwidth cost the detector real frames: measured 19.7 fps with no viewer
+// against 10.0 fps with one. Now the streamer asks for a frame when it is ready
+// for one, and the capture loop copies exactly then. Everything else falls
+// through at the cost of one atomic read.
+static std::atomic<bool> s_want_frame{false};
+static SemaphoreHandle_t s_frame_signal = nullptr;   // given when a frame lands
 
 // One encode buffer per server: the stream task and a /api/snapshot request run on
 // different httpd instances, i.e. different tasks, and would otherwise scribble
@@ -61,9 +81,37 @@ static uint8_t *s_jpeg_shot = nullptr;
 static SemaphoreHandle_t s_status_lock = nullptr;
 static WebStatus s_status{};
 
+// --- event capture --------------------------------------------------------
+// Staged raw frame, its encoded form, and the job description. The capture loop
+// only ever does the memcpy into s_event_raw; the encode and the SD write both
+// happen on the writer task, because an SD write can block for tens of
+// milliseconds and this is the one moment - a drowsiness alert firing - when the
+// detection loop must not stall.
+static uint8_t *s_event_raw = nullptr;
+static uint8_t *s_jpeg_event = nullptr;
+
+struct EventJob {
+    int w, h;
+    size_t raw_len;
+    float risk, perclos;
+    uint32_t uptime_ms;
+    char reason[16];
+};
+static QueueHandle_t s_event_q = nullptr;
+// Guards s_event_raw between the capture loop staging a frame and the writer task
+// finishing with it. One in flight at a time; alerts are 30 s apart.
+static std::atomic<bool> s_event_busy{false};
+static std::atomic<uint32_t> s_events_stored{0};
+static std::atomic<uint32_t> s_events_dropped{0};
+
 // Touched from three tasks (the capture loop, the control server and the stream
 // server), so these are atomics rather than volatile ints.
 static std::atomic<int> s_viewers{0};
+// A /frame client holds no socket between frames, so it cannot be counted the way
+// an MJPEG stream is. Treat a recent request as a viewer instead: it is what makes
+// the page's "is the device actually streaming to me" check work for both paths.
+static std::atomic<int64_t> s_last_frame_req_us{0};
+#define FRAME_VIEWER_WINDOW_US (2 * 1000 * 1000)
 
 // Runtime-tunable, from the page. Quality trades bandwidth for eyelid detail; fps
 // trades bandwidth for smoothness. Both matter on a phone in a car.
@@ -102,7 +150,7 @@ static int frame_acquire(const uint8_t **data, size_t *len, int *w, int *h) {
     xSemaphoreTake(s_frame_lock, portMAX_DELAY);
     if (s_ready >= 0) {
         idx = s_ready;
-        s_busy[idx] = true;
+        ++s_hold[idx];
         *data = s_snap[idx];
         *len = s_snap_len;
         *w = s_snap_w;
@@ -115,7 +163,7 @@ static int frame_acquire(const uint8_t **data, size_t *len, int *w, int *h) {
 static void frame_release(int idx) {
     if (idx < 0 || s_frame_lock == nullptr) return;
     xSemaphoreTake(s_frame_lock, portMAX_DELAY);
-    s_busy[idx] = false;
+    if (s_hold[idx] > 0) --s_hold[idx];
     xSemaphoreGive(s_frame_lock);
 }
 
@@ -125,6 +173,25 @@ static uint32_t frame_seq() {
     const uint32_t seq = s_seq;
     xSemaphoreGive(s_frame_lock);
     return seq;
+}
+
+// Asks the capture loop for one fresh frame and waits for it. Returns false if
+// none arrived - which means the capture loop is stalled, not that the client is
+// slow, so callers should surface it rather than retry forever.
+static bool request_frame(uint32_t timeout_ms) {
+    const uint32_t before = frame_seq();
+    s_want_frame.store(true);
+    const int64_t deadline = esp_timer_get_time() + static_cast<int64_t>(timeout_ms) * 1000;
+    while (frame_seq() == before) {
+        if (esp_timer_get_time() > deadline) {
+            s_want_frame.store(false);
+            return false;
+        }
+        // The semaphore is the fast path; the short timeout is the backstop for a
+        // give that landed before this wait began.
+        xSemaphoreTake(s_frame_signal, pdMS_TO_TICKS(20));
+    }
+    return true;
 }
 
 // Encodes the newest snapshot into `out`. Returns the encoded length, or 0.
@@ -154,15 +221,16 @@ static size_t encode_latest(uint8_t *out, size_t out_cap) {
 
 bool web_server_publish_frame(const uint8_t *rgb565, int width, int height, size_t len) {
     if (s_snap[0] == nullptr || rgb565 == nullptr) return false;
-    // Nobody is watching: skip the copy entirely. This is the common case in a
-    // vehicle, where the alert path is the product and the preview is a diagnostic.
-    if (s_viewers.load() <= 0) return false;
+    // Nobody asked for a frame, so do not make one. exchange() rather than a plain
+    // load: the request is consumed here, so one request yields exactly one copy
+    // and the capture loop returns to full speed until the next one.
+    if (!s_want_frame.exchange(false)) return false;
     if (len > s_snap_bytes) return false;
 
     int idx = -1;
     xSemaphoreTake(s_frame_lock, portMAX_DELAY);
     for (int i = 0; i < 2; ++i) {
-        if (i != s_ready && !s_busy[i]) { idx = i; break; }
+        if (i != s_ready && s_hold[i] == 0) { idx = i; break; }
     }
     xSemaphoreGive(s_frame_lock);
     if (idx < 0) return false;   // encoder is behind; drop this frame, not the pipeline
@@ -176,6 +244,9 @@ bool web_server_publish_frame(const uint8_t *rgb565, int width, int height, size
     s_snap_h = height;
     ++s_seq;
     xSemaphoreGive(s_frame_lock);
+    // Wake whoever asked. A binary semaphore is enough: there is one consumer at a
+    // time, and a give that nobody is waiting on is harmless.
+    if (s_frame_signal != nullptr) xSemaphoreGive(s_frame_signal);
     return true;
 }
 
@@ -186,7 +257,71 @@ void web_server_publish_status(const WebStatus &status) {
     xSemaphoreGive(s_status_lock);
 }
 
-bool web_server_has_viewer() { return s_viewers.load() > 0; }
+bool web_server_has_viewer() {
+    if (s_viewers.load() > 0) return true;
+    const int64_t last = s_last_frame_req_us.load();
+    return last != 0 && (esp_timer_get_time() - last) < FRAME_VIEWER_WINDOW_US;
+}
+
+bool web_server_capture_event(const uint8_t *rgb565, int width, int height, size_t len,
+                              float risk, float perclos, const char *reason,
+                              uint32_t uptime_ms) {
+    if (!board_sdcard_mounted() || s_event_raw == nullptr || rgb565 == nullptr) return false;
+    if (len == 0 || len > s_snap_bytes) return false;
+    if (s_event_busy.exchange(true)) {
+        // The previous capture is still being written. Dropping is the right
+        // answer: the alert has already sounded, and blocking here to save a
+        // second JPEG would cost frames at the worst possible moment.
+        s_events_dropped.fetch_add(1);
+        return false;
+    }
+
+    memcpy(s_event_raw, rgb565, len);
+
+    EventJob job{};
+    job.w = width;
+    job.h = height;
+    job.raw_len = len;
+    job.risk = risk;
+    job.perclos = perclos;
+    job.uptime_ms = uptime_ms;
+    snprintf(job.reason, sizeof(job.reason), "%s", reason != nullptr ? reason : "drowsy");
+
+    if (xQueueSend(s_event_q, &job, 0) != pdTRUE) {
+        s_event_busy.store(false);
+        s_events_dropped.fetch_add(1);
+        return false;
+    }
+    return true;
+}
+
+static void event_writer_task(void *) {
+    EventJob job{};
+    for (;;) {
+        if (xQueueReceive(s_event_q, &job, portMAX_DELAY) != pdTRUE) continue;
+
+        JpegSink sink{s_jpeg_event, WEB_JPEG_BUFFER_BYTES, 0, false};
+        const bool encoded = fmt2jpg_cb(s_event_raw, job.raw_len,
+                                        static_cast<uint16_t>(job.w),
+                                        static_cast<uint16_t>(job.h),
+                                        PIXFORMAT_RGB565,
+                                        static_cast<uint8_t>(s_quality.load()),
+                                        jpeg_sink_write, &sink);
+        bool stored = false;
+        if (encoded && !sink.overflow && sink.len > 0) {
+            stored = board_sdcard_store_event(s_jpeg_event, sink.len, job.risk,
+                                              job.perclos, job.reason, job.uptime_ms);
+        }
+        if (stored) {
+            s_events_stored.fetch_add(1);
+        } else {
+            s_events_dropped.fetch_add(1);
+            ESP_LOGW(TAG, "event capture failed (encoded %d, %u B)",
+                     encoded ? 1 : 0, static_cast<unsigned>(sink.len));
+        }
+        s_event_busy.store(false);
+    }
+}
 
 // printf("%f") on a NaN emits "nan", which is not valid JSON - and JSON.parse()
 // throwing takes the entire page down, not just the one field. A stray NaN out of
@@ -219,6 +354,8 @@ static esp_err_t status_handler(httpd_req_t *req) {
 
     WifiStatus net{};
     board_wifi_status(&net);
+    SdCardInfo card{};
+    board_sdcard_info(&card);
 
     // Hand-rolled rather than cJSON: one allocation-free snprintf is easier to
     // reason about in a 5 Hz polling path than a tree of nodes, and the shape of
@@ -226,7 +363,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
     // static, not on the stack: the control server has a 6 KB task stack and this
     // object measures ~1.1 kB in practice and 1754 B with every field at its widest.
     // Only one task ever serves port 80, so there is nothing to race with.
-    static char buf[2048];
+    static char buf[2816];
     const int n = snprintf(buf, sizeof(buf),
         "{"
         "\"uptime_ms\":%llu,"
@@ -246,11 +383,15 @@ static esp_err_t status_handler(httpd_req_t *req) {
         "\"geom\":{\"valid\":%s,\"roll\":%.1f,\"jaw_drop\":%.3f,\"nose_frac\":%.3f,"
                   "\"eye_dist\":%.1f},"
         "\"alert\":{\"active\":%s,\"text\":\"%s\",\"reason\":\"%s\",\"count\":%lu,"
-                   "\"muted\":%s},"
+                   "\"muted\":%s,\"lang\":\"%s\",\"lang_stored\":%s,"
+                   "\"clips\":{\"drowsy\":\"%s\",\"microsleep\":\"%s\","
+                              "\"yawning\":\"%s\",\"head_nod\":\"%s\"}},"
         "\"stream\":{\"viewers\":%d,\"quality\":%d,\"fps\":%d,\"port\":%d},"
         "\"net\":{\"ssid\":\"%s\",\"ip\":\"%s\",\"clients\":%d,\"sta\":%s,"
                  "\"sta_ip\":\"%s\",\"rssi\":%d},"
-        "\"mem\":{\"heap\":%u,\"psram\":%u}"
+        "\"image\":{\"luma\":%.0f,\"min\":%d,\"max\":%d,\"peak\":%d},"
+        "\"mem\":{\"heap\":%u,\"psram\":%u},"
+        "\"card\":{\"mounted\":%s,\"events\":%d,\"free_mb\":%llu,\"stored\":%lu}"
         "}",
         static_cast<unsigned long long>(esp_timer_get_time() / 1000),
         static_cast<unsigned long>(st.frames), json_float(st.fps),
@@ -276,12 +417,23 @@ static esp_err_t status_handler(httpd_req_t *req) {
         st.alert_reason != nullptr ? st.alert_reason : "",
         static_cast<unsigned long>(st.alert_count),
         voice_alert_muted() ? "true" : "false",
-        s_viewers.load(), s_quality.load(), s_stream_fps.load(), WEB_PORT_STREAM,
+        voice_alert_language_code(),
+        voice_alert_language_persisted() ? "true" : "false",
+        voice_clip_source_name(voice_clip_probe(voice_alert_language_code(), "drowsy")),
+        voice_clip_source_name(voice_clip_probe(voice_alert_language_code(), "microsleep")),
+        voice_clip_source_name(voice_clip_probe(voice_alert_language_code(), "yawning")),
+        voice_clip_source_name(voice_clip_probe(voice_alert_language_code(), "head_nod")),
+        web_server_has_viewer() ? (s_viewers.load() > 0 ? s_viewers.load() : 1) : 0,
+        s_quality.load(), s_stream_fps.load(), WEB_PORT_STREAM,
         net.ap_ssid, net.ap_ip, net.ap_clients,
         net.sta_connected ? "true" : "false", net.sta_ip,
         static_cast<int>(net.sta_rssi),
+        json_float(st.luma), st.luma_min, st.luma_max, st.luma_peak,
         static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
-        static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+        static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
+        card.mounted ? "true" : "false", card.events,
+        static_cast<unsigned long long>(card.free_bytes >> 20),
+        static_cast<unsigned long>(s_events_stored.load()));
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -297,16 +449,12 @@ static esp_err_t status_handler(httpd_req_t *req) {
 // One still frame. This is also the fallback the page uses when the single MJPEG
 // slot is already taken by another viewer.
 static esp_err_t snapshot_handler(httpd_req_t *req) {
-    // A viewer that only ever asks for stills would otherwise never see a frame:
-    // publish_frame() skips the copy when the viewer count is zero. Register as a
-    // viewer for the duration of the request and wait one frame period.
+    // Ask for a frame rather than hoping one is lying around: with demand-driven
+    // publishing there is no standing supply, so a still request has to place its
+    // own order. 1 s is generous - the capture loop runs at 15-20 fps.
     s_viewers.fetch_add(1);
-    size_t len = encode_latest(s_jpeg_shot, WEB_JPEG_BUFFER_BYTES);
-    if (len == 0) {
-        const uint32_t before = frame_seq();
-        for (int i = 0; i < 20 && frame_seq() == before; ++i) vTaskDelay(pdMS_TO_TICKS(20));
-        len = encode_latest(s_jpeg_shot, WEB_JPEG_BUFFER_BYTES);
-    }
+    size_t len = 0;
+    if (request_frame(1000)) len = encode_latest(s_jpeg_shot, WEB_JPEG_BUFFER_BYTES);
     s_viewers.fetch_sub(1);
 
     if (len == 0) {
@@ -329,6 +477,12 @@ static bool query_int(httpd_req_t *req, const char *key, int *out) {
     return true;
 }
 
+static bool query_str(httpd_req_t *req, const char *key, char *out, size_t out_len) {
+    char query[128];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) return false;
+    return httpd_query_key_value(query, key, out, out_len) == ESP_OK;
+}
+
 static int clamp_int(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
 static esp_err_t settings_handler(httpd_req_t *req) {
@@ -345,11 +499,21 @@ static esp_err_t settings_handler(httpd_req_t *req) {
     }
     if (query_int(req, "muted", &v)) voice_alert_set_muted(v != 0);
 
-    char buf[128];
+    char lang[8];
+    if (query_str(req, "lang", lang, sizeof(lang))) {
+        if (!voice_alert_set_language_code(lang)) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_set_type(req, "application/json");
+            return httpd_resp_sendstr(req, "{\"error\":\"lang must be en or km\"}");
+        }
+    }
+
+    char buf[192];
     const int n = snprintf(buf, sizeof(buf),
-                           "{\"quality\":%d,\"fps\":%d,\"muted\":%s}",
+                           "{\"quality\":%d,\"fps\":%d,\"muted\":%s,\"lang\":\"%s\"}",
                            s_quality.load(), s_stream_fps.load(),
-                           voice_alert_muted() ? "true" : "false");
+                           voice_alert_muted() ? "true" : "false",
+                           voice_alert_language_code());
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, buf, n);
 }
@@ -361,11 +525,134 @@ static esp_err_t alert_test_handler(httpd_req_t *req) {
     query_int(req, "reason", &reason);
     const AlertReason r = static_cast<AlertReason>(clamp_int(reason, 0, 3));
     const bool played = voice_alert_test(r);
-    char buf[96];
-    const int n = snprintf(buf, sizeof(buf), "{\"played\":%s,\"text\":\"%s\"}",
-                           played ? "true" : "false", voice_alert_banner_text(r));
+    // Report the source as well as the fact: with no display, "it spoke Khmer off
+    // the card" and "it fell back to the embedded English" sound identical to
+    // anyone who does not speak one of the two.
+    const char *src = voice_clip_source_name(
+        voice_clip_probe(voice_alert_language_code(), voice_alert_clip_name(r)));
+    char buf[160];
+    const int n = snprintf(buf, sizeof(buf),
+                           "{\"played\":%s,\"text\":\"%s\",\"reason\":\"%s\","
+                           "\"lang\":\"%s\",\"source\":\"%s\"}",
+                           played ? "true" : "false", voice_alert_banner_text(r),
+                           voice_alert_clip_name(r), voice_alert_language_code(), src);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, buf, n);
+}
+
+// Newest-first page of the history index. `?skip=` pages backwards through it.
+static esp_err_t events_handler(httpd_req_t *req) {
+    int skip = 0;
+    query_int(req, "skip", &skip);
+    if (skip < 0) skip = 0;
+    int limit = 24;
+    query_int(req, "limit", &limit);
+    limit = clamp_int(limit, 1, 48);
+
+    SdCardInfo card{};
+    board_sdcard_info(&card);
+
+    // One page at a time, on the stack of the control server task: 48 entries is
+    // about 3 kB, and the whole index could be a thousand.
+    static SdEvent page[48];
+    const int n = board_sdcard_list_events(page, limit, skip);
+
+    // Sized for the header plus 48 entries at ~130 B each.
+    static char buf[7168];
+    int at = snprintf(buf, sizeof(buf),
+        "{\"card\":{\"mounted\":%s,\"name\":\"%s\",\"total\":%llu,\"free\":%llu,"
+        "\"error\":\"%s\"},\"total\":%d,\"skip\":%d,\"stored\":%lu,\"dropped\":%lu,"
+        "\"events\":[",
+        card.mounted ? "true" : "false", card.name,
+        static_cast<unsigned long long>(card.total_bytes),
+        static_cast<unsigned long long>(card.free_bytes), card.error,
+        board_sdcard_event_count(), skip,
+        static_cast<unsigned long>(s_events_stored.load()),
+        static_cast<unsigned long>(s_events_dropped.load()));
+
+    for (int i = 0; i < n && at > 0 && at < static_cast<int>(sizeof(buf)) - 160; ++i) {
+        at += snprintf(buf + at, sizeof(buf) - at,
+                       "%s{\"id\":\"%s\",\"uptime_ms\":%lu,\"size\":%lu,"
+                       "\"risk\":%.3f,\"perclos\":%.3f,\"reason\":\"%s\"}",
+                       i ? "," : "", page[i].name,
+                       static_cast<unsigned long>(page[i].uptime_ms),
+                       static_cast<unsigned long>(page[i].size),
+                       json_float(page[i].risk), json_float(page[i].perclos),
+                       page[i].reason);
+    }
+    at += snprintf(buf + at, sizeof(buf) - at, "]}");
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, buf, at);
+}
+
+// One stored frame. The id goes through board_sdcard_event_path(), which accepts
+// only digits - so a traversal attempt cannot be expressed, never mind escaped.
+static esp_err_t event_image_handler(httpd_req_t *req) {
+    char query[64];
+    char id[16] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+        httpd_query_key_value(query, "id", id, sizeof(id)) != ESP_OK) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "id required");
+    }
+
+    char path[96];
+    if (!board_sdcard_event_path(id, path, sizeof(path))) {
+        httpd_resp_set_status(req, "404 Not Found");
+        return httpd_resp_sendstr(req, "no such event");
+    }
+    FILE *f = fopen(path, "rb");
+    if (f == nullptr) {
+        httpd_resp_set_status(req, "404 Not Found");
+        return httpd_resp_sendstr(req, "no such event");
+    }
+
+    httpd_resp_set_type(req, "image/jpeg");
+    // Stored frames never change, so let the browser keep them: the history page
+    // shows the same thumbnails on every poll.
+    httpd_resp_set_hdr(req, "Cache-Control", "max-age=86400, immutable");
+
+    // Streamed in chunks off the card rather than read whole: the control task has
+    // a 6 kB stack and no business holding a whole JPEG.
+    char chunk[1024];
+    esp_err_t err = ESP_OK;
+    for (;;) {
+        const size_t got = fread(chunk, 1, sizeof(chunk), f);
+        if (got == 0) break;
+        err = httpd_resp_send_chunk(req, chunk, got);
+        if (err != ESP_OK) break;
+    }
+    fclose(f);
+    if (err == ESP_OK) httpd_resp_send_chunk(req, nullptr, 0);
+    return err;
+}
+
+static esp_err_t events_clear_handler(httpd_req_t *req) {
+    const bool ok = board_sdcard_clear_events();
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, ok ? "{\"cleared\":true}" : "{\"cleared\":false}");
+}
+
+// One JPEG per request. Lives on the stream port rather than the control port so
+// that a burst of these cannot delay /api/status - encoding is the most expensive
+// thing on the board after inference.
+static esp_err_t frame_handler(httpd_req_t *req) {
+    s_last_frame_req_us = esp_timer_get_time();
+
+    size_t len = 0;
+    if (request_frame(1000)) len = encode_latest(s_jpeg_stream, WEB_JPEG_BUFFER_BYTES);
+    if (len == 0) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "text/plain");
+        return httpd_resp_sendstr(req, "no frame");
+    }
+
+    httpd_resp_set_type(req, "image/jpeg");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, reinterpret_cast<const char *>(s_jpeg_stream), len);
 }
 
 static esp_err_t stream_handler(httpd_req_t *req) {
@@ -381,14 +668,21 @@ static esp_err_t stream_handler(httpd_req_t *req) {
 
     char part[64];
     esp_err_t err = ESP_OK;
-    uint32_t last_seq = 0;
     int64_t next_us = esp_timer_get_time();
     int sent = 0, skipped = 0;
 
     for (;;) {
-        // Pace to the requested rate rather than encoding flat out. The encoder is
+        // Pace to the requested rate rather than encoding flat out: the encoder is
         // the most expensive thing on the board after inference, and a phone screen
         // gains nothing from frames the radio cannot carry.
+        //
+        // The rate floor is measured from the last frame actually SENT, which is
+        // the fix for a stutter that was very visible on a phone. The old loop
+        // advanced the deadline before checking whether a new frame existed, so
+        // whenever the capture loop was fractionally slower than the stream rate -
+        // 10 fps of production against a 12 fps request, which is exactly what a
+        // viewer's own encode load causes - it burned a whole extra period waiting.
+        // Frames then left in irregular bursts and the preview read as blinking.
         const int fps = s_stream_fps.load() > 0 ? s_stream_fps.load() : 1;
         const int64_t period_us = 1000000 / fps;
         const int64_t now_us = esp_timer_get_time();
@@ -396,17 +690,13 @@ static esp_err_t stream_handler(httpd_req_t *req) {
             vTaskDelay(pdMS_TO_TICKS((next_us - now_us) / 1000 + 1));
             continue;
         }
-        next_us = now_us + period_us;
 
-        const uint32_t seq = frame_seq();
-        if (seq == last_seq) {
-            // The detection loop has not produced anything new. Re-sending the same
-            // JPEG would waste both CPU and airtime.
+        // Order a frame and wait for it, rather than polling for one that may
+        // never have been made.
+        if (!request_frame(1000)) {
             ++skipped;
-            vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
-        last_seq = seq;
 
         const size_t len = encode_latest(s_jpeg_stream, WEB_JPEG_BUFFER_BYTES);
         if (len == 0) {
@@ -423,6 +713,7 @@ static esp_err_t stream_handler(httpd_req_t *req) {
         }
         if (err != ESP_OK) break;   // the browser closed the tab; this is the normal exit
         ++sent;
+        next_us = esp_timer_get_time() + period_us;
     }
 
     s_viewers.fetch_sub(1);
@@ -456,13 +747,28 @@ static bool alloc_buffers() {
         ESP_LOGE(TAG, "jpeg buffer alloc failed");
         return false;
     }
+
+    // Event capture buffers are only worth their PSRAM if there is somewhere to
+    // put the result, so they follow the card.
+    if (board_sdcard_mounted()) {
+        s_event_raw = static_cast<uint8_t *>(heap_caps_malloc(s_snap_bytes, MALLOC_CAP_SPIRAM));
+        s_jpeg_event = static_cast<uint8_t *>(
+            heap_caps_malloc(WEB_JPEG_BUFFER_BYTES, MALLOC_CAP_SPIRAM));
+        if (s_event_raw == nullptr || s_jpeg_event == nullptr) {
+            ESP_LOGW(TAG, "event capture buffers unavailable; history disabled");
+            s_event_raw = nullptr;
+        }
+    }
     return true;
 }
 
 bool web_server_start() {
     s_frame_lock = xSemaphoreCreateMutex();
     s_status_lock = xSemaphoreCreateMutex();
-    if (s_frame_lock == nullptr || s_status_lock == nullptr) return false;
+    s_frame_signal = xSemaphoreCreateBinary();
+    if (s_frame_lock == nullptr || s_status_lock == nullptr || s_frame_signal == nullptr) {
+        return false;
+    }
     if (!alloc_buffers()) return false;
 
     // esp32-camera emits RGB565 most-significant byte first, which is what the JPEG
@@ -473,7 +779,7 @@ bool web_server_start() {
     httpd_config_t control = HTTPD_DEFAULT_CONFIG();
     control.server_port = WEB_PORT_CONTROL;
     control.ctrl_port = 32768;
-    control.max_uri_handlers = 8;
+    control.max_uri_handlers = 12;
     control.lru_purge_enable = true;
     control.max_open_sockets = 5;
     // Formatting the status object costs a few hundred bytes of stack on its own
@@ -496,17 +802,21 @@ bool web_server_start() {
         {.uri = "/api/settings",  .method = HTTP_GET,  .handler = settings_handler,   .user_ctx = nullptr},
         {.uri = "/api/settings",  .method = HTTP_POST, .handler = settings_handler,   .user_ctx = nullptr},
         {.uri = "/api/alert-test",.method = HTTP_POST, .handler = alert_test_handler, .user_ctx = nullptr},
+        {.uri = "/api/events",    .method = HTTP_GET,  .handler = events_handler,     .user_ctx = nullptr},
+        {.uri = "/api/event",     .method = HTTP_GET,  .handler = event_image_handler,.user_ctx = nullptr},
+        {.uri = "/api/events/clear", .method = HTTP_POST, .handler = events_clear_handler, .user_ctx = nullptr},
     };
     for (const httpd_uri_t &r : routes) httpd_register_uri_handler(s_control, &r);
 
     httpd_config_t stream = HTTPD_DEFAULT_CONFIG();
     stream.server_port = WEB_PORT_STREAM;
     stream.ctrl_port = 32769;
-    stream.max_uri_handlers = 1;
+    stream.max_uri_handlers = 2;
     stream.lru_purge_enable = true;
-    // Two sockets, not one: the browser's next connection can be accepted (and the
-    // stale one purged) instead of hanging when a tab is closed mid-stream.
-    stream.max_open_sockets = 2;
+    // Four, not one: /frame is request-per-frame, so a couple of viewers plus the
+    // odd stale socket all want a slot at once. lru_purge_enable reclaims the
+    // stale ones rather than refusing the new connection.
+    stream.max_open_sockets = 4;
     // jpge::jpeg_encoder is a ~1.1 kB stack object and convert_image() adds its
     // own frame on top of httpd's, so this is not left at the default.
     stream.stack_size = 6144;
@@ -517,9 +827,26 @@ bool web_server_start() {
         ESP_LOGE(TAG, "stream server failed to start on port %d", WEB_PORT_STREAM);
         return false;
     }
-    const httpd_uri_t stream_uri = {
-        .uri = "/stream", .method = HTTP_GET, .handler = stream_handler, .user_ctx = nullptr};
-    httpd_register_uri_handler(s_stream, &stream_uri);
+    const httpd_uri_t stream_routes[] = {
+        {.uri = "/frame",  .method = HTTP_GET, .handler = frame_handler,  .user_ctx = nullptr},
+        {.uri = "/stream", .method = HTTP_GET, .handler = stream_handler, .user_ctx = nullptr},
+    };
+    for (const httpd_uri_t &r : stream_routes) httpd_register_uri_handler(s_stream, &r);
+
+    if (s_event_raw != nullptr) {
+        s_event_q = xQueueCreate(2, sizeof(EventJob));
+        // Priority 3: below the alert task, which is the thing that actually has to
+        // be prompt, and below the servers. Writing history is never urgent.
+        if (s_event_q == nullptr ||
+            xTaskCreatePinnedToCore(event_writer_task, "event_writer", 4096, nullptr, 3,
+                                    nullptr, 1) != pdPASS) {
+            ESP_LOGW(TAG, "event writer task failed to start; history disabled");
+            s_event_raw = nullptr;
+        } else {
+            ESP_LOGI(TAG, "event capture ready (%d already on the card)",
+                     board_sdcard_event_count());
+        }
+    }
 
     WifiStatus net{};
     board_wifi_status(&net);

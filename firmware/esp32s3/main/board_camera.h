@@ -30,7 +30,7 @@ Reserved on N16R8 and unavailable no matter what the silkscreen says:
   GPIO 33..37  SPI flash + octal PSRAM
   GPIO 19, 20  native USB D-/D+ (free only if you never use the USB-OTG port)
   GPIO 43, 44  UART0 console
-  GPIO 38..40  microSD slot (used by the I2S amplifier - see board_audio.h)
+  GPIO 38..40  microSD slot, SDMMC 1-line bus (see board_sdcard.h)
 */
 
 #include "esp_camera.h"
@@ -61,8 +61,26 @@ Reserved on N16R8 and unavailable no matter what the silkscreen says:
 
 // esp32-camera emits RGB565 with the two bytes of each pixel in the opposite order
 // to the host framebuffer, so the preview copy swaps them. If the preview comes out
-// in psychedelic colours while the UI text and bars look right, set this to 0.
+// in psychedelic colours - red and blue traded - set this to 0.
 #define CAM_RGB565_BYTE_SWAP 1
+
+// --- orientation ---
+// Set to 1 when the camera module is physically mounted upside down, which is easy
+// to do: the ribbon will seat either way up.
+//
+// This rotates in the SENSOR, and that is now correct. It used to be wrong - an
+// earlier revision of this file said "rotate the panel, never the sensor", because
+// a 180-degree panel rotation fixed the view for the driver while leaving ESP-DL an
+// upright frame. There is no panel any more. The browser could rotate the preview
+// in CSS, but the models read these same bytes, and **a face detector does not
+// detect upside-down faces** - it would simply stop finding anyone, which reads as
+// a broken camera. So the frame is corrected before anything sees it.
+#define CAM_ROTATE_180 1
+
+// Mirror left-right, so the driver sees themselves the way a mirror shows them
+// rather than the way a photograph does. Purely cosmetic - detection is unaffected,
+// since a mirrored face is still a face.
+#define CAM_SELFIE_MIRROR 1
 
 inline camera_config_t board_camera_config() {
     camera_config_t c = {};
@@ -98,19 +116,42 @@ inline camera_config_t board_camera_config() {
 
 // Sensor tuning for a driver-facing camera: the face is close, backlit through a
 // windscreen, and mirrored relative to how a driver expects to see themselves.
+//
+// Written for the OV3660 the board was sold with, then corrected for the OV5640 it
+// actually carries (2026-08-23) after the preview showed periodic white flashes.
+// The suspect, and the reason aec2 is now explicitly off: on the OV5640 `set_aec2`
+// toggles bit 2 of register 0x3A00, which is the sensor's long-exposure "night
+// mode". With it on, the AEC is allowed to stretch exposure far past the frame
+// period in dim scenes and then snap back, and the overshoot arrives as a handful
+// of blown-out frames - which is exactly what a white flash in the preview is.
+//
+// Left alone deliberately: `set_gainceiling`. On the OV5640 that setter writes a
+// raw 10-bit gain ceiling to 0x3A18/0x3A19, but its argument is the OV2640-era
+// `gainceiling_t` enum, where GAINCEILING_4X is the value 1. Passing the enum
+// would therefore cap the gain at 1x and make the image nearly black. Better to
+// leave the sensor default than to write a number that means something else here.
 inline void board_camera_tune() {
     sensor_t *s = esp_camera_sensor_get();
     if (s == nullptr) return;
-    // Leave the sensor upright. Rotating here would hand ESP-DL an inverted frame,
-    // and face detectors do not detect upside-down faces - which reads as "the
-    // camera is broken" when the image is in fact fine. If the module is mounted
-    // rotated, correct it in the browser with a CSS transform on the preview, never
-    // here: the models see these bytes.
-    s->set_hmirror(s, 1);        // selfie orientation
-    s->set_vflip(s, 0);          // flip to 1 only if the module itself is remounted
+    // A 180-degree rotation is a flip on both axes, so it composes with the selfie
+    // mirror rather than replacing it: mirroring left-right and then rotating puts
+    // the horizontal flip back where it started. Hence the XOR - writing
+    // hmirror=1,vflip=1 by hand would give a rotated image that is no longer
+    // mirrored, which is a different picture from the one intended.
+    s->set_hmirror(s, (CAM_SELFIE_MIRROR ^ CAM_ROTATE_180) ? 1 : 0);
+    s->set_vflip(s, CAM_ROTATE_180 ? 1 : 0);
     s->set_gain_ctrl(s, 1);      // AGC on: cabin light swings hard
     s->set_exposure_ctrl(s, 1);  // AEC on
     s->set_whitebal(s, 1);
-    s->set_brightness(s, 1);     // lift the face out of a backlit windscreen
     s->set_saturation(s, -1);    // the models only care about structure
+
+    // --- exposure stability, added for the OV5640 ---
+    if (s->set_aec2 != nullptr) s->set_aec2(s, 0);        // no long-exposure night mode
+    if (s->set_ae_level != nullptr) s->set_ae_level(s, 0);  // no exposure bias
+
+    // brightness 0, not the +1 the OV3660 had. The +1 was there to lift a backlit
+    // face, but on this sensor it pushes highlights into clipping and gives the AEC
+    // something to hunt. Bias exposure with set_ae_level(+1) instead if the face
+    // comes out too dark - that moves the target, rather than the whole curve.
+    s->set_brightness(s, 0);
 }

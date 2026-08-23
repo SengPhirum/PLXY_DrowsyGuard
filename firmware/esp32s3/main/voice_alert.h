@@ -33,10 +33,24 @@ struct VoiceAlertConfig {
 
 bool voice_alert_init(const VoiceAlertConfig& config);
 
+// Two-letter code for the current language: "en" or "km". This is what selects
+// which clip plays, so it is also what voice_clips.h looks up.
+const char* voice_alert_language_code();
+
+// True when the language survived a reboot, i.e. it was read back from NVS rather
+// than defaulted. Reported on the status page: "the setting did not stick" and
+// "the setting was never changed" look identical otherwise.
+bool voice_alert_language_persisted();
+
 // Returns true when an announcement actually started (i.e. not suppressed by the
 // cooldown or repeat cap).
 bool voice_alert_trigger(uint32_t now_ms, AlertReason reason = AlertReason::Drowsy);
+// Persists to NVS as well as taking effect immediately. A driver who set the
+// warnings to Khmer should not find them back in English after a power cycle -
+// this is the one setting where the wrong value is actively unhelpful rather than
+// merely inconvenient.
 void voice_alert_set_language(AlertLanguage language);
+bool voice_alert_set_language_code(const char* code);   // "en" / "km"; false if unknown
 
 // Short uppercase text for the on-screen banner, matching the spoken clip.
 const char* voice_alert_banner_text(AlertReason reason);

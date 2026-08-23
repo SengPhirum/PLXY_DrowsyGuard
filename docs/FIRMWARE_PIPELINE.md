@@ -28,15 +28,34 @@ headless and serves its preview over Wi-Fi.
 ## Frame budget on ESP32-S3
 
 Latencies for the detector are Espressif's published figures for ESP-DL
-`human_face_detect`; the eye model figure is an estimate scaled from `mnp_s8_v1`
-(48x48 in 5.8 ms) down to 32x32 and 11.3k parameters, and is the main number to
-re-measure on real hardware.
+`human_face_detect`. **The eye-model figure is now measured, not estimated, and it
+came out far worse than the estimate**: the old guess was 4-8 ms for both eyes,
+scaled from `mnp_s8_v1`. On hardware it is roughly 45 ms for the pair.
+
+The estimate assumed ESP-DL's int8 kernels, which use the S3's vector
+instructions. This model does not go through ESP-DL - it cannot, see the note in
+`eye_model.h` - so it runs as plain scalar float32, at about 7.7 cycles per
+multiply-accumulate against roughly 693k MACs per eye. That is the price of
+skipping quantization, and the observable effect is direct:
+
+| what the detector is doing | measured fps |
+| --- | --- |
+| no face in frame (eye model idle) | 19.7 |
+| face held (eye model on both eyes, every frame) | 10.2-10.7 |
+| a browser streaming as well | 16-19, dipping to 10 while tracking |
+
+Still above the 15 fps target on average, and 10 fps while actively tracking is
+enough for PERCLOS - a 1 s closure is 10 samples. But it is the obvious next thing
+to optimise, and there are two known routes: ESP-DSP's `dsps_dotprod_f32` for the
+inner loops (it is already a dependency, pulled in by esp-dl), or running the eye
+model every second frame and halving the cost for a PERCLOS sampling rate of
+~8 Hz.
 
 | stage | model | input | cost | cadence |
 | --- | --- | --- | --- | --- |
 | face detect stage 1 | `msr_s8_v1` | 120x160x3 | 33.1 ms | every 3rd frame |
 | face detect stage 2 | `mnp_s8_v1` | 48x48x3 | 5.8 ms | every 3rd frame |
-| eye state x2 | `open_closed_eye` | 32x32x3 | ~4-8 ms (estimate) | every frame |
+| eye state x2 | `open_closed_eye` | 32x32x3 | **~45 ms measured** | every frame a face is held |
 | behaviour + PERCLOS | — | — | <1 ms | every frame |
 | frame copy for the preview | — | 240x240 RGB565 | ~1-2 ms | only while a browser is connected |
 

@@ -34,6 +34,23 @@ detector that stutters because someone opened a web page would be a bad trade.
 #define WEB_PORT_CONTROL 80
 #define WEB_PORT_STREAM 81
 
+// The stream port serves two things:
+//
+//   GET /frame   one JPEG, one request. This is what the page uses.
+//   GET /stream  the same frames as multipart/x-mixed-replace (MJPEG).
+//
+// /frame exists because MJPEG in an <img> flashes white between frames on mobile
+// browsers - a rendering artifact of multipart/x-mixed-replace, not a fault in the
+// stream. Measured on this board: the camera's mean frame luminance never left
+// 115-135 while the preview was visibly flashing white, so nothing was wrong with
+// the frames themselves. Fetching discrete JPEGs and drawing them into a canvas
+// gives the page control of when the picture changes, and it never blanks.
+//
+// It is also better under load. A request for /frame is short, so two phones share
+// the port and each gets half the rate; a request for /stream never ends, so the
+// second viewer waits for the first to leave. /stream is kept because it is the
+// one thing that works with `curl` and with any generic MJPEG client.
+
 // JPEG quality in libjpeg's 1..100 scale (NOT the sensor's inverted 0..63 scale).
 // 80 keeps eyelid detail visible - the point of the preview is to see whether the
 // eyes are shut - while staying around 12 KB a frame at 240x240.
@@ -65,6 +82,17 @@ struct WebStatus {
     int required = 0;
 
     float fps = 0.0f;
+    // Mean luminance of the frame, 0-255, plus the extremes. Here because a
+    // preview that flashes white and a preview that flashes for some other reason
+    // are indistinguishable by eye, and this is the number that separates them:
+    // an exposure problem shows as luma spiking toward 255.
+    float luma = 0.0f;
+    int luma_min = 0, luma_max = 0;
+    // Highest mean luminance seen since this field was last reported. A frame that
+    // blows out for two frames out of twenty is invisible in a 1 Hz sample of the
+    // mean, and two frames is exactly how long a white flash lasts - so the peak is
+    // held rather than sampled.
+    int luma_peak = 0;
     bool alerting = false;
     const char *alert_text = nullptr;   // must point at a string literal
     const char *alert_reason = nullptr; // ditto
@@ -87,3 +115,19 @@ bool web_server_has_viewer();
 bool web_server_publish_frame(const uint8_t *rgb565, int width, int height, size_t len);
 
 void web_server_publish_status(const WebStatus &status);
+
+// Files one drowsiness event: the frame that triggered it, plus the numbers that
+// explain why. Browsable afterwards at /api/events.
+//
+// Called from the capture loop, so it must not block it. It stages a copy of the
+// frame - about 3 ms - and hands the expensive half, the JPEG encode and the SD
+// write, to a background task. Returns false when there is no card, when a
+// previous capture is still being written (events are 30 s apart in practice, so
+// this does not happen), or when the encode failed.
+//
+// Note it cannot go through the normal snapshot path: that path asks the capture
+// loop for a frame, and the capture loop is the caller here - it would be waiting
+// on itself.
+bool web_server_capture_event(const uint8_t *rgb565, int width, int height, size_t len,
+                              float risk, float perclos, const char *reason,
+                              uint32_t uptime_ms);

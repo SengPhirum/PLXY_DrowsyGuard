@@ -228,13 +228,28 @@ class Canvas:
 # used to be figure 5 - eight wires to a 1.8" panel - is now a page in a browser.
 
 # From firmware/esp32s3/main/board_audio.h
+# Three adjacent pins on the bottom header row. Off 38/39/40 because those are the
+# microSD slot's SDMMC bus, and off 14/21/47 because 14 is on the *other* header row
+# - wiring across the board is what makes a mini breadboard unusable.
 AUDIO_WIRING = [
     ('GND', '', 'GND', 'gnd', 'Common ground - connect this first'),
     ('VIN', '', '5V', '5v', 'Amplifier supply, 5 V for full output'),
-    ('BCLK', 'BLCK', 'GPIO39', 'sig', 'I2S bit clock'),
-    ('LRC', 'LRCLK / WS', 'GPIO38', 'sig', 'I2S word select'),
-    ('DIN', '', 'GPIO40', 'sig', 'I2S serial data, ESP32-S3 to amplifier'),
+    ('BCLK', 'BLCK', 'GPIO41', 'sig', 'I2S bit clock'),
+    ('LRC', 'LRCLK / WS', 'GPIO42', 'sig', 'I2S word select'),
+    ('DIN', '', 'GPIO2', 'sig', 'I2S serial data, ESP32-S3 to amplifier'),
 ]
+
+# The physical header order, read off a photograph of the board (2026-08-23). Every
+# earlier revision of this file said it could not be verified and keyed everything
+# to the printed label instead.
+HEADER_TOP = ('5V', '14', '13', '12', '11', '10', '9', '46', '3', '8',
+              '18', '17', '16', '15', '7', '6', '5', '4', 'EN', '3V3')
+HEADER_BOTTOM = ('GND', '19', '20', '21', '47', '48', '45', '0', '35', '36',
+                 '37', '38', '39', '40', '41', '42', '2', '1', 'RX', 'TX')
+
+# The microSD slot. Nothing to wire - it is on the board - but it owns three GPIOs
+# and that is the whole reason the amplifier is where it is.
+SDCARD_PINS = [('CLK', 39), ('CMD', 38), ('D0', 40)]
 
 # From firmware/esp32s3/main/board_camera.h - the DVP bus is on the board's FPC
 # connector, not on the header, so this is reference material rather than wiring.
@@ -257,20 +272,21 @@ for _n in (0, 45, 46):
     GPIO_ROLES[_n] = ('strap', 'strapping / BOOT')
 GPIO_ROLES[48] = ('led', 'on-board RGB LED')
 for _n in (38, 39, 40):
+    GPIO_ROLES[_n] = ('sdcard', 'microSD slot')
+for _n in (41, 42, 2):
     GPIO_ROLES[_n] = ('audio', 'MAX98357A I2S')
-GPIO_ROLES[2] = ('buzzer', 'buzzer fallback')
-# 14/21/41/42/47 were the SPI panel. Dropping it handed them back, which is worth
-# labelling rather than silently colouring grey: it is the headline change of the
-# headless build.
-for _n in (14, 21, 41, 42, 47):
+GPIO_ROLES[1] = ('buzzer', 'buzzer fallback')
+# GPIO 3 is the JTAG-source strapping pin on the ESP32-S3, not a plain GPIO. It was
+# listed as free until 2026-08-23, which was wrong.
+GPIO_ROLES[3] = ('strap', 'strapping / BOOT')
+# What the panel gave back and nothing has taken: all on the bottom row bar 14.
+for _n in (14, 21, 47):
     GPIO_ROLES[_n] = ('free', 'free - was the panel')
-for _n in (1, 3):
-    GPIO_ROLES[_n] = ('free', 'free')
 
 ROLE_COLOUR = {
     'camera': (52, 73, 94), 'flash': (192, 57, 43), 'usb': (127, 140, 141),
     'uart': (155, 89, 182), 'strap': (211, 84, 0), 'led': (22, 160, 133),
-    'audio': (39, 174, 96), 'buzzer': (241, 196, 15),
+    'audio': (39, 174, 96), 'buzzer': (241, 196, 15), 'sdcard': (142, 68, 173),
     'free': (189, 195, 199), 'na': (222, 226, 230),
 }
 
@@ -443,7 +459,7 @@ def fig_components():
 def fig_pin_map():
     c = Canvas(1680, 1000)
     c.title('Figure 2 - ESP32-S3-WROOM-1 N16R8 GPIO allocation',
-            'Which of the 49 GPIOs are taken, and the seven that are free. Five of those seven were freed by dropping the SPI panel.')
+            'Which of the 49 GPIOs are taken, and the three that are free. Everything wired by hand is on the bottom header row, on adjacent pins.')
     cols, cw, ch = 7, 200, 74
     x0, y0 = 60, 150
     for n in range(49):
@@ -461,12 +477,13 @@ def fig_pin_map():
         (ROLE_COLOUR['camera'], 'DVP camera bus (fixed by the board)'),
         (ROLE_COLOUR['flash'], 'SPI flash + octal PSRAM - never drive'),
         (ROLE_COLOUR['audio'], 'MAX98357A I2S (this build)'),
+        (ROLE_COLOUR['sdcard'], 'microSD slot - event history'),
         (ROLE_COLOUR['buzzer'], 'Buzzer fallback (this build)'),
         (ROLE_COLOUR['uart'], 'UART0 console - idf.py monitor'),
         (ROLE_COLOUR['usb'], 'Native USB D-/D+'),
         (ROLE_COLOUR['strap'], 'Strapping / BOOT'),
         (ROLE_COLOUR['led'], 'On-board RGB LED'),
-        (ROLE_COLOUR['free'], 'Free - GPIO 1, 3, 14, 21, 41, 42, 47'),
+        (ROLE_COLOUR['free'], 'Free - GPIO 14, 21, 47'),
     ], cols=2, gap=560)
     c.note(1180, ly - 6, 440, [
         'GPIO 33-37 are fatal.',

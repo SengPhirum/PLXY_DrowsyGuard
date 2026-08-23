@@ -1,18 +1,108 @@
 # Voice alert assets
 
-DrowsyGuard uses short pre-recorded warnings rather than on-device text-to-speech. This keeps CPU/RAM use predictable and makes multilingual output practical on ESP32-S3.
+DrowsyGuard speaks short pre-recorded warnings rather than running text-to-speech on
+the device. That keeps CPU and RAM predictable on an ESP32-S3 that is already doing
+inference every frame, and it makes multilingual output a matter of copying a file.
 
-## Required assets
+The alert names its reason on purpose: a driver who hears *"you appear drowsy"*
+knows what to do with it, where a driver who hears three beeps has to remember what
+three beeps meant.
 
-Create these files before hardware audio validation:
+## Format — not negotiable
 
-- `en_warning.wav` — recommended spoken text: `Warning. You appear drowsy. Please take a rest.`
-- `km_warning.wav` — natural Khmer translation recorded by a fluent speaker and reviewed before thesis testing.
+**Mono, 16-bit PCM, 16 kHz WAV.** That is what `board_audio.cpp` streams to the
+amplifier. A clip in any other format is rejected by `voice_clips.cpp` with a log
+line naming what was wrong, and the device falls back to a tone — so the symptom of
+a wrong format is *beeping*, not silence, which is easy to misread as "the clips
+aren't wired up yet".
 
-Do not commit copyrighted/commercial voice recordings without permission.
+Check a file before trusting it:
 
-## Recommended encoding
+```bash
+python scripts/make_voice_clips.py --check
+```
 
-Start with mono PCM, 16-bit, 16 kHz. If flash usage becomes important, measure intelligibility and memory use before choosing a more compressed representation.
+`tests/test_voice_clips.py` enforces the same rules on anything in this directory.
 
-The final firmware build should convert/embed approved recordings as binary assets and stream them through ESP-IDF I2S to the audio amplifier.
+## Where clips are looked up
+
+For a given language and reason, in this order:
+
+| Order | Location | Changed by |
+| --- | --- | --- |
+| 1 | `/sdcard/audio/<lang>_<reason>.wav` | copying a file onto the card |
+| 2 | embedded in the firmware (`EMBED_FILES` in `main/CMakeLists.txt`) | a rebuild |
+| 3 | a tone pattern in `voice_alert.cpp` | — |
+
+The card wins so a clip can be replaced without a toolchain. That is what makes
+Khmer practical: the recording has to come from a fluent speaker, and asking them to
+rebuild firmware is not reasonable.
+
+## The eight clips
+
+One per `AlertReason` per language, so filenames are `<lang>_<reason>.wav`. All
+eight are committed here and embedded in the firmware, so the board speaks with no
+SD card fitted.
+
+| Reason | English | Khmer | When it fires |
+| --- | --- | --- | --- |
+| `drowsy` | "Warning. You appear drowsy." | ប្រយ័ត្ន! អ្នកងងុយគេង។ | sustained fused risk over the trigger |
+| `microsleep` | "Wake up! Wake up!" | ភ្ញាក់ឡើង! ភ្ញាក់ឡើង! | eyes shut over 1 s — the most urgent |
+| `yawning` | "You seem tired. Take a break." | អ្នកអស់កម្លាំង។ សូមសម្រាក។ | repeated yawns |
+| `head_nod` | "Stay alert. Eyes on the road." | ប្រុងប្រយ័ត្ន! មើលផ្លូវ។ | head dropping |
+
+Every clip is normalised to −3 dBFS. That is not cosmetic: the first Khmer set had
+the *microsleep* warning, the most urgent of the four, at a third of the amplitude
+of the others, which would have made the worst case the quietest.
+
+## Regenerating
+
+```bash
+python scripts/make_voice_clips.py --lang en                  # Windows SAPI, offline
+python scripts/make_voice_clips.py --lang km --engine google  # online, does Khmer
+python scripts/make_voice_clips.py --check                    # validate what is here
+```
+
+Two engines because no single one covers both languages on this machine: SAPI has
+only `en-US` voices installed, and it is the offline, no-account option. The Khmer
+set comes from Google Translate's TTS endpoint, which is the only thing available
+here that speaks Khmer at all.
+
+## Read this before shipping the Khmer
+
+**The Khmer clips are machine-synthesised and the text is a machine translation.**
+Both should be checked by a Khmer speaker before this is anything but a prototype:
+
+- the *wording* is a translation of the English above, not a phrasing a Cambodian
+  driver necessarily expects to hear in an emergency;
+- the *voice* is Google's, produced under Google's terms, and the endpoint it came
+  from is the one the Translate web page calls rather than a supported API.
+
+Neither is a code problem, and replacing them needs no rebuild — which is the whole
+reason the card is checked before flash.
+
+## Replacing a clip without reflashing
+
+1. Record or obtain the phrase as mono 16-bit 16 kHz WAV.
+2. Name it `<lang>_<reason>.wav` — the same names as the table above.
+3. Copy it to `/audio/` on the microSD card, creating the folder if needed.
+4. Reboot, or just wait: the lookup happens per alert.
+5. On the web page the line above the speak buttons reads `km · card` once the card
+   copy is winning. `km · embedded` means it is still using the built-in one, and
+   `km · tone` means nothing usable was found in that language.
+6. Press each of the four speak buttons and listen. That is the only check that
+   catches a clip recorded against the wrong reason.
+
+To replace an embedded clip instead, drop the file in this directory, then rebuild —
+`EMBED_FILES` in `main/CMakeLists.txt` and the `kEmbedded` table in
+`voice_clips.cpp` already list all eight, and `tests/test_voice_clips.py` fails if
+one is in one place but not the other.
+
+## Licensing
+
+Do not commit copyrighted or commercial voice recordings without permission.
+
+The English clips are generated by the Windows SAPI voices already installed on the
+development machine. The Khmer clips come from Google Translate's TTS endpoint and
+carry Google's terms — fine for a thesis prototype, worth replacing with an owned
+recording for anything distributed.

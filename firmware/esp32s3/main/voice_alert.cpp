@@ -2,10 +2,15 @@
 
 #include "board_audio.h"
 #include "driver/gpio.h"
+#include "nvs.h"
+#include "nvs_flash.h"
+#include "voice_clips.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+
+#include <cstring>
 
 // Alert controller. Audio transport lives in board_audio.cpp so the amplifier can
 // be swapped without touching drowsiness inference.
@@ -26,11 +31,45 @@ static uint32_t g_total_count = 0;
 static bool g_initialized = false;
 static bool g_audio = false;
 static bool g_muted = false;
+static bool g_lang_persisted = false;
+
+// NVS, so the choice survives a power cycle. Namespace kept separate from the
+// Wi-Fi driver's so a `nvs_flash_erase` for one reason cannot silently reset the
+// other.
+#define LANG_NVS_NAMESPACE "drowsyguard"
+#define LANG_NVS_KEY "alert_lang"
+
+static const char *lang_code(AlertLanguage l) {
+    return l == AlertLanguage::Khmer ? "km" : "en";
+}
+
+static void lang_save(AlertLanguage l) {
+    nvs_handle_t h;
+    if (nvs_open(LANG_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return;
+    if (nvs_set_str(h, LANG_NVS_KEY, lang_code(l)) == ESP_OK) nvs_commit(h);
+    nvs_close(h);
+}
+
+static void lang_load() {
+    nvs_handle_t h;
+    if (nvs_open(LANG_NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return;
+    char buf[8] = {0};
+    size_t n = sizeof(buf);
+    if (nvs_get_str(h, LANG_NVS_KEY, buf, &n) == ESP_OK) {
+        g_config.language = (strcmp(buf, "km") == 0) ? AlertLanguage::Khmer
+                                                     : AlertLanguage::English;
+        g_lang_persisted = true;
+    }
+    nvs_close(h);
+}
 
 static QueueHandle_t g_queue = nullptr;
 
 // Buzzer fallback, used when the I2S amplifier is absent or fails to initialize.
-static constexpr gpio_num_t BUZZER_GPIO = GPIO_NUM_2;
+// GPIO 1, not 2: 2 became the amplifier's DIN when every hand-wired signal was
+// moved onto the bottom header row, and 1 is the pin next door - so an optional
+// buzzer still sits beside the three wires it is a fallback for.
+static constexpr gpio_num_t BUZZER_GPIO = GPIO_NUM_1;
 static constexpr uint32_t BUZZER_PULSE_MS = 120;
 
 // Attention pattern per reason. Recorded speech replaces these once approved
@@ -67,20 +106,30 @@ static void alert_audio_task(void *) {
     for (;;) {
         if (xQueueReceive(g_queue, &reason, portMAX_DELAY) != pdTRUE) continue;
 
-        ESP_LOGW(TAG, "ALERT (%s): clip assets/audio/%s_%s.wav",
-                 voice_alert_banner_text(reason),
-                 g_config.language == AlertLanguage::Khmer ? "km" : "en",
-                 voice_alert_clip_name(reason));
+        ESP_LOGW(TAG, "ALERT (%s)", voice_alert_banner_text(reason));
 
         if (g_muted) {
             ESP_LOGW(TAG, "muted; not annunciating %s", voice_alert_clip_name(reason));
         } else if (g_audio) {
-            const TonePattern p = pattern_for(reason);
-            for (uint32_t i = 0; i < p.beeps; ++i) {
-                board_audio_play_tone(p.freq_hz, p.beep_ms);
-                if (p.gap_ms && i + 1 < p.beeps) vTaskDelay(pdMS_TO_TICKS(p.gap_ms));
+            // Speech first, tones only if there is nothing to say. A tone pattern
+            // is a fallback, not the product: the whole argument for naming the
+            // reason is that "you appear drowsy" is actionable where three beeps
+            // have to be remembered.
+            const ClipSource used = voice_clip_play(lang_code(g_config.language),
+                                                    voice_alert_clip_name(reason));
+            if (used == ClipSource::None) {
+                const TonePattern p = pattern_for(reason);
+                for (uint32_t i = 0; i < p.beeps; ++i) {
+                    board_audio_play_tone(p.freq_hz, p.beep_ms);
+                    if (p.gap_ms && i + 1 < p.beeps) vTaskDelay(pdMS_TO_TICKS(p.gap_ms));
+                }
+                board_audio_silence();
+                ESP_LOGW(TAG, "no %s clip for %s; used the tone pattern",
+                         lang_code(g_config.language), voice_alert_clip_name(reason));
+            } else {
+                ESP_LOGI(TAG, "spoke %s_%s from %s", lang_code(g_config.language),
+                         voice_alert_clip_name(reason), voice_clip_source_name(used));
             }
-            board_audio_silence();
         } else {
             buzzer_pulse();
         }
@@ -112,17 +161,46 @@ bool voice_alert_init(const VoiceAlertConfig& config) {
         return false;
     }
 
+    // After the queue and task exist, so a stored language takes effect on the
+    // very first alert rather than the second.
+    lang_load();
+
     g_initialized = true;
-    ESP_LOGI(TAG, "Alert controller initialized; language=%s cooldown=%lu ms output=%s",
-             g_config.language == AlertLanguage::Khmer ? "km" : "en",
+    ESP_LOGI(TAG, "Alert controller initialized; language=%s%s cooldown=%lu ms output=%s",
+             lang_code(g_config.language), g_lang_persisted ? " (stored)" : " (default)",
              static_cast<unsigned long>(g_config.cooldown_ms),
              g_audio ? "I2S/MAX98357A" : "buzzer");
+
+    // Which source each reason will actually use. Worth a line at boot: a missing
+    // or malformed clip is otherwise only discoverable by triggering the alert and
+    // listening to what comes out.
+    for (int r = 0; r <= 3; ++r) {
+        const char *reason = voice_alert_clip_name(static_cast<AlertReason>(r));
+        ESP_LOGI(TAG, "  %s_%s -> %s", lang_code(g_config.language), reason,
+                 voice_clip_source_name(
+                     voice_clip_probe(lang_code(g_config.language), reason)));
+    }
     return true;
 }
 
 void voice_alert_set_language(AlertLanguage language) {
+    if (g_config.language == language) return;
     g_config.language = language;
+    lang_save(language);
+    g_lang_persisted = true;
+    ESP_LOGI(TAG, "alert language set to %s", lang_code(language));
 }
+
+bool voice_alert_set_language_code(const char *code) {
+    if (code == nullptr) return false;
+    if (strcmp(code, "en") == 0) { voice_alert_set_language(AlertLanguage::English); return true; }
+    if (strcmp(code, "km") == 0) { voice_alert_set_language(AlertLanguage::Khmer); return true; }
+    return false;
+}
+
+const char *voice_alert_language_code() { return lang_code(g_config.language); }
+
+bool voice_alert_language_persisted() { return g_lang_persisted; }
 
 uint32_t voice_alert_count() { return g_total_count; }
 

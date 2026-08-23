@@ -50,10 +50,12 @@ A dashboard-mounted camera that watches the driver's eyes, measures how long the
 stay closed, and speaks a warning when sustained drowsiness is detected.
 
 ```
-OV3660 camera ──DVP ribbon──► ESP32-S3 ──I2S──► MAX98357A ──► 4 Ω speaker
-                                 │                            (the warning)
-                                 └──Wi-Fi──► your phone's browser
-                                             (preview + all the numbers)
+camera ──DVP ribbon──► ESP32-S3 ──I2S──► MAX98357A ──► 4 Ω speaker
+                          │                            (the warning)
+                          ├──Wi-Fi──► your phone's browser
+                          │           (preview + all the numbers)
+                          └──SDMMC──► microSD card
+                                      (the frame behind every alert)
 ```
 
 | Stage | What happens | Where in this repo |
@@ -65,6 +67,7 @@ OV3660 camera ──DVP ribbon──► ESP32-S3 ──I2S──► MAX98357A �
 | Decide | Sustained risk + cooldown → alert edge | `main/risk_filter.cpp` |
 | Warn | Reason-specific tone/speech over I2S, buzzer fallback | `main/voice_alert.cpp` |
 | Serve | SoftAP, MJPEG preview, status JSON, controls | `main/web_server.cpp` |
+| Keep | The frame that caused each alert, on microSD | `main/board_sdcard.cpp` |
 | Show | Preview, face box, risk, PERCLOS, event log, in a browser | `main/web/index.html` |
 
 The camera is the input, the speaker is the output that actually wakes someone
@@ -109,6 +112,7 @@ small purple PCB with a green screw terminal.*
 | **USB-C data cable** | Flashing. A charge-only cable is the most common "board doesn't appear" cause | any USB-C cable known to carry data |
 | **~8 jumper wires** | 5 for the amplifier, 2 for the speaker, 1 spare | male-to-female if the module has male headers |
 | **A phone or laptop** | It *is* the display. Any browser will do | you already have one |
+| **A microSD card** | Holds the frame behind every alert, so warnings can be reviewed | any FAT32 card; 1 GB is already far more than enough |
 | **Soldering iron + solder** | The amplifier ships with a **loose** header strip | a friend with an iron; it cannot be reliably used unsoldered |
 | Buzzer (optional) | Fallback alert path already coded on GPIO 2 | any 3.3 V active buzzer |
 
@@ -165,9 +169,39 @@ Key features to locate before you start:
 
 ![ESP32-S3 GPIO allocation](./images/02-controller-pin-map.png)
 
-*Check: of 49 GPIOs, **seven** are free after this build - GPIO 1, 3, 14, 21, 41,
-42 and 47. Five of those came back when the SPI panel was dropped in favour of
-the browser preview.*
+*Check: of 49 GPIOs, **three** are free after this build - GPIO 14, 21 and 47.*
+
+### The physical header order
+
+Verified from a photograph of the board on 2026-08-23. Earlier revisions of this
+guide said it could not be verified and keyed every instruction to the printed
+label instead — still good advice, but you can now count holes as well:
+
+```
+top     5V  14  13  12  11  10   9  46   3   8  18  17  16  15   7   6   5   4  EN 3V3
+bottom  GND 19  20  21  47  48  45   0  35  36  37  38  39  40  41  42   2   1  RX  TX
+```
+
+**Everything you wire by hand is on the bottom row, on three adjacent pins.** That
+is deliberate, and it is why the amplifier is where it is:
+
+- the **top row is almost entirely the DVP camera bus** — only GPIO 14 and 3 are
+  free on it, and there is no `GND` on it at all, so it cannot carry a module;
+- on the bottom row, `41 42 2 1` is the only run of consecutive free pins. The
+  amplifier takes the first three and the buzzer, if you fit one, takes the fourth;
+- `38 39 40` on that row are the **microSD slot's SDMMC bus**, fixed by the PCB.
+  The amplifier used to sit there while the slot was empty; the card evicted it.
+
+The one exception is `5V`, which exists only at the top-left. It goes to the
+breadboard's `+` rail, which this build sets up anyway (§6.2), so in practice it is
+not an extra reach across the board.
+
+> **Following an older diagram?** The amplifier's three signal wires have moved
+> twice: `39/38/40` → `14/21/47` → **`41/42/2`**. Still seven wires in total.
+
+> **GPIO 3 is not free**, despite older revisions of this guide saying so. On the
+> ESP32-S3 it is the JTAG-source strapping pin. Usable after boot, but not
+> something to reach for first.
 
 > **Pin positions are not drawn anywhere in this guide, deliberately.** The
 > top-to-bottom order of pins on this board's headers varies between production
@@ -183,9 +217,11 @@ the browser preview.*
 | 43, 44 | UART0 console — `idf.py monitor` needs these |
 | 0, 45, 46 | Strapping / BOOT |
 | 48 | On-board RGB LED on most units |
-| 38, 39, 40 | Used by the I2S amplifier in this build |
-| 2 | Buzzer fallback |
-| **1, 3, 14, 21, 41, 42, 47** | **Free** — 14/21/41/42/47 were the SPI panel |
+| 38, 39, 40 | **microSD slot** — SDMMC bus, fixed by the PCB |
+| 41, 42, 2 | Used by the I2S amplifier in this build |
+| 1 | Buzzer fallback, if you fit one |
+| 3 | Strapping (JTAG source select) — not free |
+| **14, 21, 47** | **Free** |
 
 ### 4.3 The camera
 
@@ -225,7 +261,25 @@ Module silkscreen: `LRC` `BCLK` `DIN` `GAIN` `SD` `GND` `VIN`, plus a two-way
 green screw terminal for the speaker. Only five of those seven pins get wired;
 `GAIN` and `SD` are left alone (§6.4).
 
-### 4.6 The breadboard
+### 4.6 The microSD card
+
+Push it into the slot on the ESP32-S3 board until it clicks. Nothing to wire.
+
+| | |
+| --- | --- |
+| **Format** | FAT32. The firmware will *not* format a card it cannot read - someone's photos are not ours to erase |
+| **Size** | Anything. A 1 GB card holds far more than the 1000-event cap |
+| **Bus** | SDMMC 1-line on GPIO 39/38/40 (CLK/CMD/D0) - only D0 is routed on this board |
+
+What goes on it: one JPEG per alert, plus a one-line-per-event `index.txt`,
+under `/events`. The index is plain text on purpose - a car can lose power
+mid-write, and a truncated last line of a text file costs one event, while a
+truncated JSON array costs the whole history.
+
+No card is not an error. The history page says so and detection carries on; the
+alert path never touches the filesystem.
+
+### 4.7 The breadboard
 
 ![MB102 breadboard layout](./images/09-breadboard-layout.png)
 
@@ -293,13 +347,14 @@ quietly damages I2S inputs.
 | --- | --- | --- | --- | --- | --- |
 | MAX98357A | `GND` | ESP32-S3 | `GND` | 0 V | Common ground |
 | MAX98357A | `VIN` | ESP32-S3 | `5V` | 5 V | Amplifier supply |
-| MAX98357A | `BCLK` | ESP32-S3 | `GPIO 39` | 3.3 V digital | I2S bit clock |
-| MAX98357A | `LRC` | ESP32-S3 | `GPIO 38` | 3.3 V digital | I2S word select |
-| MAX98357A | `DIN` | ESP32-S3 | `GPIO 40` | 3.3 V digital | I2S data, ESP32-S3 → amp |
+| MAX98357A | `BCLK` | ESP32-S3 | `GPIO 41` | 3.3 V digital | I2S bit clock |
+| MAX98357A | `LRC` | ESP32-S3 | `GPIO 42` | 3.3 V digital | I2S word select |
+| MAX98357A | `DIN` | ESP32-S3 | `GPIO 2` | 3.3 V digital | I2S data, ESP32-S3 → amp |
 | MAX98357A | screw `+` | Speaker | either lead | amplified audio | Speaker drive |
 | MAX98357A | screw `−` | Speaker | other lead | amplified audio | Speaker return |
 | OV3660 camera | FPC ribbon | ESP32-S3 | FPC connector | — | 14-signal DVP bus |
 | Your phone | Wi-Fi | ESP32-S3 | Wi-Fi | 2.4 GHz | Live preview + telemetry |
+| microSD card | slot | ESP32-S3 | slot | — | Event history; push it in, no wires |
 
 **7 wires total.** The camera contributes none — it is the ribbon — and the
 preview contributes none, because it goes over the air.
@@ -350,9 +405,11 @@ the whole build that touches `5V`.*
    in this build.
 2. `GND` → `GND`.
 3. `VIN` → `5V`.
-4. `BCLK` → `GPIO 39`.
-5. `LRC` → `GPIO 38`.
-6. `DIN` → `GPIO 40`.
+4. `BCLK` → `GPIO 41`.
+5. `LRC` → `GPIO 42`.
+6. `DIN` → `GPIO 2`.
+   *(Three holes side by side on the bottom row — `41`, `42`, `2` are adjacent.
+   Not 38/39/40: those are the microSD slot's bus. See §4.2.)*
 7. Speaker leads into the green screw terminal, one per screw. Polarity does not
    matter — swapping them only inverts the waveform.
 

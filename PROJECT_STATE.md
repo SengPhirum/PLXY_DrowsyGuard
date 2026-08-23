@@ -103,7 +103,11 @@ everything downstream of the (still unbound) eye model remain unverified.
    quirks worth knowing before touching hardware are in the firmware README - the
    sensor is an OV5640 rather than the advertised OV3660, and the UART bridge cannot
    reach download mode without the BOOT button.
-2. ESP-PPQ export API must be pinned to a specific version before model conversion code can be finalized.
+2. **ESP-PPQ is not installable from PyPI** - `pip index versions esp-ppq` returns
+   nothing, so `scripts/quantize_espdl.py`'s advice to `pip install esp-ppq` cannot
+   work. It lives in Espressif's git. This is now only a blocker for quantizing
+   *future* models: the eye model went the float route instead (gap 6), and the
+   face detector ships pre-quantized inside `espressif/human_face_detect`.
 3. Camera pin map is settled (ESP32-S3-EYE-compatible, in `main/board_camera.h`) but
    unverified on the bench. The one remaining format unknown is the RGB565 byte
    order into the JPEG encoder: if the preview comes out with red and blue swapped,
@@ -114,25 +118,38 @@ everything downstream of the (still unbound) eye model remain unverified.
    real phone browser.
 4. Night performance likely requires an IR-capable sensor/illumination design.
 5. Real-road drowsiness data collection requires careful ethics/safety planning.
-6. The eye-state base model is IR-trained and does not transfer to DDD's visible-light
+6. **The eye model is now bound** (2026-08-23) and PERCLOS moves for the first
+   time - measured 0.00-0.22 at rest on hardware. Not via ESP-DL: that needs a
+   quantized `.espdl`, and **esp-ppq is not on PyPI at all** while this repo has no
+   calibration set either. Instead `firmware/esp32s3/main/eye_model.cpp` runs the
+   four-convolution, 11,250-parameter graph directly in float32 from weights
+   exported by `scripts/export_eye_model.py`, and
+   `tests/test_eye_model_parity.py` holds it to the ONNX graph on the host to
+   within 1e-5 (it host-compiles the firmware file itself, using Zig's bundled
+   clang when no system compiler is present).
+   The accuracy problem below is untouched by that and is still the real gap.
+   The cost is also now measured rather than estimated: ~45 ms for both eyes,
+   scalar float, which drops the loop from 19.7 to ~10 fps while a face is held.
+   See `docs/FIRMWARE_PIPELINE.md` for the two optimisation routes.
+7. The eye-state base model is IR-trained and does not transfer to DDD's visible-light
    ~45 px eye crops: AUC 0.62 vs its claimed 95.84% in-domain. Input-space fixes
    (grayscale, hist-eq, CLAHE, inversion, four patch scales) did not recover it.
    Open task: fine-tune it on visible-light eye-state labels, or pair it with the
    planned IR illumination, which matches its training domain. Not yet validated on a
    live camera with a real person - no human was available in this environment.
-7. Behaviour event thresholds (yawn 1.2 s, microsleep 1.0 s, nod 1.5 s, sneeze 1.2 s +
+8. Behaviour event thresholds (yawn 1.2 s, microsleep 1.0 s, nod 1.5 s, sneeze 1.2 s +
    jaw delta) are literature-informed defaults. Their logic is unit-tested on synthetic
    traces but none are tuned or validated on labelled yawn/nod/sneeze video, which the
    project does not have. `yaw` is computed but unvalidated - needs a head-turn test.
-8. No whole-face drowsiness checkpoint ships with the repo; all were removed on
+9. No whole-face drowsiness checkpoint ships with the repo; all were removed on
    2026-08-10. Only fetched detectors live under `models/detectors/` (not tracked).
    Durable lesson worth keeping: `TinyDrowsyNet` trained from scratch on DDD reached
    ~0.81 validation but only ~0.57 on unseen drivers, and per-driver results showed it
    keyed on driver appearance rather than eyelid state. Judge any replacement by
    per-driver accuracy on held-out subjects, never by an average.
-9. The DDD corpus was deleted after import at the user's request. `data/raw` and
+10. The DDD corpus was deleted after import at the user's request. `data/raw` and
    `data/processed` retain all 41,793 images; re-importing needs a fresh download.
-10. On this Windows machine the installed `drowsyguard` console script throttles
+11. On this Windows machine the installed `drowsyguard` console script throttles
    webcam capture to ~1 fps (both MSMF and DSHOW); `python -m drowsyguard.cli`
    runs the identical code at 30 fps. Root cause in the launcher is unresolved.
 

@@ -8,13 +8,32 @@ Pin choice, and why these three:
   Every GPIO the DVP camera uses (4,5,6,7,8,9,10,11,12,13,15,16,17,18) is off
   limits, as are 33..37 (SPI flash + octal PSRAM), 19/20 (native USB) and 43/44
   (UART0 console). GPIO 2 is the buzzer. That leaves 1, 3, 14, 21, 38, 39, 40, 41,
-  42 and 47. The microSD slot owns 38/39/40 and this project does not use a card,
-  so the amplifier gets them.
+  42 and 47.
 
-  These three were chosen when a SPI panel still held 14, 21, 41, 42 and 47. The
-  panel is gone (the preview is served over Wi-Fi now, see web_server.h) so those
-  five are free again, but there is no reason to move the amplifier onto them: the
-  microSD pins are still the ones nothing else wants.
+  The amplifier used to sit on 38/39/40 because the microSD slot they belong to
+  was unused. It is not unused any more - a card went in on 2026-08-23 to hold the
+  drowsiness-event history (see board_sdcard.h) - and those three pins are the
+  slot's SDMMC bus, which cannot move. So the amplifier moved.
+
+  It moved twice. Briefly to 14/21/47, and then to **41/42/2**, which is where it
+  is now, for a reason that has nothing to do with electronics: 14 is on the top
+  header row and 21/47 are on the bottom one, so wiring the amplifier meant
+  reaching across the board. Every signal this project asks anyone to wire by hand
+  now lands on the **bottom row**, and on three physically adjacent pins.
+
+  The board's header order, read off a photograph of the actual part (2026-08-23):
+
+      top     5V 14 13 12 11 10 9 46 3 8 18 17 16 15 7 6 5 4 EN 3V3
+      bottom  GND 19 20 21 47 48 45 0 35 36 37 38 39 40 41 42 2 1 RX TX
+
+  The top row is almost entirely the DVP camera bus - only 14 and 3 are free there,
+  and there is no GND on it at all - so one-row wiring has to be the bottom row.
+  On that row 41, 42, 2 and 1 are the only run of consecutive free pins, which is
+  why the amplifier takes the first three and the buzzer moved to the fourth.
+
+  5V is the one exception and it cannot be helped: the only 5V pin is top-left.
+  It goes to the breadboard's + rail, which the build needs anyway, so in practice
+  it is not an extra reach - see the tutorial's power-rails step.
 
   If you ever fit a microSD card, these three must move - there is no way to
   share them.
@@ -42,9 +61,11 @@ Amplifier notes that matter for bring-up (MAX98357A/MAX98357B datasheet):
 #include <cstdint>
 
 // --- I2S wiring, change here and nowhere else ---
-#define AUDIO_PIN_BCLK  39   // amplifier BCLK  (bit clock)
-#define AUDIO_PIN_LRCLK 38   // amplifier LRC   (word select / left-right clock)
-#define AUDIO_PIN_DIN   40   // amplifier DIN   (serial data, ESP32-S3 -> amp)
+// Three adjacent pins on the bottom header row. See the note above before changing
+// these: the constraint is physical, not electrical.
+#define AUDIO_PIN_BCLK  41   // amplifier BCLK  (bit clock)
+#define AUDIO_PIN_LRCLK 42   // amplifier LRC   (word select / left-right clock)
+#define AUDIO_PIN_DIN    2   // amplifier DIN   (serial data, ESP32-S3 -> amp)
 
 // 16 kHz mono 16-bit is what firmware/esp32s3/assets/audio/README.md specifies for
 // the recorded warnings, so the tone generator runs at the same rate and the two

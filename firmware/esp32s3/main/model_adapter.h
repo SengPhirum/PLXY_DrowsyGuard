@@ -44,12 +44,16 @@ bool model_detect_face(const uint8_t *rgb565, int width, int height, FaceDetecti
 bool model_detect_face_rgb888(const uint8_t *rgb888, int width, int height, FaceDetection *out);
 
 // Probability that one eye is closed. `eye`: 0 = right, 1 = left, in DrowsyGuard's
-// canonical landmark order.
+// canonical landmark order. `face_side` is the detected face box's side in pixels.
 //
-// Preprocessing must match src/drowsyguard/eyestate.py exactly or the desktop
-// thresholds do not transfer: crop a square patch around the eye landmark sized
-// from the inter-eye distance, resize to 32x32, and scale as (pixel - 127) / 255.
-// The published model card for open-closed-eye-0001 is wrong about all three of
-// the input scaling, the softmax, and the output order; eyestate.py is the truth.
+// Preprocessing matches src/drowsyguard/eyestate.py, and it has to: the PERCLOS
+// threshold and the fusion weights were tuned against that implementation, so a
+// different crop or scaling here silently invalidates all of them. Specifically -
+// a square patch of `face_side * 0.20` centred on the eye landmark, bilinear
+// resize to 32x32, BGR channel order, and (pixel - 127) / 255.
+//
+// The published model card for open-closed-eye-0001 is wrong about the input
+// scaling, the softmax and the output order; eyestate.py is the truth, and
+// tests/test_eye_model_parity.py holds the network itself to the ONNX graph.
 float model_eye_closed_prob(const uint8_t *rgb565, int width, int height,
-                            const Landmarks &lm, int eye);
+                            const Landmarks &lm, int eye, int face_side);

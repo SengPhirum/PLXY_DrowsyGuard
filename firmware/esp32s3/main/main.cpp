@@ -8,6 +8,7 @@
 #include "behavior.h"
 #include "board_audio.h"
 #include "board_camera.h"
+#include "board_sdcard.h"
 #include "board_wifi.h"
 #include "model_adapter.h"
 #include "risk_filter.h"
@@ -92,6 +93,24 @@ extern "C" void app_main(void) {
     // which is the whole point of having a network on a board with no screen.
     const bool net_up = board_wifi_init();
     if (!net_up) ESP_LOGE(TAG, "Wi-Fi bring-up failed; alerts still work, preview does not");
+
+    // Before voice_alert_init() and before web_server_start(), and both matter:
+    // the alert controller reports at boot which clip each reason resolves to, and
+    // a card that is not mounted yet reads as "no card clips" - so a Khmer
+    // recording sitting on the card would be reported as English. The web server
+    // separately only allocates its event-capture buffers when there is somewhere
+    // to write them. No card is not an error: detection and alerting never touch
+    // the filesystem.
+    if (board_sdcard_init()) {
+        SdCardInfo card{};
+        board_sdcard_info(&card);
+        ESP_LOGI(TAG, "sd card \"%s\": %llu MB free of %llu MB, %d events on it",
+                 card.name, card.free_bytes >> 20, card.total_bytes >> 20, card.events);
+    } else {
+        SdCardInfo card{};
+        board_sdcard_info(&card);
+        ESP_LOGW(TAG, "no event history: %s", card.error);
+    }
 
     VoiceAlertConfig alert_config{};
     alert_config.language = AlertLanguage::English; // switch to Khmer once the clip is approved
@@ -211,8 +230,14 @@ extern "C" void app_main(void) {
 
             // 2. Eye state on both eyes, every frame (cheap: 11.3k-parameter model).
             if (found && eye_model) {
-                p_closed = 0.5f * (model_eye_closed_prob(fb->buf, fb->width, fb->height, last_lm, 0) +
-                                   model_eye_closed_prob(fb->buf, fb->width, fb->height, last_lm, 1));
+                // Both eyes, averaged. det.w is the face box side the crop is
+                // sized from, so it has to be the box the landmarks came from -
+                // which is why the held box is used on tracked frames too.
+                const int face_side = det.w > 0 ? det.w : fb->width / 3;
+                p_closed = 0.5f * (model_eye_closed_prob(fb->buf, fb->width, fb->height,
+                                                         last_lm, 0, face_side) +
+                                   model_eye_closed_prob(fb->buf, fb->width, fb->height,
+                                                         last_lm, 1, face_side));
             }
 
             // 3. Behaviour fusion: PERCLOS + long blinks + yawn + nod, sneeze-suppressed.
@@ -236,6 +261,14 @@ extern "C" void app_main(void) {
                     else if (st.events & EVENT_NOD)     last_reason = AlertReason::HeadNod;
                     else if (st.events & EVENT_YAWN)    last_reason = AlertReason::Yawning;
                     voice_alert_trigger(now_ms, last_reason);
+                    // File the frame that caused it. The speaker is what wakes the
+                    // driver; this is what lets anyone afterwards check whether the
+                    // alarm was right - which is the difference between a warning
+                    // and evidence. Costs one memcpy here; the encode and the card
+                    // write happen on another task.
+                    web_server_capture_event(fb->buf, fb->width, fb->height, fb->len,
+                                             st.score, st.perclos,
+                                             voice_alert_clip_name(last_reason), now_ms);
                 }
             }
         }
@@ -258,6 +291,38 @@ extern "C" void app_main(void) {
         ui.geom = geom;
         ui.streak = filter.streak();
         ui.fps = (dt > 0.0f) ? (1.0f / dt) : 0.0f;
+
+        // Frame brightness, on a 1024-pixel stride sample so it costs nothing.
+        // Decoded properly rather than averaging the raw uint16: RGB565 packs the
+        // channels unevenly, so the mean of the raw words is not a luminance and
+        // would move even on a frame that did not change brightness.
+        {
+            const int px = static_cast<int>(fb->len / 2);
+            const int stride = px > 1024 ? px / 1024 : 1;
+            uint32_t sum = 0;
+            int n = 0, lo = 255, hi = 0;
+            for (int i = 0; i < px; i += stride) {
+                const uint8_t *p = fb->buf + static_cast<size_t>(i) * 2;
+                const uint16_t v = static_cast<uint16_t>((p[0] << 8) | p[1]);
+                const int r = ((v >> 11) & 0x1F) << 3;
+                const int g = ((v >> 5) & 0x3F) << 2;
+                const int b = (v & 0x1F) << 3;
+                const int y = (r * 77 + g * 151 + b * 28) >> 8;
+                sum += static_cast<uint32_t>(y);
+                ++n;
+                if (y < lo) lo = y;
+                if (y > hi) hi = y;
+            }
+            ui.luma = n ? static_cast<float>(sum) / n : 0.0f;
+            ui.luma_min = lo;
+            ui.luma_max = hi;
+            // Peak-hold, decayed once a second along with the log line below, so
+            // the page shows "the brightest frame in the last second" rather than
+            // "the frame that happened to be current when you polled".
+            if (static_cast<int>(ui.luma) > ui.luma_peak) {
+                ui.luma_peak = static_cast<int>(ui.luma);
+            }
+        }
         ui.alerting = voice_alert_is_active(static_cast<uint32_t>(now_us / 1000));
         ui.alert_text = voice_alert_banner_text(last_reason);
         ui.alert_reason = voice_alert_clip_name(last_reason);
@@ -270,14 +335,18 @@ extern "C" void app_main(void) {
         // One line a second is enough to record the numbers the acceptance tests in
         // docs/DEPLOYMENT.md ask for, without flooding the monitor.
         if (++frame_no % 60 == 0) {
-            ESP_LOGI(TAG, "fps %.1f  risk %.2f  perclos %.2f  face %d/%d (total %d, best %.2f)"
+            ESP_LOGI(TAG, "fps %.1f  risk %.2f  perclos %.2f  luma %.0f (%d-%d) peak %d"
+                          "  face %d/%d (total %d, best %.2f)"
                           "  viewers %d  heap %u  psram %u",
-                     ui.fps, st.score, st.perclos, det_hits, det_tries, det_hits_total,
+                     ui.fps, st.score, st.perclos, ui.luma, ui.luma_min, ui.luma_max,
+                     ui.luma_peak,
+                     det_hits, det_tries, det_hits_total,
                      det_best_score, web_server_has_viewer() ? 1 : 0,
                      static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
                      static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
             det_tries = 0;
             det_hits = 0;
+            ui.luma_peak = 0;
         }
     }
 }

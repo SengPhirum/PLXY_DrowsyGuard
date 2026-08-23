@@ -119,10 +119,16 @@ def test_gpio_roles_agree_with_the_wiring_tables():
     for row in gen.AUDIO_WIRING:
         if row[2].startswith('GPIO'):
             assert gen.GPIO_ROLES[int(row[2][4:])][0] == 'audio'
-    # The five the panel used to hold must be drawn as free, not left coloured in
-    # as though something still owned them.
-    for n in (14, 21, 41, 42, 47):
+    # The microSD slot owns its three pins in the figure too, or the reader is
+    # left wondering why the amplifier is not on them.
+    for n in (38, 39, 40):
+        assert gen.GPIO_ROLES[n][0] == 'sdcard', f'GPIO {n} is not drawn as the SD slot'
+    # What the panel gave back and nothing has since taken.
+    for n in (14, 21, 47):
         assert gen.GPIO_ROLES[n][0] == 'free', f'GPIO {n} is still claimed'
+    # GPIO 3 is the ESP32-S3's JTAG-source strapping pin, not a spare. Drawing it
+    # as free is how a beginner ends up reaching for it first.
+    assert gen.GPIO_ROLES[3][0] == 'strap', 'GPIO 3 is drawn as free; it is strapping'
 
 
 # --------------------------------------------------------------------------- #
@@ -235,13 +241,63 @@ def test_no_gpio_is_double_booked_and_none_land_on_reserved_pins():
 
 
 def test_free_gpio_list_is_what_the_docs_claim():
-    """Seven spare, not two: dropping the SPI panel handed back five GPIOs."""
     pm = _pinmap()
-    assert pm.FREE_GPIOS == [1, 3, 14, 21, 41, 42, 47], (
-        f'docs say GPIO 1, 3, 14, 21, 41, 42 and 47 are spare; '
-        f'pinmap computes {pm.FREE_GPIOS}')
-    assert set(pm.FREED_BY_WEB_PREVIEW) <= set(pm.FREE_GPIOS), (
-        'a GPIO the panel released has been claimed again without updating the list')
+    assert pm.FREE_GPIOS == [14, 21, 47], (
+        f'docs say GPIO 14, 21 and 47 are spare; pinmap computes {pm.FREE_GPIOS}')
+
+
+def test_every_wired_pin_is_actually_brought_out():
+    """A pin the board does not expose fails silently in every other check.
+
+    The build would succeed, the diagram would draw a label, and the only symptom
+    would be a module that never responds - so this compares the firmware's choices
+    against the physical header read off the board itself.
+    """
+    pm = _pinmap()
+    available = pm.header_gpios()
+    for gpio, owner in pm.wired_gpios().items():
+        assert gpio in available, (
+            f'{owner} is wired to GPIO {gpio}, which is not on either header')
+
+
+def test_hand_wired_signals_all_land_on_one_row():
+    """The reason the amplifier sits on 41/42/2.
+
+    Signals split across both header rows mean reaching over the board to wire it,
+    which on a mini breadboard is the difference between tidy and unusable. The top
+    row is nearly all DVP camera bus and has no GND, so the bottom row is the only
+    candidate - and this keeps a future pin change from quietly undoing it.
+    """
+    pm = _pinmap()
+    rows = {gpio: pm.header_row(gpio) for gpio in pm.wired_gpios()}
+    assert all(r == 'bottom' for r in rows.values()), (
+        f'these are not all on the bottom row: '
+        f'{ {g: r for g, r in rows.items() if r != "bottom"} }')
+
+
+def test_the_amplifier_signals_are_physically_adjacent():
+    """Three wires into three neighbouring holes, which is the whole point."""
+    pm = _pinmap()
+    row = list(pm.HEADER_BOTTOM)
+    at = sorted(row.index(str(gpio))
+                for gpio, owner in pm.wired_gpios().items() if owner != 'buzzer')
+    assert at == list(range(at[0], at[0] + len(at))), (
+        f'the I2S pins are at header positions {at}, which are not consecutive')
+
+
+def test_the_amplifier_is_off_the_sd_cards_bus():
+    """The reason the I2S pins moved, asserted so it cannot silently regress.
+
+    The microSD slot's SDMMC bus is fixed by the PCB. If the amplifier is ever put
+    back on 38/39/40 the card stops mounting - and the symptom is a history page
+    that is simply always empty, which is a long way from the cause.
+    """
+    pm = _pinmap()
+    sd = set(pm.SDCARD_SDMMC.values())
+    amp = set(pm.wired_gpios())
+    clash = sd & amp
+    assert not clash, f'GPIO {clash} is both the SD bus and wired to a module'
+    assert sd == {38, 39, 40}, f'unexpected SD bus {sd}'
 
 
 # --------------------------------------------------------------------------- #

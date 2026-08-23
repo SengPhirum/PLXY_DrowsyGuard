@@ -1,5 +1,258 @@
 # Changelog
 
+## 2026-08-23 (night) — Khmer alerts, synthesised online
+
+All four Khmer clips now ship embedded alongside the English, so the language
+selector on the page actually changes what the speaker says rather than falling
+back to a tone.
+
+| Reason | Khmer |
+| --- | --- |
+| `drowsy` | ប្រយឰត្ន! អ្នកងងុយគេង។ |
+| `microsleep` | ភ្ញាក់ឡើង! ភ្ញាក់ឡើង! |
+| `yawning` | អ្នកអស់កម្លាំង។ សូមសម្រាក។ |
+| `head_nod` | ប្រុងប្រយឰត្ន! មើលផ្លូវ។ |
+
+`scripts/make_voice_clips.py` gained a second engine. SAPI stays the default and
+covers English offline; `--engine google` reaches Google Translate's TTS endpoint,
+which is the only thing available on this machine that speaks Khmer at all. The
+generated files are committed, so a normal build never touches the network.
+
+Three things that came out of doing it rather than planning it:
+
+- **The console killed the script before the audio did.** A Windows console is
+  cp1252 and raises on Khmer, so it died printing its own progress. `stdout` is
+  reconfigured to UTF-8 now.
+- **The first Khmer set ran 3.9 s.** Khmer is more syllable-dense than the English
+  and the endpoint reads it slowly, so the phrases were cut down. Past a few
+  seconds a warning stops being an alarm.
+- **Levels were all over the place**, and in the worst possible direction: the
+  *microsleep* warning, the most urgent of the four, came back at a third of the
+  amplitude of the others. Every clip is now normalised to −3 dBFS, which is a
+  property of the alarm rather than a nicety.
+
+Verification, since nobody in CI can listen: each clip is checked for peak level,
+for not being silent (a TTS endpoint that does not know a language answers 200 with
+valid silent audio), and for the fraction of frames actually carrying speech. The
+new `test_clip_is_in_the_lookup_table` covers a gap the previous tests had —
+`EMBED_FILES` only makes the bytes available, and a clip missing from `kEmbedded` in
+`voice_clips.cpp` links, ships, and never plays. 149 tests pass.
+
+**The Khmer needs a native check before it is more than a prototype.** The wording
+is a translation of the English, not necessarily what a Cambodian driver expects to
+hear in an emergency, and the voice is Google's under Google's terms. Neither is a
+code problem: a hand recording dropped into `/audio/` on the card wins over the
+embedded clip with no rebuild, which is exactly why the card is checked first.
+
+## 2026-08-23 (evening) — the alert speaks, in a language the page chooses
+
+The speaker works on hardware, so the tone patterns have been replaced by what they
+were always standing in for. Each alert reason has its own recorded phrase, and the
+reason is the point: a driver who hears *"you appear drowsy"* knows what to do with
+it, where three beeps have to be remembered.
+
+| Reason | English |
+| --- | --- |
+| `drowsy` | "Warning. You appear drowsy." |
+| `microsleep` | "Wake up! Wake up!" |
+| `yawning` | "You seem tired. Take a break." |
+| `head_nod` | "Stay alert. Eyes on the road." |
+
+**Clips resolve from three places, in order** (`main/voice_clips.cpp`):
+
+1. `/sdcard/audio/<lang>_<reason>.wav` — first, because it is the only one that can
+   be changed without a toolchain. That is what makes Khmer practical: the recording
+   has to come from a fluent speaker, and asking them to rebuild firmware is not
+   reasonable.
+2. embedded in flash via `EMBED_FILES` — English only, and the reason a board with
+   no card speaks rather than beeps.
+3. the old tone pattern — never silence. An alarm that says nothing because a file
+   is missing has failed at its only job.
+
+The WAV reader is a real chunk walk rather than "assume a 44-byte header": plenty of
+tools emit a `LIST` or `fact` chunk before `data`, and assuming the offset would play
+metadata as audio — loud, alarming, and exactly the wrong thing for this device to
+do. A clip in the wrong format is rejected with a log line naming what was wrong.
+
+**Language is chosen on the web page and persists.** `POST /api/settings?lang=en|km`,
+stored in NVS under its own namespace so a Wi-Fi-driven `nvs_flash_erase` cannot
+reset it. A driver who set the warnings to Khmer should not find them back in
+English after a power cycle.
+
+**Four speak buttons, one per reason**, replacing the single test button and its
+dropdown — the only way to know a clip is right is to hear *that* clip. The line
+above them reports where the clips are coming from (`km · card`, `en · embedded`,
+`km · tone`), because "it spoke Khmer off the card" and "it fell back to embedded
+English" sound identical to anyone who does not speak one of the two. `/api/status`
+carries the same per-reason breakdown, and the boot log prints it.
+
+**English is generated, Khmer is not.** `scripts/make_voice_clips.py` drives Windows
+SAPI, needs no network, and writes mono 16-bit 16 kHz directly. The machine has only
+`en-US` voices (David, Zira) — so Khmer is left to a recording, with the pipeline and
+the instructions in place for it (`assets/audio/README.md`). Machine-translating a
+spoken safety warning into a language the toolchain cannot pronounce is not a
+trade this project makes.
+
+`tests/test_voice_clips.py` (new) holds the clips to the format the I2S path
+streams, checks each one is actually in `EMBED_FILES` — a clip nobody links in is a
+clip that silently never plays — bounds the flash cost, and asserts the filename
+stems still match `voice_alert_clip_name()`, since a rename there breaks the lookup
+without breaking the build. 120 tests pass.
+
+Also fixed: the SD card now mounts **before** the alert controller initialises. It
+did not, so the boot-time report of which clip each reason resolves to could not see
+the card — a Khmer recording sitting on it would have been reported as English.
+
+## 2026-08-23 (later still) — everything wired by hand is on one header row
+
+The board's physical header order is now **known**, read off a photograph of the
+actual part. Every revision before today said it could not be verified and keyed
+each instruction to the printed silkscreen label instead — which was the right call
+while it was unknown, and is why nothing downstream had to change when it became
+known:
+
+```
+top     5V  14  13  12  11  10   9  46   3   8  18  17  16  15   7   6   5   4  EN 3V3
+bottom  GND 19  20  21  47  48  45   0  35  36  37  38  39  40  41  42   2   1  RX  TX
+```
+
+That answers a question the design could not previously address: can a mini
+breadboard be wired without reaching across the board? Yes, and only one way. The
+top row is almost entirely the DVP camera bus — GPIO 14 and 3 are the only free pins
+on it, and it carries no `GND` at all — so hand wiring has to live on the bottom
+row, where `41 42 2 1` is the single run of consecutive free pins.
+
+**The amplifier moved to GPIO 41, 42 and 2**, three adjacent holes, and the buzzer
+fallback moved from 2 to 1 so it still sits beside them. Third and final move: the
+signals were on 39/38/40 until the microSD card claimed that bus, then briefly on
+14/21/47, which worked electrically but straddled both rows. `5V` is the one
+unavoidable exception — it exists only at the top-left, and goes to the breadboard's
+`+` rail that this build sets up anyway.
+
+Three new invariants in `tests/test_tutorial_diagrams.py`, each covering a failure
+this project could not previously detect:
+
+- every wired GPIO is actually brought out to a header. Nothing else could catch
+  `#define AUDIO_PIN_DIN 34`: the build would succeed, the diagram would draw a
+  label, and the only symptom would be a module that never responds;
+- every hand-wired signal lands on the bottom row, so a future pin change cannot
+  quietly undo the one-row layout;
+- the three I2S pins are physically adjacent, which is the actual goal rather than a
+  side effect.
+
+**Also corrected: GPIO 3 is not free.** It is the ESP32-S3's JTAG-source strapping
+pin. It had been listed as spare in `pinmap.py`, the GPIO figure and the tutorial
+since those were written. Free now: 14, 21 and 47.
+
+## 2026-08-23 (later) — first hardware run: eye model bound, microSD history, preview rebuilt
+
+Flashed and running on the board with MAC `80:b5:4e:c5:e0:18`. Everything below was
+measured on it, not estimated.
+
+**The eye model is bound, and PERCLOS moves for the first time.** Not through
+ESP-DL: that needs a quantized `.espdl`, and **esp-ppq is not on PyPI at all**
+(`pip index versions esp-ppq` finds nothing), while this repo has no calibration
+set either. Both blockers turned out to be irrelevant - the network is four
+convolutions and 11,250 parameters, so `main/eye_model.cpp` runs it directly in
+float32 from weights exported by `scripts/export_eye_model.py`. Skipping
+quantization also takes quantization error off the table.
+
+`tests/test_eye_model_parity.py` holds that transcription to the ONNX graph on the
+host to within 1e-5, across normal, saturated and flat inputs, and pins the two
+things easiest to get wrong: conv3 is followed directly by conv4 with no ReLU
+between them, and conv4 has no bias. It host-compiles the firmware file itself,
+falling back to Zig's bundled clang (`pip install ziglang`) where no system
+compiler exists - which is every Git Bash checkout on Windows.
+
+The accuracy caveat is unchanged and is now the real gap: this model is IR-trained
+and scores AUC 0.62 on visible light. PERCLOS moving is "the pipeline is complete",
+not "the detector is accurate".
+
+**Cost, measured:** ~45 ms for both eyes, against an old estimate of 4-8 ms. The
+estimate assumed ESP-DL's int8 vector kernels; scalar float is about 7.7 cycles per
+MAC. Effect on the loop: 19.7 fps with no face in frame, ~10 fps while tracking
+one. Two optimisation routes are written up in `docs/FIRMWARE_PIPELINE.md`.
+
+**microSD history.** Every alert now files the frame that caused it, browsable
+afterwards in the page. `main/board_sdcard.cpp` mounts the slot over SDMMC 1-line
+and keeps a plain-text index - deliberately not JSON, because a car can lose power
+mid-write and a truncated last line of a text file costs one event while a
+truncated JSON array costs the whole history. Ring-buffered at 1000 events. New
+endpoints: `GET /api/events`, `GET /api/event?id=`, `POST /api/events/clear`.
+
+Encoding and the card write happen on a background task; the capture loop only
+stages a copy of the frame, about 3 ms, because an SD write can block for tens of
+milliseconds and a drowsiness alert firing is the worst possible moment to stall.
+
+**The amplifier moved to GPIO 14/21/47.** The microSD slot's SDMMC bus is
+hard-wired to 38/39/40, which is where the amplifier had been sitting while the
+slot was empty. The bus cannot move, so the amplifier did - onto three of the pins
+the SPI panel gave back, chosen because they are the only free pins already proven
+as fast digital outputs on this board. Still seven wires; three of them land
+somewhere new. `tests/test_tutorial_diagrams.py` now asserts the amplifier never
+lands back on the card's bus, because the symptom would be a history page that is
+simply always empty.
+
+**The preview no longer flashes white.** It was an `<img>` pointed at an MJPEG
+stream; mobile browsers blank that element between parts of a
+`multipart/x-mixed-replace` response. Diagnosed rather than guessed: a peak-hold of
+mean frame luminance, added for the purpose, showed the camera never left 115-135
+while the preview was visibly flashing white - so the frames were fine and the
+rendering was not. The page now fetches discrete JPEGs from `GET /frame` on port 81
+and draws them into a `<canvas>`, which cannot blank, tells the page when a frame
+actually arrived, and lets two phones share the port instead of the second waiting
+for the first to close its tab. `/stream` is kept for `curl` and generic MJPEG
+clients.
+
+**Frame delivery is demand-driven**, which was a separate bug with the same
+symptom. The capture loop used to copy 115 kB into a snapshot buffer on every frame
+the moment a viewer existed - 19 fps of copying to feed a 12 fps stream - and the
+old pacing loop advanced its deadline before checking whether a new frame existed,
+so a producer fractionally slower than the stream rate burned a whole extra period
+and frames left in irregular bursts. The streamer now asks for a frame when it is
+ready for one. Measured: with a phone streaming, the detector recovered from a
+pinned 10.0 fps to 16-19.7.
+
+**UI stability.** Reported as "brightness flashing up and down too fast" and "too
+much move UI element", and both were real:
+
+- pills are sized by their widest possible content, so a value change cannot resize
+  one and reflow the row beneath it;
+- the alert banner has a reserved slot instead of `display:none`, which used to
+  shove the whole page down 48 px whenever an alert fired or cleared;
+- the risk figure, the meta columns and the log have fixed widths and heights, so
+  nothing grows as it fills;
+- frame rate and brightness are exponentially smoothed and quantised - the raw
+  values move every frame and the last digit was noise;
+- colour bands have hysteresis, so a value sitting on a threshold cannot strobe;
+- polling slowed from 300 ms to 500 ms, and every text write skips no-op updates.
+
+`tests/test_device_page.py` and `tests/device_page_harness.mjs` (new) drive the page
+under a stub DOM across 26 payload shapes - no camera, no card, a field an older
+firmware would not send, a device that stops answering - and assert the damping
+measurably damps: 60 polls of a deliberately noisy brightness signal now produce 3
+distinct readings instead of ~30.
+
+**Camera.** Rotated 180 degrees in the sensor (`CAM_ROTATE_180`), composed with the
+selfie mirror rather than replacing it. In the sensor and not in CSS on purpose:
+the models read these same bytes, and a face detector does not find upside-down
+faces - it would simply stop detecting anyone, which reads as a broken camera. An
+earlier revision of `board_camera.h` said "rotate the panel, never the sensor";
+that advice died with the panel.
+
+Also: `aec2` explicitly off. On the OV5640 it enables a long-exposure night mode
+whose overshoot arrives as blown-out frames, and it was the first suspect for the
+white flashing. `set_gainceiling` is deliberately left alone - on this sensor it
+writes a raw 10-bit ceiling but takes the OV2640-era enum, so passing
+`GAINCEILING_4X` would cap gain at 1x and make the image nearly black.
+
+**A race worth naming.** The snapshot buffers were guarded by a per-buffer `bool`.
+Two consumers can encode at once - the stream task on port 81 and `/api/snapshot`
+on port 80 - and the second to finish would clear the flag while the first was
+still reading, letting the capture loop overwrite a buffer mid-encode. It is now a
+hold count. Rare in practice, and a corrupt half-old half-new JPEG is exactly the
+kind of fault that gets misattributed to the camera.
+
 ## 2026-08-23 — the panel is gone: live preview over Wi-Fi
 
 The SPI display was removed from the build and replaced by a web page the board

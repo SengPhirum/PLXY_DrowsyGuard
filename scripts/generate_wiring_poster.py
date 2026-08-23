@@ -141,8 +141,8 @@ def build():
     c.text(W / 2, 56, 'STEP-BY-STEP WIRING POSTER', size=20, bold=True, fill=GOLD,
            anchor='mm')
     c.rect(0, 74, W, 40, fill=(232, 238, 250))
-    sub = ('ESP32-S3-WROOM-1 N16R8 + OV3660   •   MAX98357A I2S amp   •   '
-           '4 Ω 3 W speaker   •   MB102 breadboard   •   preview over Wi-Fi')
+    sub = ('ESP32-S3-WROOM-1 N16R8 + camera   •   MAX98357A I2S amp   •   '
+           '4 Ω 3 W speaker   •   microSD history   •   preview over Wi-Fi')
     c.text(W / 2, 94, sub, size=15, bold=True, fill=NAVY, anchor='mm')
     c.rect(0, 114, W, 38, fill=(255, 244, 224))
     c.text(W / 2, 133, 'IMPORTANT — unplug USB before changing any wire. '
@@ -273,10 +273,11 @@ def build():
             'GPIO 0, 45, 46  strapping pins',
             'GPIO 48      on-board RGB LED',
             'GPIO 2       buzzer fallback output',
+            'GPIO 38-40   microSD slot - SDMMC bus, fixed by the PCB',
             '',
             f"Spare after this build: GPIO "
             f"{', '.join(str(g) for g in FREE_GPIOS)}.",
-            '14, 21, 41, 42 and 47 came back with the panel.']):
+            'The amp sits on 14/21/47 because the card owns 38-40.']):
         c.text(1150, 1168 + i * 21, t, size=12, mono=('GPIO' in t),
                fill=(58, 64, 76) if 'Spare' not in t else NAVY,
                bold='Spare' in t)

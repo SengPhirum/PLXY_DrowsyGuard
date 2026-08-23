@@ -34,7 +34,8 @@
        box-shadow:0 0 0 3px rgba(248,81,73,.15)}
   .dot.on{background:var(--ok);box-shadow:0 0 0 3px rgba(63,185,80,.15)}
   .net{color:var(--muted);font-size:11px;margin-left:auto;font-variant-numeric:tabular-nums;
-       text-align:right}
+       text-align:right;min-width:140px}
+  h1 small{min-width:96px;display:inline-block}
   .wrap{padding:14px;display:grid;gap:12px;
         grid-template-columns:minmax(300px,1.25fr) minmax(280px,1fr)}
   @media(max-width:820px){.wrap{grid-template-columns:1fr;padding:10px}}
@@ -47,30 +48,54 @@
   /* live view */
   .view{position:relative;border-radius:10px;overflow:hidden;background:#000;
         aspect-ratio:1/1;display:grid;place-items:center}
-  .view img{width:100%;height:100%;object-fit:contain;display:block}
+  .view canvas#feed{width:100%;height:100%;object-fit:contain;display:block}
   .view canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
   .view .msg{position:absolute;inset:0;display:grid;place-items:center;text-align:center;
              color:var(--muted);font-size:12px;padding:20px;background:rgba(11,15,20,.72)}
   .view .msg.hide{display:none}
   .tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
 
-  .pill{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:999px;
-        font-size:11px;font-weight:600;letter-spacing:.3px;background:#21262d;color:var(--muted);
-        border:1px solid var(--line);white-space:nowrap}
+  /* Pills carry live numbers, so they are sized by their widest possible content
+     rather than their current content. Without this every value change resizes the
+     pill, which re-flows the row, which moves everything under it - at three polls
+     a second that reads as a shivering interface. */
+  .pill{display:inline-flex;align-items:center;justify-content:center;gap:5px;
+        padding:3px 9px;border-radius:999px;font-size:11px;font-weight:600;
+        letter-spacing:.3px;background:#21262d;color:var(--muted);
+        border:1px solid var(--line);white-space:nowrap;
+        font-variant-numeric:tabular-nums;
+        transition:background .25s linear,color .25s linear,border-color .25s linear}
+  .pill.w-fps{min-width:72px}
+  .pill.w-face{min-width:96px}
+  .pill.w-sub{min-width:104px}
+  .pill.w-src{min-width:104px}
+  .pill.w-luma{min-width:132px}
+  .pill.w-state{min-width:104px}
+  .pill.w-card{min-width:112px}
+  /* The tag row is a fixed two lines high, so a pill wrapping onto a second line
+     cannot shove the preview around. */
+  .tags{min-height:46px;align-content:flex-start}
   .pill.ok{background:rgba(63,185,80,.14);color:var(--ok);border-color:rgba(63,185,80,.3)}
   .pill.warn{background:rgba(210,153,34,.14);color:var(--warn);border-color:rgba(210,153,34,.3)}
   .pill.bad{background:rgba(248,81,73,.14);color:var(--bad);border-color:rgba(248,81,73,.3)}
   .pill.info{background:rgba(88,166,255,.14);color:var(--accent);border-color:rgba(88,166,255,.3)}
 
-  .banner{display:none;padding:12px 14px;border-radius:12px;margin:0 14px;
-          font-weight:700;letter-spacing:1.2px;font-size:17px;text-align:center}
-  .banner.show{display:block;animation:pulse 1s ease-in-out infinite}
+  /* Reserved, not conditional. The banner used to be display:none and switch to
+     block, which pushed the entire page down by 48 px every time an alert fired or
+     cleared. It now always occupies its slot and only its contents appear. */
+  .banner{visibility:hidden;padding:12px 14px;border-radius:12px;margin:0 14px;
+          font-weight:700;letter-spacing:1.2px;font-size:17px;text-align:center;
+          border:1px solid transparent;min-height:24px}
+  .banner.show{visibility:visible;animation:pulse 1s ease-in-out infinite}
   .banner.bad{background:rgba(248,81,73,.18);border:1px solid rgba(248,81,73,.55);color:#ff8781}
   .banner.warn{background:rgba(210,153,34,.16);border:1px solid rgba(210,153,34,.5);color:#e5c07b}
   @keyframes pulse{50%{opacity:.55}}
 
-  .score{display:flex;align-items:baseline;gap:10px}
-  .big{font-size:44px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1}
+  .score{display:flex;align-items:baseline;gap:10px;min-height:48px}
+  /* Fixed width for four glyphs of tabular figures, so "0.09" and "0.41" occupy
+     exactly the same box and the text beside them never slides. */
+  .big{font-size:44px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1;
+       min-width:104px;display:inline-block}
   .bar{position:relative;height:10px;background:var(--ink);border-radius:999px;
        overflow:hidden;margin:10px 0 4px}
   .bar>i{display:block;height:100%;border-radius:999px;transition:width .15s linear;width:0}
@@ -84,7 +109,8 @@
             border-bottom:1px dotted var(--line);min-width:0}
   .meta span:first-child{color:var(--muted);overflow:hidden;text-overflow:ellipsis;
                          white-space:nowrap}
-  .meta span:last-child{font-variant-numeric:tabular-nums;flex:none}
+  .meta span:last-child{font-variant-numeric:tabular-nums;flex:none;
+                        min-width:76px;text-align:right}
   @media(max-width:420px){.meta{grid-template-columns:1fr}}
 
   .ctl{display:block;margin:0 0 12px}
@@ -104,7 +130,28 @@
         border:1px solid var(--line);border-radius:8px;padding:8px 13px;font-size:13px}
   a.btn:hover{border-color:var(--accent)}
 
-  ul.log{list-style:none;margin:0;padding:0;max-height:172px;overflow-y:auto;font-size:12px}
+  /* history */
+  /* A fixed two-row minimum: the grid filling in after a fetch would otherwise
+     grow the card and move the panels below it. */
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px;
+        min-height:104px;align-content:start}
+  .shot{position:relative;border:1px solid var(--line);border-radius:8px;overflow:hidden;
+        background:#000;cursor:pointer;aspect-ratio:1/1}
+  .shot img{width:100%;height:100%;object-fit:cover;display:block}
+  .shot .tag{position:absolute;left:0;right:0;bottom:0;font-size:9px;padding:3px 4px;
+             background:linear-gradient(transparent,rgba(0,0,0,.85));color:#e6edf3;
+             display:flex;justify-content:space-between;gap:4px}
+  .shot .tag b{color:#ff8781}
+  .lightbox{position:fixed;inset:0;z-index:20;background:rgba(6,8,11,.93);display:none;
+            place-items:center;padding:16px}
+  .lightbox.show{display:grid}
+  .lightbox img{max-width:100%;max-height:74vh;border-radius:10px;display:block}
+  .lightbox .meta2{color:var(--muted);font-size:12px;margin-top:10px;text-align:center}
+  .pager{display:flex;gap:8px;align-items:center;justify-content:space-between;margin-top:10px}
+
+  /* Fixed height, not max-height: a log that grows from empty to full drags the
+     rest of the column with it. */
+  ul.log{list-style:none;margin:0;padding:0;height:172px;overflow-y:auto;font-size:12px}
   ul.log li{display:flex;gap:10px;padding:5px 0;border-bottom:1px solid var(--line);
             font-variant-numeric:tabular-nums}
   ul.log li:last-child{border-bottom:none}
@@ -127,23 +174,25 @@
 <div class="wrap">
   <div class="col">
     <div class="card">
-      <h2>Live view <span class="right pill" id="fpsPill">&mdash; fps</span></h2>
+      <h2>Live view <span class="right pill w-fps" id="fpsPill">&mdash; fps</span></h2>
       <div class="view">
-        <img id="feed" alt="camera preview">
+        <canvas id="feed" width="240" height="240"
+                aria-label="live camera preview"></canvas>
         <canvas id="overlay"></canvas>
         <div class="msg" id="viewMsg">waiting for the first frame&hellip;</div>
       </div>
       <div class="tags">
-        <span class="pill" id="facePill">face &mdash;</span>
-        <span class="pill" id="camPill">camera &mdash;</span>
-        <span class="pill" id="modelPill">models &mdash;</span>
-        <span class="pill" id="eyePill">eye model &mdash;</span>
-        <span class="pill" id="srcPill">source &mdash;</span>
+        <span class="pill w-face" id="facePill">face &mdash;</span>
+        <span class="pill w-sub" id="camPill">camera &mdash;</span>
+        <span class="pill w-sub" id="modelPill">models &mdash;</span>
+        <span class="pill w-sub" id="eyePill">eye model &mdash;</span>
+        <span class="pill w-src" id="srcPill">source &mdash;</span>
+        <span class="pill w-luma" id="lumaPill">brightness &mdash;</span>
       </div>
     </div>
 
     <div class="card">
-      <h2>Fused drowsiness risk <span class="right pill" id="statePill">&mdash;</span></h2>
+      <h2>Fused drowsiness risk <span class="right pill w-state" id="statePill">&mdash;</span></h2>
       <div class="score">
         <span class="big" id="risk">0.00</span>
         <span style="color:var(--muted);font-size:12px">trigger <b id="trigger">0.55</b>
@@ -189,15 +238,22 @@
   <div class="col">
     <div class="card">
       <h2>Controls</h2>
-      <div class="btns" style="margin-bottom:12px">
+      <div class="btns" style="margin-bottom:10px">
         <button id="muteBtn">Mute alerts</button>
-        <button id="testBtn" class="pri">Test speaker</button>
-        <select id="testReason" title="which warning to play">
-          <option value="0">drowsy</option>
-          <option value="1">microsleep</option>
-          <option value="2">yawning</option>
-          <option value="3">head nod</option>
+        <select id="langSel" title="language the warnings are spoken in">
+          <option value="en">English</option>
+          <option value="km">Khmer &mdash; ខ្មែរ</option>
         </select>
+      </div>
+
+      <span class="lab" style="display:flex;justify-content:space-between;font-size:11px;
+            color:var(--muted);margin-bottom:5px">
+        <span>Speak a warning</span><b id="clipSrc">&mdash;</b></span>
+      <div class="btns" style="margin-bottom:12px">
+        <button class="say pri" data-r="0">Drowsy</button>
+        <button class="say" data-r="1">Microsleep</button>
+        <button class="say" data-r="2">Yawning</button>
+        <button class="say" data-r="3">Head nod</button>
       </div>
       <label class="ctl">
         <span class="lab">Stream rate <b id="fpsVal">12 fps</b></span>
@@ -212,7 +268,7 @@
         <a class="btn" id="saveBtn" href="/api/snapshot" download="drowsyguard.jpg">Save frame</a>
       </div>
       <div class="empty" id="ctlNote">
-        One live stream at a time. A second viewer falls back to still photos.
+        Warnings are spoken, not beeped. Each button plays that reason's clip.
       </div>
     </div>
 
@@ -220,6 +276,23 @@
       <h2>Event log <span class="right pill" id="alertCount">0 alerts</span></h2>
       <ul class="log" id="log"></ul>
       <div class="empty" id="logEmpty">nothing yet &mdash; events appear here as they fire</div>
+    </div>
+
+    <div class="card">
+      <h2>Drowsiness history <span class="right pill w-card" id="cardPill">card &mdash;</span></h2>
+      <div class="grid" id="shots"></div>
+      <div class="empty" id="shotsEmpty">
+        Nothing captured yet. Every alert stores the frame that caused it on the
+        microSD card, so it can be reviewed here afterwards.
+      </div>
+      <div class="pager">
+        <button id="prevBtn">&larr; Newer</button>
+        <span class="empty" id="pageInfo" style="padding:0"></span>
+        <button id="nextBtn">Older &rarr;</button>
+      </div>
+      <div class="btns" style="margin-top:10px">
+        <button id="clearBtn">Delete all captures</button>
+      </div>
     </div>
 
     <div class="card">
@@ -233,7 +306,19 @@
         <div><span>frame size</span><span id="fsize">&mdash;</span></div>
         <div><span>internal heap</span><span id="heap">&mdash;</span></div>
         <div><span>psram free</span><span id="psram">&mdash;</span></div>
+        <div><span>captures stored</span><span id="stored">&mdash;</span></div>
       </div>
+    </div>
+  </div>
+</div>
+
+<div class="lightbox" id="lightbox">
+  <div>
+    <img id="lbImg" alt="stored drowsiness frame">
+    <div class="meta2" id="lbMeta"></div>
+    <div style="text-align:center;margin-top:12px">
+      <a class="btn" id="lbDownload" download>Save this frame</a>
+      <button id="lbClose">Close</button>
     </div>
   </div>
 </div>
@@ -249,57 +334,168 @@ const $ = id => document.getElementById(id);
 const clamp = (v, a, b) => v < a ? a : (v > b ? b : v);
 const pct = v => (clamp(v, 0, 1) * 100).toFixed(0) + '%';
 
+// Writing the same string back to textContent still costs a style recalculation,
+// and at three polls a second across forty fields that is most of the page's work
+// - and on some mobile browsers a visible shimmer. Skip the no-ops.
+const setText = (id, v) => {
+  const el = $(id);
+  const t = String(v);
+  if (el && el.textContent !== t) el.textContent = t;
+};
+
+// Exponential smoothing for the readouts that are genuinely noisy frame to frame -
+// frame rate and brightness both move several percent per frame, and displaying
+// the raw value makes the number look broken even when the device is fine. The
+// bars and the sparkline still use the raw value; this is only for the digits a
+// human reads.
+const _ema = {};
+function smooth(key, v, a = 0.2) {
+  if (!Number.isFinite(v)) return _ema[key] ?? 0;
+  _ema[key] = key in _ema ? _ema[key] + a * (v - _ema[key]) : v;
+  return _ema[key];
+}
+
+// Pill colours with hysteresis, so a value sitting on a threshold does not strobe
+// between two classes. A band has to be cleared by `margin` before the class flips.
+const _band = {};
+function band(key, v, lo, hi, margin = 0.06) {
+  const prev = _band[key] ?? 'ok';
+  let next = prev;
+  if (v >= hi + (prev === 'bad' ? -margin : margin)) next = 'bad';
+  else if (v >= lo + (prev === 'warn' || prev === 'bad' ? -margin : margin)) next = 'warn';
+  else next = 'ok';
+  _band[key] = next;
+  return next;
+}
+
 let streamPort = 81;      // corrected from /api/status on the first poll
 let source = 'live';      // 'live' (MJPEG) or 'photo' (polled snapshots)
 let firstFrame = false;
+let liveConfirmed = false;   // at least one frame has been drawn
+let targetFps = 12;         // mirrored from /api/status so the loop paces itself
 let photoTimer = null;
 let lastAlerts = 0;
 let lastEvents = 0;
 const trend = [];         // risk history for the sparkline
-const TREND_MAX = 240;
+const TREND_MAX = 240;        // 240 samples at 500 ms = two minutes
 
-// --- video source ----------------------------------------------------------
-// The MJPEG stream lives on its own port because the device serves it from a
-// second HTTP instance (one esp_http_server instance handles one request at a
-// time, and a stream never ends). If it does not start within a few seconds -
-// usually because another phone already holds the single stream slot - fall back
-// to polling stills, which the control server can serve to everyone.
+// --- video ----------------------------------------------------------------
+// The preview is a <canvas> that this page fills, one JPEG at a time, from
+// http://<host>:81/frame. It is deliberately NOT an <img> pointed at an MJPEG
+// stream, which is what it was first built as:
+//
+//   * mobile browsers flash the <img> white between parts of a
+//     multipart/x-mixed-replace response. That is a rendering artifact, not a bad
+//     frame - measured on the device, mean frame luminance stayed inside 115-135
+//     the whole time the preview was visibly flashing white;
+//   * an <img> also gives the page no way to know a frame arrived. MJPEG does not
+//     reliably fire `load`, so "has the stream started" was unanswerable;
+//   * and an endless MJPEG request occupies the device's single stream task, so a
+//     second phone had to wait for the first to close the tab.
+//
+// Fetching discrete frames fixes all three. The canvas only changes when a decoded
+// bitmap is ready, so it can never blank; every frame is an event this code can
+// see; and short requests mean two viewers share the rate instead of queueing.
+let videoRunning = false;
+let videoGen = 0;          // bumped to retire the previous loop
+
+const frameUrl = () =>
+    `${location.protocol}//${location.hostname}:${streamPort}/frame?t=${Date.now()}`;
+
+function drawFrame(bitmap) {
+  const c = $('feed');
+  if (c.width !== bitmap.width || c.height !== bitmap.height) {
+    c.width = bitmap.width;
+    c.height = bitmap.height;
+  }
+  c.getContext('2d').drawImage(bitmap, 0, 0);
+  bitmap.close?.();
+  firstFrame = true;
+  liveConfirmed = true;
+  $('viewMsg').classList.add('hide');
+  setPill('srcPill', 'source live', 'ok');
+}
+
+async function videoLoop(gen) {
+  let fails = 0;
+  while (gen === videoGen) {
+    const started = Date.now();
+    try {
+      const res = await fetch(frameUrl(), {cache: 'no-store'});
+      if (!res.ok) throw new Error(res.status);
+      const blob = await res.blob();
+      // createImageBitmap decodes off the main thread where it is supported, and
+      // falls back to an <img> where it is not (older iOS Safari).
+      const bmp = typeof createImageBitmap === 'function'
+          ? await createImageBitmap(blob)
+          : await new Promise((ok, no) => {
+              const im = new Image();
+              const url = URL.createObjectURL(blob);
+              im.onload = () => { URL.revokeObjectURL(url); ok(im); };
+              im.onerror = () => { URL.revokeObjectURL(url); no(new Error('decode')); };
+              im.src = url;
+            });
+      if (gen !== videoGen) break;
+      drawFrame(bmp);
+      fails = 0;
+    } catch (e) {
+      if (++fails === 3) {
+        $('viewMsg').textContent = 'no frames — is the camera up?';
+        $('viewMsg').classList.remove('hide');
+        setPill('srcPill', 'source stalled', 'bad');
+      }
+      // Back off so a dead device is not hammered, but stay in the loop: the
+      // board may simply be rebooting.
+      await new Promise(r => setTimeout(r, Math.min(2000, 200 * fails)));
+      continue;
+    }
+    // Pace to the requested rate. The device also paces itself, but doing it here
+    // too keeps a fast link from spending the whole radio budget on the preview.
+    const budget = 1000 / Math.max(1, targetFps);
+    const spent = Date.now() - started;
+    if (spent < budget) await new Promise(r => setTimeout(r, budget - spent));
+  }
+}
+
 function startLive() {
   source = 'live';
   stopPhotos();
   firstFrame = false;
-  $('viewMsg').textContent = 'opening live stream…';
+  liveConfirmed = false;
+  $('viewMsg').textContent = 'starting preview…';
   $('viewMsg').classList.remove('hide');
-  $('feed').src = `${location.protocol}//${location.hostname}:${streamPort}/stream?t=${Date.now()}`;
   $('srcBtn').textContent = 'Use still photos';
-  setTimeout(() => { if (source === 'live' && !firstFrame) startPhotos(true); }, 6000);
+  videoGen++;
+  videoRunning = true;
+  videoLoop(videoGen);
 }
+
+function stopVideo() { videoGen++; videoRunning = false; }
 
 function startPhotos(auto) {
   source = 'photo';
-  $('feed').removeAttribute('src');
-  $('srcBtn').textContent = 'Use live stream';
-  $('viewMsg').textContent = auto ? 'live stream busy — showing still photos'
+  stopVideo();
+  liveConfirmed = false;
+  $('srcBtn').textContent = 'Use live preview';
+  $('viewMsg').textContent = auto ? 'live preview unavailable — still photos'
                                   : 'still photos';
   $('viewMsg').classList.remove('hide');
-  const tick = () => { $('feed').src = '/api/snapshot?t=' + Date.now(); };
+  const tick = async () => {
+    try {
+      const res = await fetch('/api/snapshot?t=' + Date.now(), {cache: 'no-store'});
+      if (!res.ok) return;
+      const blob = await res.blob();
+      const bmp = typeof createImageBitmap === 'function'
+          ? await createImageBitmap(blob) : null;
+      if (bmp) { drawFrame(bmp); setPill('srcPill', 'source stills', 'warn'); }
+    } catch (e) { /* next tick */ }
+  };
   tick();
   photoTimer = setInterval(tick, 700);
 }
 
 function stopPhotos() { if (photoTimer) { clearInterval(photoTimer); photoTimer = null; } }
 
-$('feed').addEventListener('load', () => {
-  firstFrame = true;
-  $('viewMsg').classList.add('hide');
-  $('srcPill').textContent = source === 'live' ? 'source live stream' : 'source still photos';
-  $('srcPill').className = 'pill ' + (source === 'live' ? 'ok' : 'warn');
-});
-$('feed').addEventListener('error', () => {
-  if (source === 'live' && !firstFrame) return;   // the 6 s timer handles this
-  $('viewMsg').textContent = 'no frame — is the camera up?';
-  $('viewMsg').classList.remove('hide');
-});
 $('srcBtn').onclick = () => source === 'live' ? startPhotos(false) : startLive();
 
 // --- face box overlay ------------------------------------------------------
@@ -380,11 +576,117 @@ function logLine(text, kind) {
   $('logEmpty').style.display = 'none';
 }
 
+// --- drowsiness history ----------------------------------------------------
+// Fetched on demand, not on the status poll: the index lives on an SD card and
+// there is no reason to read it three times a second. Re-fetched when the alert
+// count goes up, which is exactly when a new capture exists.
+const PAGE = 12;
+let histSkip = 0;
+let histTotal = 0;
+
+const upStr = ms => {
+  const t = Math.floor(ms / 1000);
+  return `${String(Math.floor(t / 3600)).padStart(2, '0')}:` +
+         `${String(Math.floor(t / 60) % 60).padStart(2, '0')}:` +
+         `${String(t % 60).padStart(2, '0')}`;
+};
+
+async function loadHistory() {
+  let j;
+  try {
+    const res = await fetch(`/api/events?skip=${histSkip}&limit=${PAGE}`,
+                            {cache: 'no-store'});
+    if (!res.ok) throw new Error(res.status);
+    j = await res.json();
+  } catch (e) {
+    setPill('cardPill', 'card unknown', 'warn');
+    return;
+  }
+
+  if (!j.card.mounted) {
+    setPill('cardPill', 'no card', 'warn');
+    $('shotsEmpty').textContent = j.card.error
+        ? `No microSD card: ${j.card.error}`
+        : 'No microSD card, so captures cannot be stored.';
+    $('shotsEmpty').style.display = '';
+    $('shots').innerHTML = '';
+    return;
+  }
+  setPill('cardPill',
+          `card ${(j.card.free / 1048576).toFixed(0)} MB free`, 'ok');
+
+  histTotal = j.total;
+  const shots = $('shots');
+  shots.innerHTML = '';
+  j.events.forEach(ev => {
+    const d = document.createElement('div');
+    d.className = 'shot';
+    const img = document.createElement('img');
+    img.loading = 'lazy';          // a page of 12 thumbnails off an SD card
+    img.src = `/api/event?id=${ev.id}`;
+    img.alt = `${ev.reason} at ${upStr(ev.uptime_ms)}`;
+    const tag = document.createElement('div');
+    tag.className = 'tag';
+    const left = document.createElement('span');
+    left.textContent = upStr(ev.uptime_ms);
+    const right = document.createElement('b');
+    right.textContent = ev.risk.toFixed(2);
+    tag.append(left, right);
+    d.append(img, tag);
+    d.onclick = () => openShot(ev);
+    shots.append(d);
+  });
+
+  $('shotsEmpty').style.display = j.total ? 'none' : '';
+  if (!j.total) {
+    $('shotsEmpty').textContent =
+        'Nothing captured yet. Every alert stores the frame that caused it on the ' +
+        'microSD card, so it can be reviewed here afterwards.';
+  }
+  const from = j.total ? histSkip + 1 : 0;
+  const to = Math.min(histSkip + PAGE, j.total);
+  $('pageInfo').textContent = j.total ? `${from}\u2013${to} of ${j.total}` : '';
+  $('prevBtn').disabled = histSkip === 0;
+  $('nextBtn').disabled = histSkip + PAGE >= j.total;
+}
+
+function openShot(ev) {
+  $('lbImg').src = `/api/event?id=${ev.id}`;
+  $('lbMeta').textContent =
+      `${ev.reason} \u00b7 ${upStr(ev.uptime_ms)} after boot \u00b7 ` +
+      `risk ${ev.risk.toFixed(2)} \u00b7 PERCLOS ${(ev.perclos * 100).toFixed(0)}% \u00b7 ` +
+      `${(ev.size / 1024).toFixed(0)} kB`;
+  $('lbDownload').href = `/api/event?id=${ev.id}`;
+  $('lbDownload').setAttribute('download', `drowsy-${ev.id}-${ev.reason}.jpg`);
+  $('lightbox').classList.add('show');
+}
+
+$('lbClose').onclick = () => $('lightbox').classList.remove('show');
+$('lightbox').onclick = e => { if (e.target === $('lightbox')) $('lbClose').onclick(); };
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') $('lightbox').classList.remove('show');
+});
+$('prevBtn').onclick = () => { histSkip = Math.max(0, histSkip - PAGE); loadHistory(); };
+$('nextBtn').onclick = () => {
+  if (histSkip + PAGE < histTotal) { histSkip += PAGE; loadHistory(); }
+};
+$('clearBtn').onclick = async () => {
+  if (!confirm('Delete every stored capture from the card?')) return;
+  await fetch('/api/events/clear', {method: 'POST'}).catch(() => {});
+  histSkip = 0;
+  loadHistory();
+};
+
 // --- status polling --------------------------------------------------------
+// Keeps whatever width class the markup gave the pill: dropping it would let the
+// pill resize to its content, which is the thing all of this is avoiding.
 function setPill(el, text, cls) {
   const e = $(el);
-  e.textContent = text;
-  e.className = 'pill' + (cls ? ' ' + cls : '');
+  if (!e) return;
+  if (e.textContent !== text) e.textContent = text;
+  const keep = (e.className.match(/\bw-[a-z]+\b/) || [''])[0];
+  const want = ['pill', keep, cls].filter(Boolean).join(' ');
+  if (e.className !== want) e.className = want;
 }
 
 function render(s) {
@@ -392,9 +694,10 @@ function render(s) {
 
   // header
   $('link').classList.add('on');
-  $('mode').textContent = s.camera ? 'monitoring' : 'no camera';
-  $('net').innerHTML = `${s.net.ssid}<br>${s.net.ip}` +
-      (s.net.sta ? ` &middot; ${s.net.sta_ip} (${s.net.rssi} dBm)` : '');
+  setText('mode', s.camera ? 'monitoring' : 'no camera');
+  const netText = `${s.net.ssid} \u00b7 ${s.net.ip}` +
+      (s.net.sta ? ` \u00b7 ${s.net.sta_ip} (${s.net.rssi} dBm)` : '');
+  setText('net', netText);
 
   // alert banner
   const b = $('banner');
@@ -409,7 +712,30 @@ function render(s) {
   }
 
   // live view badges
-  setPill('fpsPill', s.fps.toFixed(1) + ' fps', s.fps >= 8 ? 'ok' : 'warn');
+  targetFps = s.stream.fps || targetFps;
+
+  // Smoothed and rounded to whole frames. The instantaneous value swings by a
+  // couple of fps between polls purely from where the encode lands relative to the
+  // capture, which is not information - it just makes the number look broken.
+  const fpsShown = smooth('fps', s.fps, 0.25);
+  setPill('fpsPill', fpsShown.toFixed(0) + ' fps',
+          band('fps', -fpsShown, -15, -8, 1) === 'bad' ? 'bad'
+            : fpsShown >= 12 ? 'ok' : 'warn');
+
+  // Frame brightness. This distinguishes "the preview flashes white" (the sensor
+  // blowing frames out - the peak climbs past 200) from "the preview flashes" for
+  // any other reason (the peak stays put). Measured on this board it sits at
+  // 115-135, which is why the pill is quiet in that range.
+  //
+  // Shown smoothed and quantised to steps of 5: the raw mean moves every frame
+  // with the scene, and a digit that changes three times a second reads as an
+  // instability in the device rather than in the light.
+  if (s.image) {
+    const lumaShown = Math.round(smooth('luma', s.image.luma, 0.15) / 5) * 5;
+    const peak = s.image.peak !== undefined ? s.image.peak : s.image.luma;
+    setPill('lumaPill', `light ${lumaShown} peak ${peak}`,
+            peak > 200 ? 'bad' : (peak > 175 || lumaShown < 40) ? 'warn' : 'ok');
+  }
   setPill('facePill', s.face.found ? (s.face.held ? 'face tracking' : 'face locked')
                                    : 'no face',
           s.face.found ? (s.face.held ? 'warn' : 'ok') : '');
@@ -421,26 +747,28 @@ function render(s) {
 
   // risk
   const r = s.risk.score;
-  $('risk').textContent = r.toFixed(2);
-  $('trigger').textContent = s.risk.trigger.toFixed(2);
-  $('streak').textContent = `${s.risk.streak}/${s.risk.required}`;
+  setText('risk', r.toFixed(2));
+  setText('trigger', s.risk.trigger.toFixed(2));
+  setText('streak', `${s.risk.streak}/${s.risk.required}`);
   const bar = $('riskBar');
   bar.style.width = pct(r);
-  bar.style.background = r >= s.risk.trigger ? 'var(--bad)'
-                       : r >= s.risk.trigger * 0.6 ? 'var(--warn)' : 'var(--ok)';
+  const riskBand = band('risk', r, s.risk.trigger * 0.6, s.risk.trigger, 0.04);
+  const riskColour = riskBand === 'bad' ? 'var(--bad)'
+                   : riskBand === 'warn' ? 'var(--warn)' : 'var(--ok)';
+  if (bar.dataset.c !== riskColour) { bar.style.background = riskColour; bar.dataset.c = riskColour; }
   $('riskMark').style.left = pct(s.risk.trigger);
   setPill('statePill',
-          !s.eye_model ? 'eye model missing' : r >= s.risk.trigger ? 'DROWSY' : 'alert',
-          !s.eye_model ? 'warn' : r >= s.risk.trigger ? 'bad' : 'ok');
+          !s.eye_model ? 'no eye model' : riskBand === 'bad' ? 'DROWSY' : 'alert',
+          !s.eye_model ? 'warn' : riskBand === 'bad' ? 'bad' : 'ok');
   trend.push(r);
   while (trend.length > TREND_MAX) trend.shift();
   drawTrend(s.risk.trigger);
 
   // eyes and cues
-  $('perclosTxt').textContent = pct(s.eyes.perclos);
+  setText('perclosTxt', pct(s.eyes.perclos));
   $('perclosBar').style.width = pct(s.eyes.perclos);
-  $('eyeClosed').textContent = s.eyes.closed.toFixed(2);
-  $('closure').textContent = s.eyes.closure_s.toFixed(2) + ' s';
+  setText('eyeClosed', s.eyes.closed.toFixed(2));
+  setText('closure', s.eyes.closure_s.toFixed(2) + ' s');
   setPill('cueMouth', s.cues.mouth_open ? 'mouth open' : 'mouth closed',
           s.cues.mouth_open ? 'warn' : '');
   setPill('cueHead', s.cues.head_down ? 'head down' : 'head up',
@@ -449,20 +777,39 @@ function render(s) {
           s.cues.baselines_ready ? 'ok' : 'info');
   setPill('cueSup', s.cues.suppressed ? 'sneeze filter active' : 'sneeze filter idle',
           s.cues.suppressed ? 'info' : '');
-  $('rBlink').textContent = s.rates.blink.toFixed(1);
-  $('rLong').textContent = s.rates.long_blink.toFixed(1);
-  $('rYawn').textContent = s.rates.yawn.toFixed(1);
-  $('rNod').textContent = s.rates.nod.toFixed(1);
-  $('rSneeze').textContent = s.rates.sneeze;
-  $('gRoll').textContent = s.geom.valid ? s.geom.roll.toFixed(1) + '°' : '—';
-  $('gJaw').textContent = s.geom.valid ? s.geom.jaw_drop.toFixed(3) : '—';
-  $('gNose').textContent = s.geom.valid ? s.geom.nose_frac.toFixed(3) : '—';
-  $('gEye').textContent = s.geom.valid ? s.geom.eye_dist.toFixed(1) + ' px' : '—';
+  setText('rBlink', s.rates.blink.toFixed(1));
+  setText('rLong', s.rates.long_blink.toFixed(1));
+  setText('rYawn', s.rates.yawn.toFixed(1));
+  setText('rNod', s.rates.nod.toFixed(1));
+  setText('rSneeze', s.rates.sneeze);
+  // Geometry is quantised harder than it is measured: jaw drop and the pitch proxy
+  // are ratios that wobble in the third decimal on every frame, and that last digit
+  // is noise, not signal.
+  setText('gRoll', s.geom.valid ? s.geom.roll.toFixed(0) + '\u00b0' : '\u2014');
+  setText('gJaw', s.geom.valid ? s.geom.jaw_drop.toFixed(2) : '\u2014');
+  setText('gNose', s.geom.valid ? s.geom.nose_frac.toFixed(2) : '\u2014');
+  setText('gEye', s.geom.valid ? s.geom.eye_dist.toFixed(0) + ' px' : '\u2014');
 
   // controls that the device owns the truth for
   const mute = $('muteBtn');
   mute.textContent = s.alert.muted ? 'Unmute alerts' : 'Mute alerts';
   mute.classList.toggle('on', s.alert.muted);
+
+  if (s.alert.lang && document.activeElement !== $('langSel')) {
+    if ($('langSel').value !== s.alert.lang) $('langSel').value = s.alert.lang;
+  }
+  // Where each clip is coming from. 'tone' means no recording was found for this
+  // language and the device will beep instead - which is the thing to know after
+  // copying Khmer files onto the card.
+  if (s.alert.clips) {
+    const c = s.alert.clips;
+    const srcs = [c.drowsy, c.microsleep, c.yawning, c.head_nod];
+    const uniq = [...new Set(srcs)];
+    const label = uniq.length === 1 ? uniq[0] : `mixed (${srcs.join('/')})`;
+    setText('clipSrc', `${s.alert.lang} \u00b7 ${label}`);
+    const el = $('clipSrc');
+    el.style.color = srcs.includes('tone') ? 'var(--warn)' : 'var(--ok)';
+  }
   if (document.activeElement !== $('fpsCtl')) {
     $('fpsCtl').value = s.stream.fps;
     $('fpsVal').textContent = s.stream.fps + ' fps';
@@ -474,23 +821,29 @@ function render(s) {
 
   // device
   const up = Math.floor(s.uptime_ms / 1000);
-  $('uptime').textContent =
+  setText('uptime',
       `${String(Math.floor(up / 3600)).padStart(2, '0')}:` +
       `${String(Math.floor(up / 60) % 60).padStart(2, '0')}:` +
-      `${String(up % 60).padStart(2, '0')}`;
-  $('frames').textContent = s.frames.toLocaleString();
-  $('dfps').textContent = s.fps.toFixed(1);
-  $('viewers').textContent = s.stream.viewers;
-  $('clients').textContent = s.net.clients;
-  $('fsize').textContent = `${s.frame.w}×${s.frame.h}`;
-  $('heap').textContent = (s.mem.heap / 1024).toFixed(0) + ' kB';
-  $('psram').textContent = (s.mem.psram / 1024).toFixed(0) + ' kB';
-  $('alertCount').textContent = s.alert.count + (s.alert.count === 1 ? ' alert' : ' alerts');
+      `${String(up % 60).padStart(2, '0')}`);
+  setText('frames', s.frames.toLocaleString());
+  setText('dfps', fpsShown.toFixed(1));
+  setText('viewers', s.stream.viewers);
+  setText('clients', s.net.clients);
+  setText('fsize', `${s.frame.w}\u00d7${s.frame.h}`);
+  setText('heap', (s.mem.heap / 1024).toFixed(0) + ' kB');
+  setText('psram', (s.mem.psram / 1024).toFixed(0) + ' kB');
+  setText('stored', s.card
+      ? (s.card.mounted ? `${s.card.events} on card` : 'no card')
+      : '\u2014');
+  setText('alertCount', s.alert.count + (s.alert.count === 1 ? ' alert' : ' alerts'));
 
   // log: new announcements, and behaviour events on their rising edge
   if (s.alert.count > lastAlerts) {
     logLine(`alert: ${s.alert.text || 'drowsy'} (${s.alert.reason})`, 'bad');
     lastAlerts = s.alert.count;
+    // A capture is written a moment after the alert fires, so give the writer
+    // task time to finish before asking the card for the new index.
+    if (s.card && s.card.mounted) setTimeout(() => { histSkip = 0; loadHistory(); }, 1500);
   }
   const fresh = s.cues.events & ~lastEvents;
   EVENT_BITS.forEach(([bit, name, kind]) => {
@@ -525,22 +878,44 @@ $('muteBtn').onclick = () => {
   const muting = $('muteBtn').textContent.startsWith('Mute');
   post('/api/settings?muted=' + (muting ? 1 : 0)).then(poll);
 };
-$('testBtn').onclick = async () => {
-  const btn = $('testBtn');
-  btn.disabled = true;
+// One button per alert reason, because each one has its own recorded phrase and
+// the only way to know a clip is right is to hear that clip.
+document.querySelectorAll('button.say').forEach(btn => {
+  btn.onclick = async () => {
+    document.querySelectorAll('button.say').forEach(b => { b.disabled = true; });
+    try {
+      const res = await fetch('/api/alert-test?reason=' + btn.dataset.r,
+                              {method: 'POST'});
+      const j = await res.json();
+      logLine(j.played
+                ? `spoke "${j.reason}" in ${j.lang} from ${j.source}`
+                : 'not spoken — alerts are muted',
+              j.played ? '' : 'warn');
+    } catch (e) {
+      logLine('the device did not answer the speak request', 'bad');
+    }
+    // Long enough for the clip to finish; they run up to ~3 s.
+    setTimeout(() => {
+      document.querySelectorAll('button.say').forEach(b => { b.disabled = false; });
+    }, 3400);
+  };
+});
+
+$('langSel').onchange = async e => {
+  const lang = e.target.value;
   try {
-    const res = await fetch('/api/alert-test?reason=' + $('testReason').value,
-                            {method: 'POST'});
+    const res = await fetch('/api/settings?lang=' + lang, {method: 'POST'});
     const j = await res.json();
-    logLine(j.played ? `speaker test: ${j.text}` : 'speaker test skipped (muted)',
-            j.played ? '' : 'warn');
-  } catch (e) {
-    logLine('speaker test failed to reach the device', 'bad');
+    if (j.error) { logLine(`language rejected: ${j.error}`, 'bad'); return; }
+    logLine(`alert language set to ${lang}`, '');
+  } catch (err) {
+    logLine('could not change the language', 'bad');
   }
-  setTimeout(() => { btn.disabled = false; }, 1200);
+  poll();
 };
 $('fpsCtl').oninput = e => {
   $('fpsVal').textContent = e.target.value + ' fps';
+  targetFps = Number(e.target.value) || targetFps;
   post('/api/settings?fps=' + e.target.value);
 };
 $('qCtl').oninput = e => {
@@ -550,10 +925,12 @@ $('qCtl').oninput = e => {
 
 // A tab left in the background keeps a stream socket open for nothing, and that
 // socket is the scarce resource here.
+// A backgrounded tab should not keep asking the board for frames - it is the
+// scarcest thing on the device, and the tab cannot show them anyway.
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
+    stopVideo();
     stopPhotos();
-    $('feed').removeAttribute('src');
   } else {
     source === 'live' ? startLive() : startPhotos(false);
   }
@@ -562,7 +939,11 @@ window.addEventListener('resize', () => drawOverlay(null));
 
 startLive();
 poll();
-setInterval(poll, 300);
+loadHistory();
+// 500 ms, not 300. The sparkline spans two minutes either way, nothing on the
+// page is actionable at a third of a second, and each poll is a JSON build on a
+// device that would rather be running inference.
+setInterval(poll, 500);
 </script>
 </body>
 </html>
