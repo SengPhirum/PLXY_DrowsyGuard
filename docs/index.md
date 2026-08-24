@@ -1,15 +1,35 @@
 ---
 title: Overview
+description: Edge-AI driver drowsiness detection on ESP32-S3.
 ---
 
-# DrowsyGuard
+<div class="dg-hero" markdown>
 
-Low-cost, camera-based driver drowsiness detection that runs entirely on an
-**ESP32-S3** microcontroller, designed for retrofit use in older vehicles.
+<div class="dg-hero__content" markdown>
 
-There is no display and no cloud service. The board raises its own Wi-Fi access
-point, speaks its warnings through a small amplifier, and serves every frame and
-every number it computes as a web page.
+<p class="dg-eyebrow">RUPP · MITE COHORT 19 · IOT RESEARCH PROJECT</p>
+
+# Safer drives begin with earlier warning
+
+**DrowsyGuard** is a low-cost, camera-based driver drowsiness detection system
+that runs locally on an ESP32-S3. It observes eyelid closure, blink duration,
+yawning and head movement, then gives the driver an immediate spoken warning.
+
+[Explore the system](getting-started/index.md){ .md-button .md-button--primary }
+[View research proposal](research-proposal.md){ .md-button }
+
+</div>
+
+<figure class="dg-hero__visual">
+  <img src="assets/images/drowsy-guard-cover.png" loading="eager" alt="Illustration of DrowsyGuard monitoring a driver's face with an in-vehicle camera and ESP32-S3 edge AI">
+  <figcaption>Private, offline detection with a local audio alert.</figcaption>
+</figure>
+
+</div>
+
+There is no cloud dependency and no display to distract the driver. The board
+raises its own Wi-Fi access point for diagnostics, while the safety-critical
+audio alert remains local and continues to work when the dashboard is closed.
 
 !!! warning "Research prototype"
     DrowsyGuard is a thesis research project. It is **not** a certified
@@ -39,6 +59,11 @@ and it is cheaper on device — the model input is a 32×32 eye patch.
 
     Install the desktop toolkit, run the live dashboard against a webcam, and
     flash the board. No hardware needed for the first two.
+
+-   :material-file-document-outline: **[Research proposal](research-proposal.md)**
+
+    Read the academic scope, objectives, methodology, evaluation plan and team
+    details, or download the complete A4 Word proposal.
 
 -   :material-tools: **[Build the hardware](tutorials/hardware-setup/README.md)**
 

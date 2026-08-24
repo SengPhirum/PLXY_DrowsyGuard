@@ -130,6 +130,7 @@ copyright: >-
 nav:
   - Overview:
       - index.md
+      - Research proposal: research-proposal.md
       - Thesis plan: THESIS_PLAN.md
   - Getting started:
       - getting-started/index.md

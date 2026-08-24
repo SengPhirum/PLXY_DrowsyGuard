@@ -30,3 +30,93 @@
 [data-md-color-scheme=slate] {
   --md-typeset-a-color: #4da3ff;
 }
+
+/* Project home page ------------------------------------------------------ */
+
+.dg-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(340px, 1.1fr);
+  gap: clamp(1.5rem, 4vw, 3.25rem);
+  align-items: center;
+  margin: 0 0 2rem;
+  padding: clamp(1.25rem, 3vw, 2.5rem);
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--md-primary-fg-color) 22%, transparent);
+  border-radius: 1.1rem;
+  background:
+    radial-gradient(circle at 12% 8%, rgb(30 144 255 / 16%), transparent 38%),
+    linear-gradient(145deg, rgb(30 144 255 / 8%), transparent 58%);
+  box-shadow: 0 1rem 2.5rem rgb(4 35 64 / 10%);
+}
+
+.dg-hero__content h1 {
+  max-width: 12ch;
+  margin: 0.35rem 0 0.85rem;
+  font-size: clamp(2rem, 4vw, 3.35rem);
+  line-height: 1.02;
+  letter-spacing: -0.035em;
+}
+
+.dg-hero__content > p:not(.dg-eyebrow) {
+  max-width: 46rem;
+  font-size: 1.02rem;
+}
+
+.dg-eyebrow {
+  margin: 0;
+  color: var(--md-primary-fg-color--dark);
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+[data-md-color-scheme=slate] .dg-eyebrow {
+  color: #75baff;
+}
+
+.dg-hero .md-button {
+  margin: 0.35rem 0.35rem 0.2rem 0;
+  border-radius: 999px;
+}
+
+.dg-hero__visual {
+  margin: 0;
+}
+
+.dg-hero__visual img,
+.dg-proposal-cover img {
+  display: block;
+  width: 100%;
+  border-radius: 0.8rem;
+  box-shadow: 0 0.8rem 2rem rgb(1 24 47 / 22%);
+}
+
+.dg-hero__visual figcaption {
+  margin-top: 0.55rem;
+  color: var(--md-default-fg-color--light);
+  font-size: 0.72rem;
+  text-align: center;
+}
+
+.dg-proposal-cover {
+  max-width: 58rem;
+  margin: 1.25rem auto 2rem;
+}
+
+.dg-download {
+  margin: 1.5rem 0 2rem;
+  padding: 1rem 1.15rem;
+  border-left: 0.25rem solid var(--md-primary-fg-color);
+  border-radius: 0.35rem;
+  background: color-mix(in srgb, var(--md-primary-fg-color) 8%, transparent);
+}
+
+@media screen and (max-width: 760px) {
+  .dg-hero {
+    grid-template-columns: 1fr;
+  }
+
+  .dg-hero__content h1 {
+    max-width: 16ch;
+  }
+}

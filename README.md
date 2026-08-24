@@ -6,6 +6,9 @@ Low-cost, camera-based driver drowsiness detection research project designed for
 started, the hardware build, configuration, the device and dashboard APIs,
 operations, security and troubleshooting, with search.
 
+**Research proposal:** [view the project overview](./docs/research-proposal.md)
+or [download the complete A4 Word document](./docs/assets/documents/Drowsy_Guard_Research_Project_Proposal.docx).
+
 Build it locally without any of the firmware toolchain:
 
 ```bash
