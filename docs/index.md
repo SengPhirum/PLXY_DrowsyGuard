@@ -21,7 +21,7 @@ yawning and head movement, then gives the driver an immediate spoken warning.
 </div>
 
 <figure class="dg-hero__visual">
-  <img src="assets/images/drowsy-guard-cover.png" loading="eager" alt="Illustration of DrowsyGuard monitoring a driver's face with an in-vehicle camera and ESP32-S3 edge AI">
+  <img src="assets/images/drowsy-guard-cover.webp" width="1280" height="720" loading="eager" fetchpriority="high" alt="Illustration of DrowsyGuard monitoring a driver's face with an in-vehicle camera and ESP32-S3 edge AI">
   <figcaption>Private, offline detection with a local audio alert.</figcaption>
 </figure>
 

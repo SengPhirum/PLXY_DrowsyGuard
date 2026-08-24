@@ -9,7 +9,7 @@ An IoT research project from the **Master of Information Technology Engineering
 (MITE), Cohort 19** at the **Royal University of Phnom Penh (RUPP)**.
 
 <figure class="dg-proposal-cover">
-  <img src="assets/images/drowsy-guard-cover.png" alt="DrowsyGuard cover illustration showing a driver monitored by a camera and ESP32-S3 edge AI">
+  <img src="assets/images/drowsy-guard-cover.webp" width="1280" height="720" loading="lazy" alt="DrowsyGuard cover illustration showing a driver monitored by a camera and ESP32-S3 edge AI">
 </figure>
 
 <div class="dg-download" markdown>
