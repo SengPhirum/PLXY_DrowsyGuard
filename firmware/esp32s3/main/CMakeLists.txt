@@ -10,15 +10,17 @@ idf_component_register(SRCS "main.cpp" "risk_filter.cpp" "model_adapter.cpp"
                                 esp_driver_sdmmc sdmmc
                        # EMBED_TXTFILES for the page, because the text form appends
                        # a NUL and that is what lets web_server.cpp compute its
-                       # length as (end - start - 1). EMBED_FILES for the audio,
-                       # because a WAV is binary and a NUL would corrupt it.
+                       # length as (end - start - 1). EMBED_FILES for the favicon
+                       # and audio, because they are binary and a NUL would corrupt
+                       # them.
                        #
                        # Both languages are embedded, so the board speaks with no SD
                        # card in it. The card still wins when it has a clip - that is
                        # how a hand recording replaces a synthesised one without a
                        # rebuild. ~690 kB of the 6 MB app partition.
                        EMBED_TXTFILES "web/index.html"
-                       EMBED_FILES "../assets/audio/en_drowsy.wav"
+                       EMBED_FILES "web/favicon.ico"
+                                   "../assets/audio/en_drowsy.wav"
                                    "../assets/audio/en_microsleep.wav"
                                    "../assets/audio/en_yawning.wav"
                                    "../assets/audio/en_head_nod.wav"

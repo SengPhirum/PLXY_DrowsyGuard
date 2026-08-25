@@ -25,6 +25,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 HARNESS = Path(__file__).with_name('device_page_harness.mjs')
 PAGE = ROOT / 'firmware/esp32s3/main/web/index.html'
+FAVICON = ROOT / 'firmware/esp32s3/main/web/favicon.ico'
+CMAKE = ROOT / 'firmware/esp32s3/main/CMakeLists.txt'
+WEB_SERVER = ROOT / 'firmware/esp32s3/main/web_server.cpp'
 
 
 @pytest.fixture(scope='module')
@@ -65,6 +68,18 @@ def test_the_page_stays_self_contained():
     # One <script> and one <style>, both inline.
     assert html.count('<script') == 1 and 'src=' not in html.split('<script')[1][:120]
     assert html.count('<link') == 0
+
+
+def test_favicon_is_branded_and_shipped_with_the_device():
+    """The header and browser tab use the same icon embedded in flash."""
+    html = PAGE.read_text(encoding='utf-8')
+    cmake = CMAKE.read_text(encoding='utf-8')
+    server = WEB_SERVER.read_text(encoding='utf-8')
+    assert FAVICON.is_file() and 0 < FAVICON.stat().st_size < 48 * 1024
+    assert 'src="/favicon.ico"' in html
+    assert 'web/favicon.ico' in cmake
+    assert '_binary_favicon_ico_start' in server
+    assert 'image/vnd.microsoft.icon' in server
 
 
 def test_the_page_still_fits_in_flash_comfortably():

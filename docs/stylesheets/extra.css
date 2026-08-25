@@ -33,6 +33,16 @@
   --md-primary-bg-color--light: #ffffffb3;
 }
 
+/* The project mark remains recognisable in the compact header: the sleepy face
+ * and ZZZ are the product cue, while the cyan corners echo face tracking. */
+.md-header__button.md-logo img,
+.md-nav__button.md-logo img {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 0.42rem;
+  box-shadow: 0 0.16rem 0.45rem rgb(3 20 46 / 24%);
+}
+
 /* Body links.
  *
  * Material derives these from the primary colour, and dodgerblue on white is

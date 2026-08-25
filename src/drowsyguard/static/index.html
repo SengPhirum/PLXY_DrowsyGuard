@@ -3,6 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#071a45">
+<link rel="icon" href="/favicon.ico" sizes="any">
 <title>DrowsyGuard Live Test</title>
 <style>
   :root{
@@ -13,7 +15,10 @@
   body{margin:0;background:var(--bg);color:var(--text);
        font:14px/1.5 ui-sans-serif,system-ui,"Segoe UI",Roboto,sans-serif}
   header{padding:14px 20px;border-bottom:1px solid var(--line);display:flex;
-         align-items:baseline;gap:14px;flex-wrap:wrap}
+         align-items:center;gap:12px;flex-wrap:wrap}
+  .app-logo{width:42px;height:42px;object-fit:cover;border-radius:11px;flex:none;
+            box-shadow:0 5px 16px rgba(0,0,0,.35)}
+  .brand-copy{display:grid;gap:1px}
   h1{font-size:16px;margin:0;letter-spacing:.3px}
   .sub{color:var(--muted);font-size:12px}
   .wrap{padding:20px;display:grid;gap:16px;grid-template-columns:minmax(320px,1.4fr) minmax(300px,1fr)}
@@ -61,8 +66,12 @@
 </head>
 <body>
 <header>
-  <h1>DrowsyGuard &mdash; Live Test</h1>
-  <span class="sub">webcam &rarr; preprocess &rarr; TinyDrowsyNet &rarr; firmware RiskFilter</span>
+  <img class="app-logo" src="/app-icon.webp"
+       alt="DrowsyGuard sleepy-face detection logo" width="42" height="42">
+  <div class="brand-copy">
+    <h1>DrowsyGuard &mdash; Live Test</h1>
+    <span class="sub">webcam &rarr; preprocess &rarr; TinyDrowsyNet &rarr; firmware RiskFilter</span>
+  </div>
 </header>
 
 <div class="wrap">

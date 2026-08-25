@@ -33,10 +33,9 @@ exclude_docs: |
 theme:
   name: material
   language: en
+  logo: assets/brand/drowsyguard-logo.webp
+  favicon: assets/brand/favicon.png
   icon:
-    # The stock logo is Material's generic one. An eye is the mechanism this
-    # project actually measures, so it is the one mark that means something here.
-    logo: material/eye-outline
     repo: fontawesome/brands/github
   # Roboto is the theme default. Inter has a larger x-height, which is what the
   # full-width layout needs to stay readable at a long line length, and

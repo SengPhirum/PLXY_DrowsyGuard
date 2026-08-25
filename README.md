@@ -1,3 +1,8 @@
+<p align="center">
+  <img src="docs/assets/brand/drowsyguard-logo.webp"
+       alt="DrowsyGuard drowsiness detection logo" width="128">
+</p>
+
 # DrowsyGuard MCU
 
 Low-cost, camera-based driver drowsiness detection research project designed for retrofit use in older vehicles.

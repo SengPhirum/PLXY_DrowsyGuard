@@ -30,6 +30,8 @@ static const char *TAG = "web";
 // that produces the JSON it parses.
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
 extern const uint8_t index_html_end[] asm("_binary_index_html_end");
+extern const uint8_t favicon_ico_start[] asm("_binary_favicon_ico_start");
+extern const uint8_t favicon_ico_end[] asm("_binary_favicon_ico_end");
 
 // --- MJPEG framing ---------------------------------------------------------
 #define PART_BOUNDARY "drowsyguardframe"
@@ -339,11 +341,11 @@ static esp_err_t index_handler(httpd_req_t *req) {
     return httpd_resp_send(req, reinterpret_cast<const char *>(index_html_start), len);
 }
 
-// Browsers request this unprompted; answering with 204 is cheaper than letting it
-// 404 and cheaper still than shipping an icon.
 static esp_err_t favicon_handler(httpd_req_t *req) {
-    httpd_resp_set_status(req, "204 No Content");
-    return httpd_resp_send(req, nullptr, 0);
+    httpd_resp_set_type(req, "image/vnd.microsoft.icon");
+    httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=86400");
+    const size_t len = favicon_ico_end - favicon_ico_start;
+    return httpd_resp_send(req, reinterpret_cast<const char *>(favicon_ico_start), len);
 }
 
 static esp_err_t status_handler(httpd_req_t *req) {

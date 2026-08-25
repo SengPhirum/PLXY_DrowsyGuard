@@ -162,7 +162,9 @@ Deletes every stored capture.
 
 ### `GET /favicon.ico`
 
-Served so the browser stops asking.
+Returns the DrowsyGuard multi-size icon (`image/vnd.microsoft.icon`). The device
+page also uses it as the app mark in its sticky header. Browsers may cache it for
+one day.
 
 ## Stream server (port 81)
 

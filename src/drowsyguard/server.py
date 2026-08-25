@@ -33,6 +33,17 @@ def create_app(engine: LiveEngine) -> FastAPI:
     def index():
         return FileResponse(STATIC / 'index.html')
 
+    @app.get('/app-icon.webp', include_in_schema=False)
+    def app_icon():
+        return FileResponse(STATIC / 'app-icon.webp', media_type='image/webp')
+
+    @app.get('/favicon.ico', include_in_schema=False)
+    def favicon():
+        return FileResponse(
+            STATIC / 'favicon.ico', media_type='image/vnd.microsoft.icon',
+            headers={'Cache-Control': 'public, max-age=86400'},
+        )
+
     def _mjpeg(getter, fps=20.0):
         interval = 1.0 / fps
         while True:

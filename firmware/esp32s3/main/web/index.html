@@ -27,6 +27,8 @@
   header{position:sticky;top:0;z-index:5;background:rgba(14,17,22,.92);
          backdrop-filter:blur(6px);border-bottom:1px solid var(--line);
          padding:10px 16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .app-logo{width:34px;height:34px;object-fit:cover;border-radius:9px;flex:none;
+            box-shadow:0 4px 14px rgba(0,0,0,.4)}
   h1{font-size:15px;margin:0;letter-spacing:.4px;font-weight:600}
   h1 small{color:var(--muted);font-weight:400;font-size:11px;letter-spacing:.6px;
            text-transform:uppercase;margin-left:6px}
@@ -165,6 +167,8 @@
 <body>
 
 <header>
+  <img class="app-logo" src="/favicon.ico"
+       alt="DrowsyGuard sleepy-face detection logo" width="34" height="34">
   <span class="dot" id="link"></span>
   <h1>DrowsyGuard <small id="mode">connecting</small></h1>
   <span class="net" id="net">&mdash;</span>
