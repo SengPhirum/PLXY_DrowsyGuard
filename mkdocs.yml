@@ -34,7 +34,17 @@ theme:
   name: material
   language: en
   icon:
+    # The stock logo is Material's generic one. An eye is the mechanism this
+    # project actually measures, so it is the one mark that means something here.
+    logo: material/eye-outline
     repo: fontawesome/brands/github
+  # Roboto is the theme default. Inter has a larger x-height, which is what the
+  # full-width layout needs to stay readable at a long line length, and
+  # JetBrains Mono disambiguates 0/O and 1/l/I - this site is mostly GPIO
+  # numbers, hex boot modes and thresholds.
+  font:
+    text: Inter
+    code: JetBrains Mono
   features:
     - navigation.tabs
     - navigation.tabs.sticky
@@ -42,6 +52,14 @@ theme:
     - navigation.top
     - navigation.footer
     - navigation.indexes
+    # Turns the site into a single-page app: the header, nav and search index
+    # survive a click, so moving between pages no longer reloads the whole
+    # theme. Requires site_url, which is set above.
+    - navigation.instant
+    - navigation.instant.progress
+    # Keeps the address bar on the section you are actually reading, so a URL
+    # copied out of the browser points at the anchor rather than the page top.
+    - navigation.tracking
     - toc.follow
     - search.suggest
     - search.highlight
@@ -49,6 +67,8 @@ theme:
     - content.code.copy
     - content.code.annotate
     - content.action.edit
+    - content.action.view
+    - content.tabs.link
     - content.tooltips
   palette:
     # primary/accent are repeated here, not just on the two entries below: this
@@ -105,6 +125,14 @@ markdown_extensions:
       permalink: true
       toc_depth: 3
   - pymdownx.details
+  # Without this, the `:material-rocket-launch:` shortcodes on the overview and
+  # getting-started pages render as literal text rather than icons - MkDocs does
+  # not warn about it, so --strict cannot catch it. The index/generator pair is
+  # what resolves Material's own icon sets (material, octicons, fontawesome,
+  # simple) and inlines them as SVG instead of loading a sprite sheet.
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
   - pymdownx.highlight:
       anchor_linenums: true
       line_spans: __span
