@@ -1,4 +1,9 @@
-# Presentation deck
+---
+title: Browser deck
+description: Presenting, exporting and editing the standalone HTML slide deck.
+---
+
+# Browser deck
 
 `drowsyguard-slides.html` is an eight-slide deck for the lecturer review, built
 from `docs/research-proposal.md`, the Word proposal in

@@ -1,5 +1,32 @@
 # Changelog
 
+## 2026-08-26 (later) - the docs build, and the page that was silently overwriting another
+
+`Deploy documentation` went red on `main` at `e5effdb`. The message named one
+strict-mode warning - `presentation/README.md` is not in the nav - but the warning
+was the symptom, not the fault.
+
+**mkdocs treats `README.md` as a directory index.** `docs/presentation/README.md`
+therefore built to `site/presentation/index.html`, which is exactly where
+`docs/presentation.md` builds. The README won, so the nav entry "Presentation
+slides" served the browser deck's author guide and the six slide previews were
+absent from the published site. Nothing warned about that; the build output is
+where it showed, with `<title>Presentation deck</title>` sitting on a URL that
+should have carried `Presentation slides`.
+
+Adding the file to `not_in_nav` would have made the build pass and left the page
+shadowed, so the fix is the rename: `presentation/browser-deck.md`, which is not a
+directory index, plus a nav entry of its own. That drops the strict warning without
+new configuration, and the site goes from 31 pages to 32 because a page that had
+been overwritten is now built.
+
+Also linked the browser deck from the Presentation slides page. It had no inbound
+link from anywhere in the site and was reachable only by typing its URL.
+
+The two decks - the generated `.pptx` and the eight-slide HTML file - were written
+in parallel and overlap almost completely. Both are kept here; choosing between
+them is a separate call.
+
 ## 2026-08-26 - a six-slide deck for the proposal defence
 
 `scripts/presentation/` generates `docs/assets/documents/DrowsyGuard-Presentation.pptx`:

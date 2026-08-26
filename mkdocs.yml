@@ -159,6 +159,7 @@ nav:
       - index.md
       - Research proposal: research-proposal.md
       - Presentation slides: presentation.md
+      - Browser deck: presentation/browser-deck.md
       - Thesis plan: THESIS_PLAN.md
   - Getting started:
       - getting-started/index.md

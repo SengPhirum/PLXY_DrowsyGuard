@@ -20,6 +20,20 @@ carried by a picture rather than by bullets.
 
 </div>
 
+## Also here: a deck that runs in the browser
+
+A second deck, written independently, covers the same ground as eight slides in a
+single self-contained HTML file - no PowerPoint needed. Arrow keys advance it,
+`Ctrl+P` prints it as landscape A4, and it falls back to a drawn build diagram
+until a real bench photo is dropped in.
+
+[Open the browser deck](presentation/drowsyguard-slides.html) &middot;
+[presenting, exporting and editing it](presentation/browser-deck.md)
+
+The two are alternatives rather than halves of one thing - they were built in
+parallel and overlap almost completely. Pick whichever suits the room, and retire
+the other rather than maintaining both.
+
 ## What is on each slide
 
 | # | Slide | The one point it makes |
