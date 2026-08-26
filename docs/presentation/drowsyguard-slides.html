@@ -1,0 +1,1274 @@
+<title>Drowsy Guard Defence Deck</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+
+<style>
+/* ============================================================
+   Drowsy Guard — presentation deck
+   Identity: engineering instrumentation. The device measures TIME
+   (closure periods, PERCLOS windows, frame budgets), so the deck is
+   built from scales, tick marks, hairlines and tabular numerals.
+   Palette inherits the repo's own system: dodgerblue primary
+   (docs/stylesheets/extra.css) + deep-orange accent.
+   ============================================================ */
+
+:root {
+  --paper:       #eef3f8;
+  --slide:       #ffffff;
+  --slide-2:     #f4f7fb;
+  --ink:         #0c1a28;
+  --ink-2:       #3c5570;
+  --ink-3:       #7a8fa6;
+  --rule:        #d3dee9;
+  --rule-soft:   #e6edf4;
+  --signal:      #1274d4;
+  --signal-soft: #e3effc;
+  --alarm:       #d1400f;
+  --alarm-soft:  #fdeae2;
+  --ok:          #16794f;
+  --ok-soft:     #e2f2eb;
+  --open:        #8a5a00;
+  --open-soft:   #fbf0dc;
+
+  --display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --body:    "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --mono:    "IBM Plex Mono", ui-monospace, "Consolas", monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper:       #070d14;
+    --slide:       #0e1822;
+    --slide-2:     #14202d;
+    --ink:         #e2ecf5;
+    --ink-2:       #a3b7ca;
+    --ink-3:       #71879c;
+    --rule:        #24343f;
+    --rule-soft:   #1b2933;
+    --signal:      #58a8ff;
+    --signal-soft: #12293f;
+    --alarm:       #ff8054;
+    --alarm-soft:  #3b1b0e;
+    --ok:          #48ca95;
+    --ok-soft:     #0f2b21;
+    --open:        #e3b558;
+    --open-soft:   #2e2311;
+  }
+}
+:root[data-theme="dark"] {
+  --paper:       #070d14;
+  --slide:       #0e1822;
+  --slide-2:     #14202d;
+  --ink:         #e2ecf5;
+  --ink-2:       #a3b7ca;
+  --ink-3:       #71879c;
+  --rule:        #24343f;
+  --rule-soft:   #1b2933;
+  --signal:      #58a8ff;
+  --signal-soft: #12293f;
+  --alarm:       #ff8054;
+  --alarm-soft:  #3b1b0e;
+  --ok:          #48ca95;
+  --ok-soft:     #0f2b21;
+  --open:        #e3b558;
+  --open-soft:   #2e2311;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--body);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- deck shell ---------- */
+
+.deck {
+  height: 100vh;
+  overflow-y: scroll;
+  scroll-snap-type: y mandatory;
+  scroll-behavior: smooth;
+}
+@media (prefers-reduced-motion: reduce) { .deck { scroll-behavior: auto; } }
+
+.frame {
+  height: 100vh;
+  scroll-snap-align: center;
+  display: grid;
+  place-items: center;
+  padding: 1.4rem;
+}
+
+.slide {
+  container-type: inline-size;
+  position: relative;
+  width: min(100%, calc((100vh - 2.8rem) * 16 / 9), 1440px);
+  aspect-ratio: 16 / 9;
+  background: var(--slide);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  box-shadow: 0 1px 2px rgb(6 24 44 / 5%), 0 18px 44px rgb(6 24 44 / 8%);
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: 7.2% 1fr;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .slide { box-shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 18px 44px rgb(0 0 0 / 50%); }
+}
+
+/* ---------- instrument rail: slide number + section, on a measuring scale ---------- */
+
+.rail {
+  border-right: 1px solid var(--rule-soft);
+  background: var(--slide-2);
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  padding: 3.2cqw 0 2.4cqw;
+  justify-items: center;
+  gap: 1.6cqw;
+}
+.rail-num {
+  font-family: var(--mono);
+  font-size: 1.5cqw;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--signal);
+  font-variant-numeric: tabular-nums;
+}
+.rail-num span { color: var(--ink-3); font-weight: 400; }
+.rail-sect {
+  writing-mode: vertical-rl;
+  font-family: var(--mono);
+  font-size: 1.05cqw;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  align-self: start;
+}
+.rail-tick { width: 1px; height: 3.4cqw; background: var(--rule); }
+
+/* ---------- slide body ---------- */
+
+.body { padding: 3cqw 4cqw 2.8cqw; display: flex; flex-direction: column; min-width: 0; }
+
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 1.05cqw;
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--signal);
+  margin: 0 0 1.1cqw;
+}
+h2 em { font-style: normal; color: var(--signal); }
+h2 {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 3.5cqw;
+  line-height: 1.03;
+  letter-spacing: -0.014em;
+  text-wrap: balance;
+  margin: 0 0 0.7cqw;
+}
+.deck-in {
+  font-size: 1.32cqw;
+  line-height: 1.5;
+  color: var(--ink-2);
+  max-width: 62cqw;
+  margin: 0 0 2.2cqw;
+}
+.hr { height: 1px; background: var(--rule-soft); margin: 0 0 1.9cqw; }
+
+/* ---------- cover ---------- */
+
+.cover { grid-template-columns: 1fr; }
+.cover .body { padding: 4.6cqw 5cqw; justify-content: center; gap: 0; }
+.cover-mark {
+  display: flex; align-items: center; gap: 1.1cqw;
+  font-family: var(--mono); font-size: 1.1cqw; letter-spacing: 0.2em;
+  text-transform: uppercase; color: var(--ink-3); margin-bottom: 2.4cqw;
+}
+.cover-mark b { color: var(--signal); font-weight: 600; letter-spacing: 0.2em; }
+.cover-mark i { flex: 1; height: 1px; background: var(--rule); font-style: normal; }
+h1 {
+  font-family: var(--display); font-weight: 700;
+  font-size: 7.4cqw; line-height: 0.9; letter-spacing: -0.026em;
+  margin: 0 0 1.4cqw;
+}
+h1 em { font-style: normal; color: var(--signal); }
+.cover-sub { font-size: 1.72cqw; line-height: 1.45; color: var(--ink-2); margin: 0; }
+.cover-mid {
+  display: grid; grid-template-columns: 62fr 38fr; gap: 4cqw;
+  align-items: end; margin-bottom: 3.4cqw;
+}
+.cover-read {
+  border-left: 1px solid var(--rule); padding-left: 2.2cqw;
+  display: flex; flex-direction: column; gap: 0.85cqw;
+}
+.cover-read-h {
+  font-family: var(--mono); font-size: 0.95cqw; letter-spacing: 0.18em;
+  text-transform: uppercase; color: var(--signal);
+}
+.cover-read-row {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 1cqw;
+  border-bottom: 1px solid var(--rule-soft); padding-bottom: 0.5cqw;
+}
+.cover-read-row span { font-size: 1.18cqw; color: var(--ink-2); }
+.cover-read-row b {
+  font-family: var(--mono); font-size: 1.18cqw; font-weight: 600;
+  color: var(--alarm); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.cover-meta {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: 0; border-top: 1px solid var(--rule); padding-top: 1.8cqw;
+}
+.cover-meta div { padding-right: 1.6cqw; }
+.cover-meta dt {
+  font-family: var(--mono); font-size: 0.95cqw; letter-spacing: 0.16em;
+  text-transform: uppercase; color: var(--ink-3); margin: 0 0 0.55cqw;
+}
+.cover-meta dd { margin: 0; font-size: 1.25cqw; line-height: 1.45; color: var(--ink); }
+.cover-meta dd b { font-weight: 600; }
+
+/* ---------- reusable pieces ---------- */
+
+.cols { display: grid; gap: 3cqw; flex: 1; min-height: 0; }
+.cols > * { align-self: center; }
+.c-58-42 { grid-template-columns: 58fr 42fr; }
+.c-46-54 { grid-template-columns: 46fr 54fr; }
+.c-50-50 { grid-template-columns: 1fr 1fr; }
+
+figure { margin: 0; display: flex; flex-direction: column; gap: 1cqw; min-width: 0; }
+figure svg { width: 100%; height: auto; display: block; }
+figcaption {
+  font-family: var(--mono); font-size: 1cqw; line-height: 1.5;
+  color: var(--ink-3);
+}
+figcaption b { color: var(--ink-2); font-weight: 600; }
+
+.points { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1.35cqw; }
+.points li { display: grid; grid-template-columns: 2.4cqw 1fr; gap: 0.9cqw; }
+.points .k {
+  font-family: var(--mono); font-size: 1.05cqw; font-weight: 600;
+  color: var(--signal); padding-top: 0.28cqw; font-variant-numeric: tabular-nums;
+}
+.points h3 {
+  font-family: var(--display); font-weight: 600; font-size: 1.6cqw;
+  margin: 0 0 0.3cqw; line-height: 1.15;
+}
+.points p { margin: 0; font-size: 1.22cqw; line-height: 1.5; color: var(--ink-2); }
+
+/* cue cards with a measured period */
+.cues { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2cqw; }
+.cue {
+  border: 1px solid var(--rule); border-radius: 3px;
+  padding: 1.2cqw 1.3cqw; background: var(--slide-2);
+  display: flex; flex-direction: column; gap: 0.45cqw;
+}
+.cue-top { display: flex; align-items: baseline; justify-content: space-between; gap: 0.8cqw; }
+.cue-name { font-family: var(--display); font-weight: 700; font-size: 1.55cqw; }
+.cue-per {
+  font-family: var(--mono); font-weight: 600; font-size: 1.35cqw;
+  color: var(--alarm); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.cue p { margin: 0; font-size: 1.08cqw; line-height: 1.45; color: var(--ink-2); }
+.cue .w {
+  font-family: var(--mono); font-size: 0.92cqw; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--ink-3);
+}
+
+/* metric readouts */
+.metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; border-top: 1px solid var(--rule); }
+.metrics div { padding: 1.3cqw 1.4cqw 0 0; border-right: 1px solid var(--rule-soft); }
+.metrics div:last-child { border-right: 0; }
+.metrics dt {
+  font-family: var(--mono); font-size: 0.92cqw; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--ink-3); margin: 0 0 0.5cqw;
+}
+.metrics dd {
+  margin: 0; font-family: var(--display); font-weight: 700; font-size: 2.4cqw;
+  line-height: 1; font-variant-numeric: tabular-nums;
+}
+.metrics dd small { font-family: var(--mono); font-weight: 500; font-size: 0.95cqw; color: var(--ink-3); letter-spacing: 0.04em; }
+
+/* status pills */
+.pill {
+  display: inline-flex; align-items: center; gap: 0.5cqw;
+  font-family: var(--mono); font-size: 0.92cqw; font-weight: 500;
+  letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 0.34cqw 0.7cqw; border-radius: 2px; white-space: nowrap;
+}
+.pill.done { background: var(--ok-soft);   color: var(--ok); }
+.pill.open { background: var(--open-soft); color: var(--open); }
+.pill.next { background: var(--signal-soft); color: var(--signal); }
+
+/* equipment grid */
+.kit { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1cqw; flex: 1; }
+.kit-item {
+  border: 1px solid var(--rule); border-radius: 3px; background: var(--slide-2);
+  padding: 0.95cqw 1.1cqw; display: grid; grid-template-columns: 5.6cqw 1fr; gap: 1cqw; align-items: center;
+}
+.kit-item svg { width: 100%; height: auto; }
+.kit-name { font-family: var(--display); font-weight: 700; font-size: 1.28cqw; line-height: 1.1; margin: 0 0 0.28cqw; }
+.kit-spec { font-family: var(--mono); font-size: 0.88cqw; color: var(--ink-3); margin: 0 0 0.28cqw; }
+.kit-role { font-size: 1cqw; color: var(--ink-2); margin: 0; line-height: 1.35; }
+.kit-cost {
+  font-family: var(--mono); font-size: 1.02cqw; font-weight: 600; color: var(--signal);
+  font-variant-numeric: tabular-nums;
+}
+.kit-foot {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 2cqw;
+  border-top: 1px solid var(--rule); margin-top: 1.4cqw; padding-top: 1.2cqw;
+}
+.kit-foot p { margin: 0; font-size: 1.08cqw; color: var(--ink-2); line-height: 1.45; max-width: 62cqw; }
+.kit-total { font-family: var(--display); font-weight: 700; font-size: 2.4cqw; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.kit-total small { display: block; font-family: var(--mono); font-weight: 500; font-size: 0.9cqw; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3); }
+
+/* prototype photo, with a drawn fallback when the JPEG is not present */
+.photo { border: 1px solid var(--rule); border-radius: 3px; overflow: hidden; background: var(--slide-2); }
+.photo img { display: none; width: 100%; height: auto; }
+.photo.has-photo img { display: block; }
+.photo.has-photo svg { display: none; }
+
+/* results table */
+.res { display: flex; flex-direction: column; gap: 0; }
+.res-row {
+  display: grid; grid-template-columns: 1fr auto auto; gap: 1.2cqw;
+  align-items: baseline; padding: 0.7cqw 0; border-bottom: 1px solid var(--rule-soft);
+}
+.res-row:first-child { border-top: 1px solid var(--rule); }
+.res-what { font-size: 1.18cqw; color: var(--ink); }
+.res-what em { font-style: normal; color: var(--ink-3); font-family: var(--mono); font-size: 0.92cqw; letter-spacing: 0.06em; display: block; margin-top: 0.2cqw; }
+.res-val { font-family: var(--mono); font-weight: 600; font-size: 1.28cqw; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.res-val.hit { color: var(--ok); }
+.res-val.gap { color: var(--open); }
+
+/* conclusion */
+.thesis {
+  border-left: 3px solid var(--signal); background: var(--signal-soft);
+  padding: 1.35cqw 1.8cqw; border-radius: 0 3px 3px 0; margin-bottom: 1.7cqw;
+}
+.thesis p { margin: 0; font-family: var(--display); font-weight: 600; font-size: 1.75cqw; line-height: 1.25; letter-spacing: -0.01em; }
+.thesis em {
+  font-style: normal;
+  text-decoration: underline; text-decoration-color: var(--signal);
+  text-decoration-thickness: 2px; text-underline-offset: 0.2em;
+}
+.kpi { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.1cqw; }
+.kpi-item { border: 1px solid var(--rule); border-radius: 3px; padding: 0.9cqw 1.15cqw; }
+.kpi-item dt { font-family: var(--mono); font-size: 0.9cqw; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-3); margin: 0 0 0.45cqw; }
+.kpi-item dd { margin: 0; font-family: var(--display); font-weight: 700; font-size: 1.75cqw; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.kpi-item dd small { font-family: var(--body); font-weight: 400; font-size: 0.95cqw; color: var(--ink-2); display: block; margin-top: 0.35cqw; line-height: 1.4; }
+
+.note {
+  font-family: var(--mono); font-size: 0.94cqw; line-height: 1.5; color: var(--ink-3);
+  border-top: 1px solid var(--rule-soft); margin-top: auto; padding-top: 1.2cqw;
+}
+.note b { color: var(--alarm); font-weight: 600; }
+
+/* ---------- navigation ---------- */
+
+.nav {
+  position: fixed; right: 0.9rem; top: 50%; transform: translateY(-50%);
+  display: flex; flex-direction: column; gap: 0.4rem; z-index: 20;
+}
+.nav a {
+  width: 1.6rem; height: 1.6rem; display: grid; place-items: center;
+  font-family: var(--mono); font-size: 0.6rem; color: var(--ink-3);
+  text-decoration: none; border-radius: 2px; font-variant-numeric: tabular-nums;
+}
+.nav a:hover { color: var(--ink); background: var(--rule-soft); }
+.nav a[aria-current="true"] { color: var(--slide); background: var(--signal); }
+.nav a:focus-visible { outline: 2px solid var(--signal); outline-offset: 1px; }
+
+.hint {
+  position: fixed; left: 50%; bottom: 0.8rem; transform: translateX(-50%);
+  font-family: var(--mono); font-size: 0.62rem; letter-spacing: 0.16em;
+  text-transform: uppercase; color: var(--ink-3); z-index: 20;
+  background: color-mix(in srgb, var(--paper) 86%, transparent);
+  padding: 0.3rem 0.7rem; border-radius: 2px; pointer-events: none;
+}
+
+@media (max-width: 720px) {
+  .nav, .hint { display: none; }
+  .deck { height: auto; overflow: visible; scroll-snap-type: none; }
+  .frame { height: auto; padding: 0.7rem; }
+}
+
+/* ---------- print: one slide per landscape page ---------- */
+
+@page { size: A4 landscape; margin: 0; }
+@media print {
+  .nav, .hint { display: none; }
+  body { background: #fff; }
+  .deck { height: auto; overflow: visible; scroll-snap-type: none; }
+  .frame { height: auto; padding: 0; break-after: page; page-break-after: always; }
+  .frame:last-child { break-after: auto; page-break-after: auto; }
+  .slide { width: 100%; max-width: none; border: 0; border-radius: 0; box-shadow: none; }
+}
+</style>
+
+<nav class="nav" aria-label="Slides">
+  <a href="#s1" data-dot="s1">01</a>
+  <a href="#s2" data-dot="s2">02</a>
+  <a href="#s3" data-dot="s3">03</a>
+  <a href="#s4" data-dot="s4">04</a>
+  <a href="#s5" data-dot="s5">05</a>
+  <a href="#s6" data-dot="s6">06</a>
+  <a href="#s7" data-dot="s7">07</a>
+  <a href="#s8" data-dot="s8">08</a>
+</nav>
+<div class="hint">&larr; &rarr; to advance &nbsp;·&nbsp; Ctrl+P for PDF</div>
+
+<div class="deck">
+
+<!-- ========== 01 COVER ========== -->
+<section class="frame" id="s1">
+  <article class="slide cover">
+    <div class="body">
+      <div class="cover-mark"><b>Small IoT Research Project</b><i></i><span>MITE Cohort 19 &nbsp;·&nbsp; RUPP</span></div>
+      <div class="cover-mid">
+        <div>
+          <h1>Drowsy<em>Guard</em></h1>
+          <p class="cover-sub">A <b>USD&nbsp;27</b> retrofit device that watches a driver's eyes, mouth and head on the ESP32&#8209;S3 itself, and speaks a warning &mdash; with no cloud anywhere in the alert path.</p>
+        </div>
+        <aside class="cover-read">
+          <div class="cover-read-h">What it watches, and for how long</div>
+          <div class="cover-read-row"><span>Eyes closed &rarr; microsleep</span><b>&#8805; 1.00 s</b></div>
+          <div class="cover-read-row"><span>Blink, slowed</span><b>&gt; 0.40 s</b></div>
+          <div class="cover-read-row"><span>Yawn</span><b>&#8805; 1.20 s</b></div>
+          <div class="cover-read-row"><span>Head nod</span><b>0.3&ndash;1.5 s</b></div>
+          <div class="cover-read-row"><span>PERCLOS window</span><b>3.0 s</b></div>
+        </aside>
+      </div>
+      <dl class="cover-meta">
+        <div><dt>Project leader</dt><dd><b>Seng Phirum</b></dd></div>
+        <div><dt>Members</dt><dd>Seang Chanviwath · Suon Mesa · Theng Rathrongroeung · Lov Kimheng</dd></div>
+        <div><dt>Lecturer</dt><dd>Dr. Chey Chan Oeurn<br>IoT: Technology and Application</dd></div>
+        <div><dt>Status</dt><dd>Prototype running on hardware<br>Detection accuracy in progress</dd></div>
+      </dl>
+    </div>
+  </article>
+</section>
+
+<!-- ========== 02 THE PROBLEM ========== -->
+<section class="frame" id="s2">
+  <article class="slide">
+    <div class="rail">
+      <div class="rail-num">02<span>/08</span></div>
+      <div class="rail-sect">The problem</div>
+      <div class="rail-tick"></div>
+    </div>
+    <div class="body">
+      <p class="eyebrow">Why one frame is not enough</p>
+      <h2>A closed eye is not drowsiness.<br>A closed eye <em>for long enough</em> is.</h2>
+      <div class="hr"></div>
+      <div class="cols c-58-42">
+        <figure>
+          <svg viewBox="0 0 620 254" role="img" aria-label="Two frame strips: a blink closes the eyes for two frames out of fifteen and is normal; a microsleep holds them closed for fifteen consecutive frames and is the event worth alarming about.">
+            <defs>
+              <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
+              </marker>
+              <marker id="a2r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0 0 L10 5 L0 10 z" fill="var(--alarm)"/>
+              </marker>
+            </defs>
+
+            <!-- strip A: blink -->
+            <text x="0" y="14" font-family="IBM Plex Mono, monospace" font-size="12" font-weight="600" fill="currentColor">NORMAL BLINK</text>
+            <text x="0" y="30" font-family="IBM Plex Mono, monospace" font-size="11" fill="currentColor" opacity="0.55">0.24 s closed &mdash; under 0.40 s, ignore</text>
+            <g>
+              <!-- 15 frames, 2 closed -->
+              <rect x="0"   y="44" width="36" height="30" fill="none" stroke="currentColor" stroke-opacity="0.28"/>
+              <rect x="40"  y="44" width="36" height="30" fill="none" stroke="currentColor" stroke-opacity="0.28"/>
+              <rect x="80"  y="44" width="36" height="30" fill="var(--alarm)" fill-opacity="0.9"/>
+              <rect x="120" y="44" width="36" height="30" fill="var(--alarm)" fill-opacity="0.9"/>
+              <rect x="160" y="44" width="36" height="30" fill="none" stroke="currentColor" stroke-opacity="0.28"/>
+              <rect x="200" y="44" width="36" height="30" fill="none" stroke="currentColor" stroke-opacity="0.28"/>
+              <rect x="240" y="44" width="36" height="30" fill="none" stroke="currentColor" stroke-opacity="0.28"/>
+              <rect x="280" y="44" width="36" height="30" fill="none" stroke="currentColor" stroke-opacity="0.28"/>
+              <rect x="320" y="44" width="36" height="30" fill="none" stroke="currentColor" stroke-opacity="0.28"/>
+              <rect x="360" y="44" width="36" height="30" fill="none" stroke="currentColor" stroke-opacity="0.28"/>
+              <rect x="400" y="44" width="36" height="30" fill="none" stroke="currentColor" stroke-opacity="0.28"/>
+              <rect x="440" y="44" width="36" height="30" fill="none" stroke="currentColor" stroke-opacity="0.28"/>
+            </g>
+            <text x="480" y="63" font-family="IBM Plex Mono, monospace" font-size="12" font-weight="600" fill="currentColor" opacity="0.6">no alert</text>
+
+            <!-- strip B: microsleep -->
+            <text x="0" y="122" font-family="IBM Plex Mono, monospace" font-size="12" font-weight="600" fill="var(--alarm)">MICROSLEEP</text>
+            <text x="0" y="138" font-family="IBM Plex Mono, monospace" font-size="11" fill="currentColor" opacity="0.55">&#8805; 1.00 s closed &mdash; speak now</text>
+            <g>
+              <rect x="0"   y="152" width="36" height="30" fill="none" stroke="currentColor" stroke-opacity="0.28"/>
+              <rect x="40"  y="152" width="36" height="30" fill="none" stroke="currentColor" stroke-opacity="0.28"/>
+              <rect x="80"  y="152" width="36" height="30" fill="var(--alarm)"/>
+              <rect x="120" y="152" width="36" height="30" fill="var(--alarm)"/>
+              <rect x="160" y="152" width="36" height="30" fill="var(--alarm)"/>
+              <rect x="200" y="152" width="36" height="30" fill="var(--alarm)"/>
+              <rect x="240" y="152" width="36" height="30" fill="var(--alarm)"/>
+              <rect x="280" y="152" width="36" height="30" fill="var(--alarm)"/>
+              <rect x="320" y="152" width="36" height="30" fill="var(--alarm)"/>
+              <rect x="360" y="152" width="36" height="30" fill="var(--alarm)"/>
+              <rect x="400" y="152" width="36" height="30" fill="var(--alarm)"/>
+              <rect x="440" y="152" width="36" height="30" fill="var(--alarm)"/>
+            </g>
+            <line x1="80" y1="192" x2="397" y2="192" stroke="var(--alarm)" stroke-width="1.5" marker-start="url(#a2r)" marker-end="url(#a2r)"/>
+            <text x="238" y="206" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" font-weight="600" fill="var(--alarm)">1.00 s</text>
+            <line x1="397" y1="146" x2="397" y2="196" stroke="var(--alarm)" stroke-width="2"/>
+            <text x="404" y="207" font-family="IBM Plex Mono, monospace" font-size="12" font-weight="600" fill="var(--alarm)">ALERT FIRES</text>
+
+            <!-- shared time axis -->
+            <line x1="0" y1="222" x2="476" y2="222" stroke="currentColor" stroke-opacity="0.3"/>
+            <g font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.5">
+              <line x1="0"   y1="222" x2="0"   y2="228" stroke="currentColor" stroke-opacity="0.4"/><text x="0"   y="242">0 s</text>
+              <line x1="158" y1="222" x2="158" y2="228" stroke="currentColor" stroke-opacity="0.4"/><text x="144" y="242">0.5 s</text>
+              <line x1="317" y1="222" x2="317" y2="228" stroke="currentColor" stroke-opacity="0.4"/><text x="303" y="242">1.0 s</text>
+              <line x1="476" y1="222" x2="476" y2="228" stroke="currentColor" stroke-opacity="0.4"/><text x="462" y="242">1.5 s</text>
+            </g>
+          </svg>
+          <figcaption>Same eye state, opposite meaning. Only the <b>duration</b> separates them &mdash; which is why the device decides over time, never on one frame.</figcaption>
+        </figure>
+
+        <ul class="points">
+          <li>
+            <span class="k">01</span>
+            <div>
+              <h3>Single-frame alarms cry wolf</h3>
+              <p>Normal blinking, looking down at the gear stick, glasses glare and a moment of lost face all read as &ldquo;eyes closed&rdquo; to a per-frame classifier.</p>
+            </div>
+          </li>
+          <li>
+            <span class="k">02</span>
+            <div>
+              <h3>Appearance is not eyelid state</h3>
+              <p>Our own whole-face network scored 0.81 in validation but <b>0.57 on drivers it had never seen</b> &mdash; it had learned who the driver was, not whether their eyes were shut. It was removed.</p>
+            </div>
+          </li>
+          <li>
+            <span class="k">03</span>
+            <div>
+              <h3>Cambodia's older fleet has no monitoring</h3>
+              <p>Driver monitoring ships only in new vehicles. A USD 27 retrofit that runs offline is the only version of this that reaches an existing car.</p>
+            </div>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </article>
+</section>
+
+<!-- ========== 03 CONCEPT: WHAT IT WATCHES ========== -->
+<section class="frame" id="s3">
+  <article class="slide">
+    <div class="rail">
+      <div class="rail-num">03<span>/08</span></div>
+      <div class="rail-sect">Concept &mdash; cues</div>
+      <div class="rail-tick"></div>
+    </div>
+    <div class="body">
+      <p class="eyebrow">Four signs, each with its own clock</p>
+      <h2>What the camera measures</h2>
+      <div class="hr"></div>
+      <div class="cols c-46-54">
+        <figure>
+          <svg viewBox="0 0 440 320" role="img" aria-label="A driver's face with five tracked landmarks: both eyes, the nose tip and both mouth corners. Callouts mark eye closure, long blink, yawn and head nod, each with the duration that defines it.">
+            <defs>
+              <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
+              </marker>
+              <marker id="a3r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M0 0 L10 5 L0 10 z" fill="var(--alarm)"/>
+              </marker>
+            </defs>
+
+            <!-- detector box -->
+            <rect x="128" y="34" width="184" height="230" fill="none" stroke="var(--signal)" stroke-width="1.5" stroke-dasharray="5 4"/>
+            <text x="128" y="26" font-family="IBM Plex Mono, monospace" font-size="10" letter-spacing="1" fill="var(--signal)">FACE BOX · score 1.00</text>
+
+            <!-- head -->
+            <ellipse cx="220" cy="150" rx="66" ry="82" fill="currentColor" fill-opacity="0.05" stroke="currentColor" stroke-opacity="0.4" stroke-width="1.5"/>
+            <!-- brows -->
+            <path d="M175 121 q17 -8 34 0" fill="none" stroke="currentColor" stroke-opacity="0.35" stroke-width="2"/>
+            <path d="M231 121 q17 -8 34 0" fill="none" stroke="currentColor" stroke-opacity="0.35" stroke-width="2"/>
+            <!-- closed eyes: lids drawn as lines -->
+            <path d="M176 138 q16 7 32 0" fill="none" stroke="var(--alarm)" stroke-width="3" stroke-linecap="round"/>
+            <path d="M232 138 q16 7 32 0" fill="none" stroke="var(--alarm)" stroke-width="3" stroke-linecap="round"/>
+            <!-- nose -->
+            <path d="M220 148 v22 q0 6 -7 7" fill="none" stroke="currentColor" stroke-opacity="0.4" stroke-width="1.5"/>
+            <!-- open mouth (yawn) -->
+            <ellipse cx="220" cy="196" rx="19" ry="14" fill="var(--alarm)" fill-opacity="0.16" stroke="var(--alarm)" stroke-width="2"/>
+
+            <!-- the five landmarks the system actually gets -->
+            <g fill="var(--signal)">
+              <circle cx="192" cy="138" r="4"/><circle cx="248" cy="138" r="4"/>
+              <circle cx="220" cy="170" r="4"/>
+              <circle cx="201" cy="196" r="4"/><circle cx="239" cy="196" r="4"/>
+            </g>
+
+            <!-- callout: eye closure -->
+            <line x1="176" y1="138" x2="96" y2="112" stroke="currentColor" stroke-opacity="0.5" marker-end="url(#a3)"/>
+            <text x="0" y="102" font-family="IBM Plex Mono, monospace" font-size="11" font-weight="600" fill="currentColor">EYES CLOSED</text>
+            <text x="0" y="117" font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--alarm)" font-weight="600">&#8805; 1.00 s</text>
+
+            <!-- callout: long blink -->
+            <line x1="264" y1="138" x2="344" y2="112" stroke="currentColor" stroke-opacity="0.5" marker-end="url(#a3)"/>
+            <text x="352" y="102" font-family="IBM Plex Mono, monospace" font-size="11" font-weight="600" fill="currentColor">LONG BLINK</text>
+            <text x="352" y="117" font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--alarm)" font-weight="600">&gt; 0.40 s</text>
+
+            <!-- callout: yawn -->
+            <line x1="220" y1="212" x2="220" y2="252" stroke="currentColor" stroke-opacity="0.5" marker-end="url(#a3)"/>
+            <text x="220" y="272" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" font-weight="600" fill="currentColor">YAWN</text>
+            <text x="220" y="287" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--alarm)" font-weight="600">&#8805; 1.20 s</text>
+
+            <!-- callout: head nod, drawn as pitch arrow -->
+            <path d="M310 154 q26 16 8 44" fill="none" stroke="var(--alarm)" stroke-width="2" marker-end="url(#a3r)"/>
+            <text x="352" y="200" font-family="IBM Plex Mono, monospace" font-size="11" font-weight="600" fill="currentColor">HEAD NOD</text>
+            <text x="352" y="215" font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--alarm)" font-weight="600">0.3&ndash;1.5 s</text>
+
+            <text x="0" y="200" font-family="IBM Plex Mono, monospace" font-size="10" fill="var(--signal)">5 landmarks</text>
+            <text x="0" y="214" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.55">eyes · nose</text>
+            <text x="0" y="227" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.55">mouth corners</text>
+
+            <line x1="0" y1="304" x2="440" y2="304" stroke="currentColor" stroke-opacity="0.2"/>
+            <text x="0" y="318" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.5">240&times;240 RGB565 · 15 fps · rolling per-driver baseline</text>
+          </svg>
+          <figcaption>Yawn and nod are <b>geometry</b> from those same five points, so they cost no extra model &mdash; and the baseline is per-driver, so anatomy can never become the signal.</figcaption>
+        </figure>
+
+        <div style="display:flex; flex-direction:column; gap:1.4cqw; min-width:0;">
+          <div class="cues">
+            <div class="cue">
+              <div class="cue-top"><span class="cue-name">PERCLOS</span><span class="cue-per">3.0 s</span></div>
+              <p>Share of the last three seconds with the eyes closed. The best-established fatigue measure, so it carries most of the weight.</p>
+              <span class="w">weight 0.55</span>
+            </div>
+            <div class="cue">
+              <div class="cue-top"><span class="cue-name">Long blink</span><span class="cue-per">&gt;0.40 s</span></div>
+              <p>Slower than a blink, shorter than a microsleep. Blink speed drops before a driver knows they are tired.</p>
+              <span class="w">weight 0.20</span>
+            </div>
+            <div class="cue">
+              <div class="cue-top"><span class="cue-name">Yawn</span><span class="cue-per">&#8805;1.20 s</span></div>
+              <p>Mouth corners drop <em>and</em> pull inward. Anything faster is speech, not a yawn.</p>
+              <span class="w">weight 0.15</span>
+            </div>
+            <div class="cue">
+              <div class="cue-top"><span class="cue-name">Head nod</span><span class="cue-per">0.3&ndash;1.5 s</span></div>
+              <p>Down and back. Two independent pitch channels must agree, so an open mouth cannot fake it.</p>
+              <span class="w">weight 0.10</span>
+            </div>
+          </div>
+          <p class="note"><b>And one cue that argues against alarming:</b> a sneeze shuts the eyes for about a second with a head jerk. Detecting it exists purely to <em>suppress</em> the false microsleep it would otherwise trigger.</p>
+        </div>
+      </div>
+    </div>
+  </article>
+</section>
+
+<!-- ========== 04 CONCEPT: HOW IT DECIDES ========== -->
+<section class="frame" id="s4">
+  <article class="slide">
+    <div class="rail">
+      <div class="rail-num">04<span>/08</span></div>
+      <div class="rail-sect">Concept &mdash; decision</div>
+      <div class="rail-tick"></div>
+    </div>
+    <div class="body">
+      <p class="eyebrow">From four numbers to one spoken word</p>
+      <h2>Risk has to be <em>held</em>, not touched</h2>
+      <div class="hr"></div>
+      <div class="cols c-58-42">
+        <figure>
+          <svg viewBox="0 0 620 268" role="img" aria-label="A risk trace against a 0.55 trigger line. A spike that stays above the line for only 0.17 seconds is ignored; a crossing held for 0.55 seconds fires one spoken warning, followed by a 4 second cooldown.">
+            <defs>
+              <marker id="a4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
+              </marker>
+              <marker id="a4r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0 0 L10 5 L0 10 z" fill="var(--alarm)"/>
+              </marker>
+            </defs>
+
+            <!-- the qualifying hold window: 0.55 s from the upward crossing -->
+            <rect x="282" y="20" width="51" height="176" fill="var(--alarm)" fill-opacity="0.10"/>
+
+            <!-- axes -->
+            <line x1="42" y1="20" x2="42" y2="196" stroke="currentColor" stroke-opacity="0.35"/>
+            <line x1="42" y1="196" x2="600" y2="196" stroke="currentColor" stroke-opacity="0.35"/>
+            <g font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.55">
+              <text x="0" y="24">risk</text>
+              <text x="18" y="35">1.0</text>
+              <text x="18" y="200">0.0</text>
+            </g>
+
+            <!-- trigger threshold -->
+            <line x1="42" y1="99" x2="600" y2="99" stroke="var(--alarm)" stroke-width="1.5" stroke-dasharray="6 4"/>
+            <text x="46" y="93" font-family="IBM Plex Mono, monospace" font-size="10" letter-spacing="1" fill="var(--alarm)">TRIGGER</text>
+            <text x="600" y="93" text-anchor="end" font-family="IBM Plex Mono, monospace" font-size="11" font-weight="600" fill="var(--alarm)">0.55</text>
+
+            <!-- risk trace -->
+            <polyline points="42,182 79,178 116,161 144,87 171,143 217,171 254,140 282,97 319,80 356,69 402,97 439,136 485,161 531,150 596,168"
+                      fill="none" stroke="var(--signal)" stroke-width="2.5" stroke-linejoin="round"/>
+
+            <!-- the spike that does not qualify -->
+            <circle cx="144" cy="87" r="4.5" fill="none" stroke="currentColor" stroke-width="2"/>
+            <line x1="144" y1="79" x2="144" y2="56" stroke="currentColor" stroke-opacity="0.5" marker-end="url(#a4)"/>
+            <text x="144" y="34" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="currentColor" opacity="0.8">above for 0.17 s</text>
+            <text x="144" y="48" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" font-weight="600" fill="currentColor" opacity="0.8">&#8594; no alert</text>
+
+            <!-- the crossing that does -->
+            <line x1="333" y1="20" x2="333" y2="196" stroke="var(--alarm)" stroke-width="2"/>
+            <circle cx="333" cy="76" r="5" fill="var(--alarm)"/>
+            <text x="341" y="34" font-family="IBM Plex Mono, monospace" font-size="11" font-weight="600" fill="var(--alarm)">SPEAK &ldquo;Microsleep&rdquo;</text>
+            <text x="341" y="48" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.6">then 4.0 s cooldown</text>
+
+            <!-- the hold measurement -->
+            <line x1="282" y1="212" x2="333" y2="212" stroke="var(--alarm)" stroke-width="1.5" marker-start="url(#a4r)" marker-end="url(#a4r)"/>
+            <text x="282" y="230" font-family="IBM Plex Mono, monospace" font-size="11" font-weight="600" fill="var(--alarm)">held 0.55 s = 8 frames @ 15 fps</text>
+
+            <!-- time axis -->
+            <g font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.5">
+              <line x1="42"  y1="196" x2="42"  y2="202" stroke="currentColor" stroke-opacity="0.4"/><text x="42"  y="256" text-anchor="middle">0 s</text>
+              <line x1="227" y1="196" x2="227" y2="202" stroke="currentColor" stroke-opacity="0.4"/><text x="227" y="256" text-anchor="middle">2 s</text>
+              <line x1="411" y1="196" x2="411" y2="202" stroke="currentColor" stroke-opacity="0.4"/><text x="411" y="256" text-anchor="middle">4 s</text>
+              <line x1="596" y1="196" x2="596" y2="202" stroke="currentColor" stroke-opacity="0.4"/><text x="596" y="256" text-anchor="middle">6 s</text>
+            </g>
+          </svg>
+          <figcaption>One accumulator, one threshold, one hold. The identical logic exists twice on purpose &mdash; C++ on the device, Python on the bench &mdash; so a threshold tuned in the dashboard transfers unchanged.</figcaption>
+        </figure>
+
+        <ul class="points">
+          <li>
+            <span class="k">01</span>
+            <div>
+              <h3>Fuse, weighted</h3>
+              <p>risk = 0.55&nbsp;PERCLOS + 0.20&nbsp;blink + 0.15&nbsp;yawn + 0.10&nbsp;nod. The three minor cues corroborate; none of them can raise an alarm alone.</p>
+            </div>
+          </li>
+          <li>
+            <span class="k">02</span>
+            <div>
+              <h3>Hold, then fire</h3>
+              <p>Risk must stay above 0.55 for 0.55&nbsp;s. A single noisy frame decrements the streak instead of resetting it, so one dropout inside a real closure cannot end it.</p>
+            </div>
+          </li>
+          <li>
+            <span class="k">03</span>
+            <div>
+              <h3>Name the cause out loud</h3>
+              <p>&ldquo;Drowsy&rdquo;, &ldquo;Microsleep&rdquo;, &ldquo;Yawning&rdquo;, &ldquo;HeadNod&rdquo; &mdash; a named warning is actionable in a way a chime is not. Three announcements per episode, then quiet.</p>
+            </div>
+          </li>
+          <li>
+            <span class="k">04</span>
+            <div>
+              <h3>Wi-Fi is never load-bearing</h3>
+              <p>The alert path never touches the network. A dropped dashboard costs diagnostics, never safety.</p>
+            </div>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </article>
+</section>
+
+<!-- ========== 05 FLOW ========== -->
+<section class="frame" id="s5">
+  <article class="slide">
+    <div class="rail">
+      <div class="rail-num">05<span>/08</span></div>
+      <div class="rail-sect">Process flow</div>
+      <div class="rail-tick"></div>
+    </div>
+    <div class="body">
+      <p class="eyebrow">One safety path, two support paths</p>
+      <h2>Everything that matters happens on the board</h2>
+      <div class="hr"></div>
+
+      <figure style="flex:1; justify-content:center;">
+        <svg viewBox="0 0 1080 400" role="img" aria-label="Process flow: the camera captures a frame, the face detector finds a face every third frame with tracking in between, the eye model reads both eyes and geometry reads the mouth and head, cues are fused into a risk score, a temporal filter holds it, and the speaker announces the cause. A workstation supplies the trained model offline and the phone dashboard reads telemetry, neither being in the alert path.">
+          <defs>
+            <marker id="af" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="var(--signal)"/>
+            </marker>
+            <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
+            </marker>
+          </defs>
+
+          <!-- on-device band -->
+          <rect x="16" y="112" width="1048" height="128" fill="var(--signal)" fill-opacity="0.05" stroke="var(--signal)" stroke-opacity="0.35" stroke-width="1.5"/>
+          <text x="1050" y="134" text-anchor="end" font-family="IBM Plex Mono, monospace" font-size="12" font-weight="600" letter-spacing="2" fill="var(--signal)">ON THE ESP32&#8209;S3 &mdash; NO NETWORK &mdash; ~23 ms PER FRAME</text>
+
+          <!-- 6 stages -->
+          <g font-family="IBM Plex Sans Condensed, sans-serif">
+            <rect x="34"  y="150" width="140" height="70" rx="2" fill="var(--slide)" stroke="currentColor" stroke-opacity="0.45" stroke-width="1.5"/>
+            <text x="104" y="180" text-anchor="middle" font-size="17" font-weight="700" fill="currentColor">Capture</text>
+            <text x="104" y="200" text-anchor="middle" font-size="12" font-family="IBM Plex Mono, monospace" fill="currentColor" opacity="0.6">OV5640 · 240²</text>
+
+            <rect x="208" y="150" width="140" height="70" rx="2" fill="var(--slide)" stroke="currentColor" stroke-opacity="0.45" stroke-width="1.5"/>
+            <text x="278" y="174" text-anchor="middle" font-size="17" font-weight="700" fill="currentColor">Find face</text>
+            <text x="278" y="192" text-anchor="middle" font-size="12" font-family="IBM Plex Mono, monospace" fill="currentColor" opacity="0.6">every 3rd frame</text>
+            <text x="278" y="207" text-anchor="middle" font-size="12" font-family="IBM Plex Mono, monospace" fill="currentColor" opacity="0.6">track between</text>
+
+            <rect x="382" y="150" width="140" height="70" rx="2" fill="var(--slide)" stroke="currentColor" stroke-opacity="0.45" stroke-width="1.5"/>
+            <text x="452" y="174" text-anchor="middle" font-size="17" font-weight="700" fill="currentColor">Read cues</text>
+            <text x="452" y="192" text-anchor="middle" font-size="12" font-family="IBM Plex Mono, monospace" fill="currentColor" opacity="0.6">eye model + </text>
+            <text x="452" y="207" text-anchor="middle" font-size="12" font-family="IBM Plex Mono, monospace" fill="currentColor" opacity="0.6">landmark geometry</text>
+
+            <rect x="556" y="150" width="140" height="70" rx="2" fill="var(--slide)" stroke="currentColor" stroke-opacity="0.45" stroke-width="1.5"/>
+            <text x="626" y="174" text-anchor="middle" font-size="17" font-weight="700" fill="currentColor">Fuse risk</text>
+            <text x="626" y="192" text-anchor="middle" font-size="12" font-family="IBM Plex Mono, monospace" fill="currentColor" opacity="0.6">0.55/0.20/</text>
+            <text x="626" y="207" text-anchor="middle" font-size="12" font-family="IBM Plex Mono, monospace" fill="currentColor" opacity="0.6">0.15/0.10</text>
+
+            <rect x="730" y="150" width="140" height="70" rx="2" fill="var(--slide)" stroke="var(--alarm)" stroke-width="1.5"/>
+            <text x="800" y="174" text-anchor="middle" font-size="17" font-weight="700" fill="currentColor">Hold 0.55 s</text>
+            <text x="800" y="192" text-anchor="middle" font-size="12" font-family="IBM Plex Mono, monospace" fill="currentColor" opacity="0.6">temporal filter</text>
+            <text x="800" y="207" text-anchor="middle" font-size="12" font-family="IBM Plex Mono, monospace" fill="currentColor" opacity="0.6">+ sneeze veto</text>
+
+            <rect x="904" y="150" width="142" height="70" rx="2" fill="var(--alarm)" fill-opacity="0.12" stroke="var(--alarm)" stroke-width="2"/>
+            <text x="975" y="174" text-anchor="middle" font-size="17" font-weight="700" fill="var(--alarm)">Speak</text>
+            <text x="975" y="192" text-anchor="middle" font-size="12" font-family="IBM Plex Mono, monospace" fill="var(--alarm)">&ldquo;Microsleep&rdquo;</text>
+            <text x="975" y="207" text-anchor="middle" font-size="12" font-family="IBM Plex Mono, monospace" fill="currentColor" opacity="0.6">I2S · 3 W speaker</text>
+          </g>
+
+          <!-- arrows between stages, labelled -->
+          <g stroke="var(--signal)" stroke-width="2" marker-end="url(#af)">
+            <line x1="176" y1="185" x2="204" y2="185"/>
+            <line x1="350" y1="185" x2="378" y2="185"/>
+            <line x1="524" y1="185" x2="552" y2="185"/>
+            <line x1="698" y1="185" x2="726" y2="185"/>
+            <line x1="872" y1="185" x2="900" y2="185"/>
+          </g>
+          <g font-family="IBM Plex Mono, monospace" font-size="9" fill="var(--signal)" text-anchor="middle">
+            <text x="190" y="174">frame</text>
+            <text x="364" y="174">5 pts</text>
+            <text x="538" y="174">cues</text>
+            <text x="712" y="174">risk</text>
+            <text x="886" y="174">fire</text>
+          </g>
+
+          <!-- support path above: workstation -> device (offline) -->
+          <g font-family="IBM Plex Sans Condensed, sans-serif">
+            <rect x="366" y="26" width="232" height="58" rx="2" fill="none" stroke="currentColor" stroke-opacity="0.35" stroke-width="1.5" stroke-dasharray="5 4"/>
+            <text x="482" y="50" text-anchor="middle" font-size="16" font-weight="600" fill="currentColor">Workstation · offline</text>
+            <text x="482" y="70" text-anchor="middle" font-size="12" font-family="IBM Plex Mono, monospace" fill="currentColor" opacity="0.6">train &amp; export the eye model</text>
+          </g>
+          <line x1="452" y1="86" x2="452" y2="146" stroke="currentColor" stroke-opacity="0.5" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#ag)"/>
+          <text x="444" y="118" text-anchor="end" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.6">flashed once · 46 KB</text>
+
+          <!-- support path below: device -> dashboard -->
+          <g font-family="IBM Plex Sans Condensed, sans-serif">
+            <rect x="556" y="300" width="240" height="58" rx="2" fill="none" stroke="currentColor" stroke-opacity="0.35" stroke-width="1.5" stroke-dasharray="5 4"/>
+            <text x="676" y="324" text-anchor="middle" font-size="16" font-weight="600" fill="currentColor">Phone dashboard · SoftAP</text>
+            <text x="676" y="344" text-anchor="middle" font-size="12" font-family="IBM Plex Mono, monospace" fill="currentColor" opacity="0.6">preview · risk · logs · self-test</text>
+          </g>
+          <line x1="626" y1="226" x2="626" y2="296" stroke="currentColor" stroke-opacity="0.5" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#ag)"/>
+          <text x="636" y="264" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.6">copy of one frame, dropped if nobody is watching</text>
+
+          <text x="16" y="392" font-family="IBM Plex Mono, monospace" font-size="11" fill="currentColor" opacity="0.55">Solid = the safety path. Dashed = support only; cut either one and the warning still fires.</text>
+        </svg>
+        <figcaption>Capture &#8594; find &#8594; read &#8594; fuse &#8594; hold &#8594; speak. Six stages inside a 23&nbsp;ms budget, and nothing in that line needs the internet.</figcaption>
+      </figure>
+    </div>
+  </article>
+</section>
+
+<!-- ========== 06 EQUIPMENT ========== -->
+<section class="frame" id="s6">
+  <article class="slide">
+    <div class="rail">
+      <div class="rail-num">06<span>/08</span></div>
+      <div class="rail-sect">Equipment</div>
+      <div class="rail-tick"></div>
+    </div>
+    <div class="body">
+      <p class="eyebrow">Bill of materials &mdash; all bought locally</p>
+      <h2>Nine parts, one breadboard, no display</h2>
+      <div class="hr"></div>
+
+      <div class="kit">
+        <div class="kit-item">
+          <svg viewBox="0 0 80 56" role="img" aria-label="ESP32-S3 development board with an on-board camera module">
+            <rect x="4" y="6" width="72" height="44" rx="2" fill="currentColor" fill-opacity="0.82"/>
+            <rect x="16" y="12" width="34" height="20" rx="1" fill="var(--slide)" fill-opacity="0.85"/>
+            <rect x="52" y="14" width="20" height="20" rx="6" fill="var(--signal)"/>
+            <circle cx="62" cy="24" r="6" fill="currentColor" fill-opacity="0.9"/>
+            <rect x="18" y="38" width="14" height="7" rx="1.5" fill="var(--slide)" fill-opacity="0.7"/>
+            <rect x="36" y="38" width="14" height="7" rx="1.5" fill="var(--slide)" fill-opacity="0.7"/>
+            <g fill="var(--slide)" fill-opacity="0.55">
+              <rect x="7" y="10" width="3" height="3"/><rect x="7" y="17" width="3" height="3"/><rect x="7" y="24" width="3" height="3"/><rect x="7" y="31" width="3" height="3"/><rect x="7" y="38" width="3" height="3"/>
+            </g>
+          </svg>
+          <div>
+            <p class="kit-name">ESP32&#8209;S3&#8209;WROOM&#8209;1 + OV5640</p>
+            <p class="kit-spec">N16R8 · 8 MB PSRAM</p>
+            <p class="kit-role">Camera, on-device inference and Wi-Fi in one board. <span class="kit-cost">$7.50</span></p>
+          </div>
+        </div>
+
+        <div class="kit-item">
+          <svg viewBox="0 0 80 56" role="img" aria-label="MAX98357A I2S amplifier breakout board">
+            <rect x="8" y="12" width="64" height="32" rx="2" fill="#a8299a"/>
+            <rect x="42" y="18" width="20" height="12" rx="1" fill="currentColor" fill-opacity="0.85"/>
+            <rect x="14" y="24" width="20" height="12" rx="1" fill="#2f8f4e"/>
+            <g fill="#e0c14a">
+              <rect x="12" y="8" width="3" height="4"/><rect x="24" y="8" width="3" height="4"/><rect x="36" y="8" width="3" height="4"/><rect x="48" y="8" width="3" height="4"/><rect x="60" y="8" width="3" height="4"/>
+            </g>
+          </svg>
+          <div>
+            <p class="kit-name">MAX98357A amplifier</p>
+            <p class="kit-spec">I2S · class D · filterless</p>
+            <p class="kit-role">Turns the spoken clip into something audible. <span class="kit-cost">$2.00</span></p>
+          </div>
+        </div>
+
+        <div class="kit-item">
+          <svg viewBox="0 0 80 56" role="img" aria-label="Four ohm three watt loudspeaker">
+            <circle cx="40" cy="28" r="24" fill="currentColor" fill-opacity="0.86"/>
+            <circle cx="40" cy="28" r="15" fill="var(--signal)" fill-opacity="0.35"/>
+            <circle cx="40" cy="28" r="7" fill="currentColor" fill-opacity="0.55"/>
+          </svg>
+          <div>
+            <p class="kit-name">Speaker</p>
+            <p class="kit-spec">4 &Omega; / 3 W · 40 &times; 22 mm</p>
+            <p class="kit-role">The only thing the driver actually perceives. <span class="kit-cost">$0.75</span></p>
+          </div>
+        </div>
+
+        <div class="kit-item">
+          <svg viewBox="0 0 80 56" role="img" aria-label="830 point solderless breadboard">
+            <rect x="4" y="8" width="72" height="40" rx="2" fill="currentColor" fill-opacity="0.09" stroke="currentColor" stroke-opacity="0.4"/>
+            <line x1="8" y1="13" x2="72" y2="13" stroke="var(--alarm)" stroke-width="1.4"/>
+            <line x1="8" y1="43" x2="72" y2="43" stroke="var(--signal)" stroke-width="1.4"/>
+            <g fill="currentColor" fill-opacity="0.45">
+              <rect x="10" y="20" width="2" height="2"/><rect x="18" y="20" width="2" height="2"/><rect x="26" y="20" width="2" height="2"/><rect x="34" y="20" width="2" height="2"/><rect x="42" y="20" width="2" height="2"/><rect x="50" y="20" width="2" height="2"/><rect x="58" y="20" width="2" height="2"/><rect x="66" y="20" width="2" height="2"/>
+              <rect x="10" y="34" width="2" height="2"/><rect x="18" y="34" width="2" height="2"/><rect x="26" y="34" width="2" height="2"/><rect x="34" y="34" width="2" height="2"/><rect x="42" y="34" width="2" height="2"/><rect x="50" y="34" width="2" height="2"/><rect x="58" y="34" width="2" height="2"/><rect x="66" y="34" width="2" height="2"/>
+            </g>
+            <line x1="6" y1="28" x2="74" y2="28" stroke="currentColor" stroke-opacity="0.25" stroke-width="3"/>
+          </svg>
+          <div>
+            <p class="kit-name">Breadboard MB102</p>
+            <p class="kit-spec">830 point · solderless</p>
+            <p class="kit-role">Keeps the wiring repeatable between test sessions. <span class="kit-cost">$1.50</span></p>
+          </div>
+        </div>
+
+        <div class="kit-item">
+          <svg viewBox="0 0 80 56" role="img" aria-label="Dupont jumper wires">
+            <path d="M8 16 q24 -8 32 8 t32 8" fill="none" stroke="var(--alarm)" stroke-width="3"/>
+            <path d="M8 28 q24 -8 32 8 t32 8" fill="none" stroke="#e08c1e" stroke-width="3"/>
+            <path d="M8 40 q24 -8 32 8 t32 8" fill="none" stroke="var(--signal)" stroke-width="3"/>
+            <rect x="4" y="13" width="6" height="6" rx="1" fill="currentColor" fill-opacity="0.7"/>
+            <rect x="4" y="25" width="6" height="6" rx="1" fill="currentColor" fill-opacity="0.7"/>
+            <rect x="4" y="37" width="6" height="6" rx="1" fill="currentColor" fill-opacity="0.7"/>
+          </svg>
+          <div>
+            <p class="kit-name">Jumper wires &amp; headers</p>
+            <p class="kit-spec">Dupont · 1 set</p>
+            <p class="kit-role">Seven connections: power, ground and three I2S lines. <span class="kit-cost">$2.00</span></p>
+          </div>
+        </div>
+
+        <div class="kit-item">
+          <svg viewBox="0 0 80 56" role="img" aria-label="USB-C data cable">
+            <rect x="6" y="22" width="18" height="12" rx="3" fill="currentColor" fill-opacity="0.75"/>
+            <rect x="56" y="22" width="18" height="12" rx="3" fill="currentColor" fill-opacity="0.75"/>
+            <path d="M24 28 q16 -14 32 0" fill="none" stroke="currentColor" stroke-opacity="0.5" stroke-width="3"/>
+            <text x="40" y="50" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="9" fill="var(--signal)">DATA</text>
+          </svg>
+          <div>
+            <p class="kit-name">USB&#8209;C cable</p>
+            <p class="kit-spec">data-capable · 5 V</p>
+            <p class="kit-role">Flashing and bench power. Charge-only cables will not do. <span class="kit-cost">$1.50</span></p>
+          </div>
+        </div>
+
+        <div class="kit-item">
+          <svg viewBox="0 0 80 56" role="img" aria-label="Regulated 5 volt USB power adapter">
+            <rect x="18" y="10" width="44" height="34" rx="4" fill="currentColor" fill-opacity="0.78"/>
+            <rect x="30" y="34" width="20" height="7" rx="2" fill="var(--slide)" fill-opacity="0.8"/>
+            <rect x="28" y="4" width="5" height="8" fill="currentColor" fill-opacity="0.5"/>
+            <rect x="47" y="4" width="5" height="8" fill="currentColor" fill-opacity="0.5"/>
+            <text x="40" y="27" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" font-weight="600" fill="var(--slide)">5V</text>
+          </svg>
+          <div>
+            <p class="kit-name">5 V USB supply</p>
+            <p class="kit-spec">regulated adapter</p>
+            <p class="kit-role">Prototype power; an automotive supply comes at pilot stage. <span class="kit-cost">$2.00</span></p>
+          </div>
+        </div>
+
+        <div class="kit-item">
+          <svg viewBox="0 0 80 56" role="img" aria-label="Inline USB power meter">
+            <rect x="14" y="12" width="52" height="32" rx="3" fill="currentColor" fill-opacity="0.78"/>
+            <rect x="21" y="18" width="38" height="16" rx="1.5" fill="var(--signal)" fill-opacity="0.9"/>
+            <text x="40" y="30" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" font-weight="600" fill="#04121f">0.42A</text>
+            <rect x="6" y="24" width="8" height="8" rx="2" fill="currentColor" fill-opacity="0.5"/>
+            <rect x="66" y="24" width="8" height="8" rx="2" fill="currentColor" fill-opacity="0.5"/>
+          </svg>
+          <div>
+            <p class="kit-name">Inline USB power meter</p>
+            <p class="kit-spec">measurement instrument</p>
+            <p class="kit-role">Turns &ldquo;power draw&rdquo; from a claim into a number. <span class="kit-cost">$5.00</span></p>
+          </div>
+        </div>
+
+        <div class="kit-item">
+          <svg viewBox="0 0 80 56" role="img" aria-label="A camera mount bracket holding the board at a fixed distance and angle">
+<rect x="14" y="44" width="34" height="6" rx="1.5" fill="currentColor" fill-opacity="0.45"/>
+            <rect x="27" y="16" width="7" height="30" rx="2" fill="currentColor" fill-opacity="0.45"/>
+            <rect x="34" y="12" width="26" height="20" rx="2.5" fill="var(--signal)" fill-opacity="0.28" stroke="var(--signal)" stroke-width="1.5"/>
+            <circle cx="47" cy="22" r="4.5" fill="var(--signal)"/>
+          </svg>
+          <div>
+            <p class="kit-name">Enclosure &amp; mount</p>
+            <p class="kit-spec">prototype materials</p>
+            <p class="kit-role">Same camera distance and angle every session, or the data is not comparable. <span class="kit-cost">$5.00</span></p>
+          </div>
+        </div>
+      </div>
+
+      <div class="kit-foot">
+        <p>Laptop and phone are excluded &mdash; the team uses existing devices. <b>No display, by decision:</b> a 1.8&#8221; panel cost five GPIOs, 150&nbsp;KB of PSRAM and a per-frame blit to show 8-pixel text to one person. The phone browser shows strictly more, and makes the same numbers scriptable for the acceptance tests.</p>
+        <div class="kit-total">$27.25<small>Bill of materials</small></div>
+      </div>
+    </div>
+  </article>
+</section>
+
+<!-- ========== 07 TEMPORARY RESULT ========== -->
+<section class="frame" id="s7">
+  <article class="slide">
+    <div class="rail">
+      <div class="rail-num">07<span>/08</span></div>
+      <div class="rail-sect">Where we are</div>
+      <div class="rail-tick"></div>
+    </div>
+    <div class="body">
+      <p class="eyebrow">Measured on the bench, not estimated</p>
+      <h2>The board runs. The model does not see well enough yet.</h2>
+      <div class="hr"></div>
+      <div class="cols c-46-54">
+        <figure>
+          <div class="photo" id="photo">
+            <img src="images/prototype-build.jpg" alt="The assembled Drowsy Guard prototype: an ESP32-S3-WROOM board with its OV5640 camera on a mini breadboard, wired to a MAX98357A amplifier and a 3 watt speaker.">
+            <svg viewBox="0 0 470 300" role="img" aria-label="The assembled prototype: the ESP32-S3 board with its camera seated on a mini breadboard, five wires crossing to a MAX98357A amplifier on a second breadboard, and the speaker wired to the amplifier's screw terminal.">
+              <!-- left breadboard -->
+              <rect x="12" y="42" width="132" height="218" rx="3" fill="var(--signal)" fill-opacity="0.16" stroke="var(--signal)" stroke-opacity="0.45"/>
+              <g fill="var(--signal)" fill-opacity="0.35">
+                <rect x="18" y="52" width="3" height="3"/><rect x="18" y="72" width="3" height="3"/><rect x="18" y="92" width="3" height="3"/><rect x="18" y="112" width="3" height="3"/><rect x="18" y="132" width="3" height="3"/><rect x="18" y="152" width="3" height="3"/><rect x="18" y="172" width="3" height="3"/><rect x="18" y="192" width="3" height="3"/><rect x="18" y="212" width="3" height="3"/><rect x="18" y="232" width="3" height="3"/>
+                <rect x="135" y="52" width="3" height="3"/><rect x="135" y="72" width="3" height="3"/><rect x="135" y="92" width="3" height="3"/><rect x="135" y="112" width="3" height="3"/><rect x="135" y="132" width="3" height="3"/><rect x="135" y="152" width="3" height="3"/><rect x="135" y="172" width="3" height="3"/><rect x="135" y="192" width="3" height="3"/><rect x="135" y="212" width="3" height="3"/><rect x="135" y="232" width="3" height="3"/>
+              </g>
+
+              <!-- controller board seated across it -->
+              <rect x="28" y="26" width="100" height="248" rx="3" fill="currentColor" fill-opacity="0.88"/>
+              <!-- camera module + folded ribbon -->
+              <rect x="52" y="32" width="52" height="50" rx="8" fill="var(--slide)" fill-opacity="0.9"/>
+              <circle cx="78" cy="57" r="16" fill="#0c1219"/>
+              <circle cx="78" cy="57" r="6" fill="var(--signal)" fill-opacity="0.7"/>
+              <path d="M78 82 q-6 24 4 40" fill="none" stroke="#e08c1e" stroke-width="9" stroke-linecap="round"/>
+              <rect x="44" y="126" width="68" height="14" rx="2" fill="var(--slide)" fill-opacity="0.8"/>
+              <text x="78" y="160" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" fill="var(--slide)" fill-opacity="0.85">ESP32-S3</text>
+              <!-- two USB-C ports -->
+              <rect x="44" y="252" width="28" height="15" rx="3" fill="var(--slide)" fill-opacity="0.85"/>
+              <rect x="86" y="252" width="28" height="15" rx="3" fill="var(--slide)" fill-opacity="0.85"/>
+              <!-- header pins -->
+              <g fill="var(--slide)" fill-opacity="0.45">
+                <rect x="31" y="176" width="4" height="4"/><rect x="31" y="190" width="4" height="4"/><rect x="31" y="204" width="4" height="4"/><rect x="31" y="218" width="4" height="4"/>
+                <rect x="121" y="176" width="4" height="4"/><rect x="121" y="190" width="4" height="4"/><rect x="121" y="204" width="4" height="4"/><rect x="121" y="218" width="4" height="4"/>
+              </g>
+
+              <!-- right breadboard -->
+              <rect x="176" y="74" width="118" height="152" rx="3" fill="var(--alarm)" fill-opacity="0.14" stroke="var(--alarm)" stroke-opacity="0.4"/>
+              <g fill="var(--alarm)" fill-opacity="0.3">
+                <rect x="182" y="150" width="3" height="3"/><rect x="200" y="150" width="3" height="3"/><rect x="218" y="150" width="3" height="3"/><rect x="236" y="150" width="3" height="3"/><rect x="254" y="150" width="3" height="3"/><rect x="272" y="150" width="3" height="3"/>
+                <rect x="182" y="176" width="3" height="3"/><rect x="200" y="176" width="3" height="3"/><rect x="218" y="176" width="3" height="3"/><rect x="236" y="176" width="3" height="3"/><rect x="254" y="176" width="3" height="3"/><rect x="272" y="176" width="3" height="3"/>
+                <rect x="182" y="202" width="3" height="3"/><rect x="200" y="202" width="3" height="3"/><rect x="218" y="202" width="3" height="3"/><rect x="236" y="202" width="3" height="3"/><rect x="254" y="202" width="3" height="3"/><rect x="272" y="202" width="3" height="3"/>
+              </g>
+              <!-- amplifier + screw terminal -->
+              <rect x="184" y="88" width="70" height="36" rx="2" fill="#a8299a"/>
+              <text x="219" y="110" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="9" fill="#fff">MAX98357A</text>
+              <rect x="256" y="94" width="26" height="20" rx="2" fill="#2f8f4e"/>
+
+              <!-- three I2S lines + power pair -->
+              <path d="M126 176 q28 -34 56 -60" fill="none" stroke="#e08c1e" stroke-width="3"/>
+              <path d="M126 190 q30 -32 58 -56" fill="none" stroke="#e08c1e" stroke-width="3"/>
+              <path d="M126 204 q32 -30 60 -52" fill="none" stroke="#e08c1e" stroke-width="3"/>
+              <path d="M126 218 q34 8 62 14" fill="none" stroke="var(--alarm)" stroke-width="3"/>
+              <path d="M126 232 q34 14 60 22" fill="none" stroke="currentColor" stroke-opacity="0.6" stroke-width="3"/>
+
+              <!-- speaker, wired off the terminal -->
+              <path d="M282 100 q22 6 30 26" fill="none" stroke="var(--alarm)" stroke-width="2.5"/>
+              <path d="M282 110 q20 12 26 26" fill="none" stroke="currentColor" stroke-opacity="0.6" stroke-width="2.5"/>
+              <circle cx="382" cy="150" r="62" fill="#0d131a"/>
+              <circle cx="382" cy="150" r="43" fill="var(--signal)" fill-opacity="0.28"/>
+              <circle cx="382" cy="150" r="20" fill="#e8eef4" fill-opacity="0.88"/>
+
+              <!-- labels -->
+              <g font-family="IBM Plex Mono, monospace" font-size="10">
+                <text x="12" y="24" fill="var(--signal)" font-weight="600">OV5640 + ESP32&#8209;S3</text>
+                <text x="176" y="66" fill="#a8299a" font-weight="600">I2S AMPLIFIER</text>
+                <text x="382" y="230" text-anchor="middle" fill="currentColor" opacity="0.7">4 &Omega; / 3 W</text>
+                <text x="204" y="252" fill="currentColor" opacity="0.6">3 &times; I2S</text>
+                <text x="204" y="266" fill="currentColor" opacity="0.6">5 V + GND</text>
+                <text x="12" y="288" fill="currentColor" opacity="0.45">7 connections · no display · USB powered</text>
+              </g>
+            </svg>
+          </div>
+          <figcaption>The bench build, 26&nbsp;Aug&nbsp;2026. Seven wires, no display, powered from USB &mdash; and the sensor turned out to be an <b>OV5640</b>, not the OV3660 the listing advertised.</figcaption>
+        </figure>
+
+        <div style="display:flex; flex-direction:column; min-width:0;">
+          <div class="res">
+            <div class="res-row">
+              <span class="res-what">Frame rate, idle / tracking a face<em>target &#8805; 10 fps</em></span>
+              <span class="res-val hit">19.7 / 10.7&ndash;13.6 fps</span>
+              <span class="pill done">met</span>
+            </div>
+            <div class="res-row">
+              <span class="res-what">Face detection on a real person<em>20 attempts, confidence 1.00</em></span>
+              <span class="res-val hit">20 / 20</span>
+              <span class="pill done">met</span>
+            </div>
+            <div class="res-row">
+              <span class="res-what">Cost per stage<em>39 ms detect · 15.7 ms per eye</em></span>
+              <span class="res-val hit">within budget</span>
+              <span class="pill done">met</span>
+            </div>
+            <div class="res-row">
+              <span class="res-what">PERCLOS moving on live video<em>0.00&ndash;0.22 at rest, eye model bound</em></span>
+              <span class="res-val hit">live</span>
+              <span class="pill done">met</span>
+            </div>
+            <div class="res-row">
+              <span class="res-what">Eye-state accuracy in visible light<em>base model is infrared-trained; 95.8% in its own domain</em></span>
+              <span class="res-val gap">AUC 0.62</span>
+              <span class="pill open">the gap</span>
+            </div>
+            <div class="res-row">
+              <span class="res-what">Alert end to end, and cues against a real yawn<em>logic and signs now correct; nobody has yawned at it yet</em></span>
+              <span class="res-val gap">not yet run</span>
+              <span class="pill open">next</span>
+            </div>
+          </div>
+          <p class="note"><b>What running it on hardware taught us:</b> the sensor is mounted upside down, so every frame arrives mirrored. That reversed the eye pair and flipped the sign of every vertical measurement &mdash; jaw drop read &minus;1.2 instead of +1.2 and <em>fell</em> as the mouth opened, so the yawn cue had never once been able to fire. No amount of desk testing would have found it.</p>
+        </div>
+      </div>
+    </div>
+  </article>
+</section>
+
+<!-- ========== 08 CONCLUSION ========== -->
+<section class="frame" id="s8">
+  <article class="slide">
+    <div class="rail">
+      <div class="rail-num">08<span>/08</span></div>
+      <div class="rail-sect">Conclusion</div>
+      <div class="rail-tick"></div>
+    </div>
+    <div class="body">
+      <p class="eyebrow">Where the remaining effort goes</p>
+      <h2>The hardware is done arguing.<br>The next win is in the model.</h2>
+      <div class="hr"></div>
+
+      <div class="thesis">
+        <p>Our focus from here is <em>training the lightweight on-device model</em> &mdash; 11,250 parameters, 46&nbsp;KB &mdash; on visible-light eye-state data, split by subject, so it reads eyelids instead of faces.</p>
+      </div>
+
+      <div class="cols c-50-50" style="gap:3cqw;">
+        <ul class="points">
+          <li>
+            <span class="k">&rarr;</span>
+            <div>
+              <h3>Fine-tune in the target domain</h3>
+              <p>Infrared-trained, it does not transfer to 45&nbsp;px visible-light eye crops: <b>AUC 0.62</b>. Grayscale, CLAHE, inversion and four patch scales did not recover it. The fix is labelled data in our own domain.</p>
+            </div>
+          </li>
+          <li>
+            <span class="k">&rarr;</span>
+            <div>
+              <h3>Judge it per driver, never on average</h3>
+              <p>Subject-independent splits only. The 0.81-to-0.57 collapse is the standard any replacement has to clear.</p>
+            </div>
+          </li>
+          <li>
+            <span class="k">&rarr;</span>
+            <div>
+              <h3>Then tune the thresholds on real video</h3>
+              <p>Every period on slide 3 is literature-informed and tested on synthetic traces. Labelled yawn and nod footage turns them from defaults into measurements.</p>
+            </div>
+          </li>
+        </ul>
+
+        <div style="display:flex; flex-direction:column; gap:1.3cqw; min-width:0;">
+          <dl class="kpi" style="grid-template-columns:1fr 1fr;">
+            <div class="kpi-item"><dt>Detection quality</dt><dd>F1 &#8805; 0.80<small>and event recall &#8805; 0.85</small></dd></div>
+            <div class="kpi-item"><dt>False warnings</dt><dd>&#8804; 1 / hour<small>per awake control hour</small></dd></div>
+            <div class="kpi-item"><dt>Response</dt><dd>&#8804; 2 s<small>after sustained risk</small></dd></div>
+            <div class="kpi-item"><dt>Reliability</dt><dd>4 h<small>continuous, no crash</small></dd></div>
+          </dl>
+          <p class="note">Why not a large model: the most accurate public drowsiness networks are 70&ndash;343&nbsp;MB at 224&times;224 and cannot run on an ESP32&#8209;S3 at any frame rate. The eye-closure route is the one that fits. <b>Research prototype only &mdash; not a certified safety device.</b></p>
+        </div>
+      </div>
+    </div>
+  </article>
+</section>
+
+</div>
+
+<script>
+(function () {
+  var deck = document.querySelector('.deck');
+  var frames = Array.prototype.slice.call(document.querySelectorAll('.frame'));
+  var dots = Array.prototype.slice.call(document.querySelectorAll('.nav a'));
+
+  function mark(id) {
+    dots.forEach(function (d) {
+      d.setAttribute('aria-current', d.getAttribute('data-dot') === id ? 'true' : 'false');
+    });
+  }
+  mark('s1');
+
+  if ('IntersectionObserver' in window) {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) { if (e.isIntersecting) { mark(e.target.id); } });
+    }, { root: deck, threshold: 0.55 });
+    frames.forEach(function (f) { io.observe(f); });
+  }
+
+  function current() {
+    var top = deck.scrollTop, best = 0, dist = Infinity;
+    frames.forEach(function (f, i) {
+      var d = Math.abs(f.offsetTop - top);
+      if (d < dist) { dist = d; best = i; }
+    });
+    return best;
+  }
+  function go(i) {
+    i = Math.max(0, Math.min(frames.length - 1, i));
+    frames[i].scrollIntoView({ block: 'start' });
+  }
+
+  document.addEventListener('keydown', function (e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) { return; }
+    var k = e.key;
+    if (k === 'ArrowRight' || k === 'ArrowDown' || k === 'PageDown' || k === ' ') { go(current() + 1); e.preventDefault(); }
+    else if (k === 'ArrowLeft' || k === 'ArrowUp' || k === 'PageUp') { go(current() - 1); e.preventDefault(); }
+    else if (k === 'Home') { go(0); e.preventDefault(); }
+    else if (k === 'End') { go(frames.length - 1); e.preventDefault(); }
+  });
+
+  // Show the real bench photo when it is present next to this file;
+  // fall back to the drawn build diagram when it is not.
+  var photo = document.getElementById('photo');
+  if (photo) {
+    var img = photo.querySelector('img');
+    img.addEventListener('load', function () { photo.classList.add('has-photo'); });
+  }
+})();
+</script>
