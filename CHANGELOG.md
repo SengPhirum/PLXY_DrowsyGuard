@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-08-26 - a six-slide deck for the proposal defence
+
+`scripts/presentation/` generates `docs/assets/documents/DrowsyGuard-Presentation.pptx`:
+concept, flow, equipment, current results, conclusion. Generated rather than
+hand-drawn, for the same reason the wiring poster is - a threshold that changes in
+`behavior.py` has to be changeable on a slide without reopening PowerPoint.
+
+Nothing on it is invented. The cue durations on the concept slide are the constants
+in `src/drowsyguard/behavior.py` (`MICROSLEEP_MIN_S` 1.0, `BLINK_MAX_S` 0.4,
+`YAWN_MIN_S` 1.2, nod 0.3-1.5 s) and the confirm step is `risk.py`'s trigger 0.72
+held for 8 frames. The results slide carries the measured numbers from the
+2026-08-23 hardware run - 19.7 fps idle, 10.7-13.6 fps tracking, 15.7 ms per eye,
+39 ms per detection, 20/20 detections at score 1.00, PERCLOS 0.00-0.22 at rest -
+next to what is still unexercised and to the AUC 0.62 the eye model scores in
+visible light. The conclusion slide is about that gap and nothing else.
+
+The results slide ships with **one deliberate empty panel**, a dashed frame where a
+live-preview screenshot goes. There is no such screenshot in the repository yet, and
+the tutorial's phone mock is a drawing - putting it on a results slide would be
+presenting an illustration as evidence.
+
+`gen_assets.js` draws the component art and cue icons as SVG and rasterises them
+with sharp, and crops the two photographs out of the existing cover illustration, so
+the deck adds one tracked binary (748 KB) rather than eighteen. `build/` and
+`node_modules/` are ignored.
+
 ## 2026-08-23 (night) - on hardware, and the mirror that inverted every cue
 
 Flashed and run. Three things came out of it that no amount of host testing would

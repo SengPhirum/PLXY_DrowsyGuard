@@ -1,0 +1,12 @@
+{
+  "name": "drowsyguard-presentation",
+  "private": true,
+  "description": "Generates docs/assets/documents/DrowsyGuard-Presentation.pptx from source.",
+  "scripts": {
+    "build": "node gen_assets.js && node build_deck.js"
+  },
+  "dependencies": {
+    "pptxgenjs": "^4.0.1",
+    "sharp": "^0.35.3"
+  }
+}
