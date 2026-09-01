@@ -17,11 +17,32 @@ drifting apart.
 | `train` | `train_model()`, `evaluate_checkpoint()` |
 | `export` | `export_onnx()`, `quantize_espdl()` |
 | `eyestate` | eye-state classification and PERCLOS — the drowsiness mechanism |
-| `facedetect` | YuNet detection plus short-term tracking |
-| `behavior` | multi-cue fusion: PERCLOS, long blinks, yawn, nod, sneeze suppression |
+| `facedetect` | YuNet detection, gated and tracked |
+| `facegate` | which detections to believe, and when a sequence of them is a driver |
+| `presence` | is anyone there, and — separately — can the device tell |
+| `behavior` | multi-cue fusion: PERCLOS, long blinks, yawn, nod, sneeze |
+| `alerts` | `AlertReason` and its channels, mirrored from `voice_alert.h` |
 | `risk` | `RiskFilter` — the Python mirror of the firmware filter |
 | `live` | `LiveEngine`: capture, inference and state for the dashboard |
 | `server` | the FastAPI app |
+
+## The mirrors
+
+Four modules exist because the device has the same logic and the dashboard is where
+it gets tuned. A threshold tuned against different logic is worse than no tuning at
+all: it produces confident numbers about the wrong system.
+
+| Python | Firmware | How the equality is enforced |
+| --- | --- | --- |
+| `risk` | `risk_filter.h` | `tests/test_firmware_parity.py` parses the C++ constructor signature |
+| `behavior` | `behavior.h` | the same test compares every constant, and fails if a new one is added to only one side |
+| `facegate` | `face_gate.{h,cpp}` | `tests/test_facegate_parity.py` compiles the C++ and drives **both** through the same 400-candidate sweep and eleven detection sequences, requiring the same verdict, reject reason and presence decision at every step |
+| `presence` | `presence.{h,cpp}` | `tests/test_presence.py` does the same with eight timelines, comparing state, timers and alert edges frame by frame |
+
+The last two are a stronger guarantee than matching constants, and deliberately so:
+these decisions are ordered (which check is reported first), stateful (how many
+detections have agreed, how many missed) and full of boundary cases. Every one of
+those is a place a transcription can drift without a single number changing.
 
 ## The three that carry the design
 
@@ -56,18 +77,85 @@ accompany it — yawning, long/slow blinks, head nodding — and fuses them into
 score, with every cue measured against a rolling **per-driver baseline** so face
 shape and camera angle cancel out instead of becoming signal.
 
-Sneezes are detected in order to be **suppressed**, not scored: a sneeze slams
-the eyes shut for about a second while the head jerks, which an eye-closure
-detector would otherwise record as a microsleep.
+Sneezes are detected in order to be **suppressed**, and now also announced. Those
+are two decisions, not one:
+
+- *Suppression* is the original purpose. A sneeze slams the eyes shut for about a
+  second, which an eye-closure detector would otherwise record as a microsleep, so
+  the drowsiness score is capped at its PERCLOS term for `SNEEZE_MAX_S`.
+- *Announcement* is separate and edge-triggered. The driver has just closed their
+  eyes for a second and heard nothing; without a word from the device, the system
+  appears to have missed it. `BehaviorState.sneeze_alert` is true on exactly one
+  frame per confirmed sneeze, rate-limited by `SNEEZE_ALERT_COOLDOWN_S` so a fit of
+  sneezing is one announcement. `sneeze_count` and `sneeze_alerts` are reported
+  separately for that reason.
+
+A sneeze is separated from a yawn by *when* the mouth opened relative to the eyes
+closing (`SNEEZE_MOUTH_LEAD_S`), not by how wide. The obvious alternative — require
+the opening index to rise *during* the closure — was tried and is wrong: `EyeGate`'s
+median-of-3 delays the closure decision by two frames, so a mouth that opened
+simultaneously with the eyes has already finished opening by the time the closure is
+declared, and the measured rise is zero. It would have rejected precisely the sneezes
+it was meant to find.
+
+## `facegate` — what to believe
+
+`facedetect` used to take the highest-scoring box YuNet returned and believe it. That
+is fine when the only thing in frame is a face and wrong in every other case: a hand,
+a headrest, a phone or a patch of low-light noise all produce boxes, and one believed
+frame is enough to start feeding a rolling baseline and a PERCLOS window with
+measurements of something that is not a person.
+
+Two layers, and keeping them apart is the design:
+
+- `check()` is **static** — one candidate on its own. Confidence, box size and shape,
+  then the five landmarks. It is cheap, it is order-dependent (the first failure is
+  the one reported, by name), and it cannot see time.
+- `FaceTrack` is **temporal**. Consecutive detections must agree before a driver is
+  present; a candidate that has moved further than a head can move between detections
+  is refused; the last box is held briefly when the detector misses; and a new track
+  never inherits the old one's confirmation. That last property is what stops a track
+  sliding off the driver and onto a passenger.
+
+```python
+from drowsyguard.facegate import Box, FaceTrack, check
+
+why, geom = check(landmarks, Box(x, y, w, h, True), score, frame_w, frame_h)
+if why.value != 'ok':
+    print('refused:', why.value)     # e.g. 'box-not-head-shaped'
+```
+
+## `presence` — is anyone there
+
+The module that answers "no driver" without ever confusing it with "no camera". It
+takes a health argument alongside the presence boolean, debounces in both directions,
+and returns an **edge** — true on exactly the update that announces an absence — so
+the caller needs no de-duplication of its own.
+
+```python
+from drowsyguard.presence import PipelineHealth, PresenceMonitor
+
+mon = PresenceMonitor()
+r = mon.update(driver_present, PipelineHealth.OK, dt_s)
+if r.alert:
+    announce()          # exactly once per absence episode
+```
 
 ## `facedetect` — why YuNet
 
 OpenCV 5 removed `CascadeClassifier` and ships no bundled cascades, so Haar is
 not an option. The YuNet ONNX file is fetched once by `drowsyguard fetch-models`.
 
-Tracking is not bare per-frame detection: the box is EMA-smoothed and held for 15
-frames when detection drops, because detectors lose the face at exactly the
-moment of interest — eyes closing, head nodding.
+Tracking is not bare per-frame detection: every candidate goes through `facegate`,
+the accepted box is EMA-smoothed, and it is held for `FACE_HOLD_DETECTIONS` attempts
+when detection drops — because detectors lose the face at exactly the moment of
+interest, eyes closing and head nodding.
+
+The raw detector is injectable (`FaceTracker(detect_fn=...)`), which is what makes
+the gate testable: a hand for two seconds, an empty frame, a driver occluded for
+exactly the length of the hold, a passenger appearing mid-track, twelve frames of
+low-confidence detections. None of those can be produced reliably in front of a
+webcam, and a test that depends on producing them is a test that gets deleted.
 
 ## Scripts
 
@@ -82,7 +170,8 @@ moment of interest — eyes closing, head nodding.
 | `generate_wiring_poster.py` | the one-page wiring poster |
 | `diagram_kit.py`, `diagram_fonts.py`, `pinmap.py` | shared drawing helpers and the pin table the diagrams read |
 | `board_reset.py` | drive the board into download mode |
-| `make_voice_clips.py` | render the alert audio |
+| `make_voice_clips.py` | render the alert audio (six reasons × two languages) |
+| `make_manifest.py` | turn a firmware build into an ESP Web Tools manifest, merged image and offset record for the [browser installer](../getting-started/install-esp32.md) |
 
 Regenerate every figure with `./plxy.sh diagrams`;
 `tests/test_tutorial_diagrams.py` checks they stay in step with `pinmap.py`.

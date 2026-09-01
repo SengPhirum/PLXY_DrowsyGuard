@@ -70,6 +70,7 @@
   .pill.w-fps{min-width:72px}
   .pill.w-face{min-width:96px}
   .pill.w-sub{min-width:104px}
+  .pill.w-pres{min-width:118px}
   .pill.w-src{min-width:104px}
   .pill.w-luma{min-width:132px}
   .pill.w-state{min-width:104px}
@@ -188,6 +189,7 @@
       </div>
       <div class="tags">
         <span class="pill w-face" id="facePill">face &mdash;</span>
+        <span class="pill w-pres" id="presPill">driver &mdash;</span>
         <span class="pill w-sub" id="camPill">camera &mdash;</span>
         <span class="pill w-sub" id="modelPill">models &mdash;</span>
         <span class="pill w-sub" id="eyePill">eye model &mdash;</span>
@@ -232,7 +234,8 @@
         <div><span>long blinks / min</span><span id="rLong">&mdash;</span></div>
         <div><span>yawns / min</span><span id="rYawn">&mdash;</span></div>
         <div><span>nods / min</span><span id="rNod">&mdash;</span></div>
-        <div><span>sneezes suppressed</span><span id="rSneeze">&mdash;</span></div>
+        <div title="Sneezes the closure detector saw and reclassified, so they never reached the drowsiness alarm."><span>sneezes suppressed</span><span id="rSneeze">&mdash;</span></div>
+        <div title="Of those, how many were announced. One per sneeze, rate-limited so a fit of sneezing is one announcement."><span>sneezes announced</span><span id="rSneezeA">&mdash;</span></div>
         <div><span>head roll</span><span id="gRoll">&mdash;</span></div>
         <div><span>jaw drop</span><span id="gJaw">&mdash;</span></div>
         <div><span>mouth width</span><span id="gWidth">&mdash;</span></div>
@@ -263,6 +266,8 @@
         <button class="say" data-r="1">Microsleep</button>
         <button class="say" data-r="2">Yawning</button>
         <button class="say" data-r="3">Head nod</button>
+        <button class="say" data-r="4">Sneeze</button>
+        <button class="say" data-r="5">No driver</button>
       </div>
       <label class="ctl">
         <span class="lab">Stream rate <b id="fpsVal">12 fps</b></span>
@@ -320,6 +325,7 @@
         <div><span>internal heap</span><span id="heap">&mdash;</span></div>
         <div><span>psram free</span><span id="psram">&mdash;</span></div>
         <div><span>captures stored</span><span id="stored">&mdash;</span></div>
+        <div title="How long the seat has looked empty, and the threshold at which the device says so. Blank while the pipeline is faulty, because an absence it cannot verify is not an absence."><span>no driver for</span><span id="absentFor">&mdash;</span></div>
       </div>
     </div>
   </div>
@@ -623,7 +629,10 @@ function drawTrend(trigger) {
 // --- event log -------------------------------------------------------------
 const EVENT_BITS = [
   [1, 'blink', ''], [2, 'long blink', 'warn'], [4, 'MICROSLEEP', 'bad'],
-  [8, 'yawn', 'warn'], [16, 'head nod', 'warn'], [32, 'sneeze (suppressed)', ''],
+  [8, 'yawn', 'warn'], [16, 'head nod', 'warn'],
+  // Not a warning. It is logged because it explains a silence: a second-long eye
+  // closure went by and the drowsiness alarm deliberately did not fire.
+  [32, 'sneeze - drowsiness alarm suppressed', ''],
 ];
 function logLine(text, kind) {
   const li = document.createElement('li');
@@ -807,6 +816,26 @@ function render(s) {
                               : 'no driver',
           present ? (s.face.held ? 'warn' : 'ok') : 'info');
   setPill('camPill', s.camera ? 'camera ok' : 'camera FAILED', s.camera ? 'ok' : 'bad');
+  // Presence is its own pill because it answers a question the face pill cannot:
+  // the face pill says what the detector saw on this frame, this says what the
+  // device concluded about the cabin - and, when the two disagree, why.
+  if (s.presence) {
+    const ps = s.presence;
+    const faulty = ps.health && ps.health !== 'ok';
+    setPill('presPill',
+            faulty ? ps.health.replace('-', ' ')
+              : ps.state === 'no-driver' ? 'NO DRIVER'
+              : ps.state === 'absent' ? `empty ${ps.absent_s.toFixed(0)}s`
+              : ps.state === 'warmup' ? 'settling'
+              : 'driver present',
+            faulty ? 'bad'
+              : ps.state === 'no-driver' ? 'bad'
+              : ps.state === 'absent' ? 'warn'
+              : ps.state === 'warmup' ? 'info' : 'ok');
+    setText('absentFor', faulty ? '\u2014'
+              : ps.state === 'present' || ps.state === 'warmup' ? 'driver present'
+              : `${ps.absent_s.toFixed(1)} s / ${ps.alert_after_s.toFixed(0)} s`);
+  }
   setPill('modelPill', s.models ? 'face model ok' : 'no face model',
           s.models ? 'ok' : 'bad');
   setPill('eyePill', s.eye_model ? 'eye model ok' : 'eye model missing',
@@ -824,11 +853,18 @@ function render(s) {
                    : riskBand === 'warn' ? 'var(--warn)' : 'var(--ok)';
   if (bar.dataset.c !== riskColour) { bar.style.background = riskColour; bar.dataset.c = riskColour; }
   $('riskMark').style.left = pct(s.risk.trigger);
+  // "idle" is right for a seat nobody has sat in yet and wrong once the device has
+  // announced that nobody is driving - the first is a device waiting, the second is
+  // a device that has given up, and they must not read the same.
+  const noDriver = s.presence && s.presence.state === 'no-driver'
+                   && s.presence.health === 'ok';
   setPill('statePill',
           !s.eye_model ? 'no eye model'
+            : noDriver ? 'NOT MONITORING'
             : !present ? 'idle'
             : riskBand === 'bad' ? 'DROWSY' : 'alert',
-          !s.eye_model ? 'warn' : !present ? 'info' : riskBand === 'bad' ? 'bad' : 'ok');
+          !s.eye_model ? 'warn' : noDriver ? 'bad' : !present ? 'info'
+            : riskBand === 'bad' ? 'bad' : 'ok');
   trend.push(r);
   while (trend.length > TREND_MAX) trend.shift();
   drawTrend(s.risk.trigger);
@@ -862,6 +898,7 @@ function render(s) {
   setText('rYawn', s.rates.yawn.toFixed(1));
   setText('rNod', s.rates.nod.toFixed(1));
   setText('rSneeze', s.rates.sneeze);
+  if (s.rates.sneeze_alerts !== undefined) setText('rSneezeA', s.rates.sneeze_alerts);
   // Geometry is quantised harder than it is measured: jaw drop and the pitch proxy
   // are ratios that wobble in the third decimal on every frame, and that last digit
   // is noise, not signal.
@@ -893,7 +930,10 @@ function render(s) {
   // copying Khmer files onto the card.
   if (s.alert.clips) {
     const c = s.alert.clips;
-    const srcs = [c.drowsy, c.microsleep, c.yawning, c.head_nod];
+    // Object.values rather than a hand-written list: the list was written when there
+    // were four reasons, and a fifth would have been silently omitted from the very
+    // readout whose job is to tell you a clip is missing.
+    const srcs = Object.values(c).filter(v => v !== undefined);
     const uniq = [...new Set(srcs)];
     const label = uniq.length === 1 ? uniq[0] : `mixed (${srcs.join('/')})`;
     setText('clipSrc', `${s.alert.lang} \u00b7 ${label}`);

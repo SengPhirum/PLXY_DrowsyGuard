@@ -363,12 +363,13 @@ static esp_err_t status_handler(httpd_req_t *req) {
     // reason about in a 5 Hz polling path than a tree of nodes, and the shape of
     // this object is fixed by the page that consumes it.
     // static, not on the stack: the control server has a 6 KB task stack and this
-    // object measures ~1.4 kB in practice and about 2.1 kB with every field at its
+    // object measures ~1.8 kB in practice and about 2.7 kB with every field at its
     // widest. Only one task ever serves port 80, so there is nothing to race with.
     // The truncation check below is not decoration - it fires as a 500 rather than
     // letting the page parse half an object, which is how it was caught last time
-    // this grew past its buffer.
-    static char buf[3584];
+    // this grew past its buffer. Sized with roughly 40% headroom over the widest
+    // case for exactly that reason: this object has now outgrown its buffer twice.
+    static char buf[4608];
     const int n = snprintf(buf, sizeof(buf),
         "{"
         "\"uptime_ms\":%llu,"
@@ -383,6 +384,8 @@ static esp_err_t status_handler(httpd_req_t *req) {
                   "\"score\":%.2f,\"roi\":%s,\"roi_w\":%d,\"rejected\":%d,"
                   "\"reject\":\"%s\"},"
         "\"driver\":%s,"
+        "\"presence\":{\"state\":\"%s\",\"health\":\"%s\",\"absent_s\":%.1f,"
+                      "\"alert_after_s\":%.1f,\"alerts\":%u},"
         "\"lm\":{\"valid\":%s,\"x\":[%.1f,%.1f,%.1f,%.1f,%.1f],"
                  "\"y\":[%.1f,%.1f,%.1f,%.1f,%.1f]},"
         "\"risk\":{\"score\":%.3f,\"trigger\":%.3f,\"streak\":%d,\"required\":%d},"
@@ -392,13 +395,16 @@ static esp_err_t status_handler(httpd_req_t *req) {
                   "\"baselines_ready\":%s,\"stale\":%s,\"events\":%u,"
                   "\"open_index\":%.3f,\"pitch_dev\":%.3f},"
         "\"rates\":{\"blink\":%.1f,\"long_blink\":%.1f,\"yawn\":%.1f,\"nod\":%.1f,"
-                   "\"sneeze\":%u},"
+                   "\"sneeze\":%u,\"sneeze_alerts\":%u},"
         "\"geom\":{\"valid\":%s,\"roll\":%.1f,\"jaw_drop\":%.3f,\"nose_frac\":%.3f,"
                   "\"nose_norm\":%.3f,\"mouth_ratio\":%.3f,\"eye_dist\":%.1f},"
         "\"alert\":{\"active\":%s,\"text\":\"%s\",\"reason\":\"%s\",\"count\":%lu,"
                    "\"muted\":%s,\"lang\":\"%s\",\"lang_stored\":%s,"
+                   "\"counts\":{\"drowsy\":%lu,\"microsleep\":%lu,\"yawning\":%lu,"
+                                "\"head_nod\":%lu,\"sneeze\":%lu,\"no_driver\":%lu},"
                    "\"clips\":{\"drowsy\":\"%s\",\"microsleep\":\"%s\","
-                              "\"yawning\":\"%s\",\"head_nod\":\"%s\"}},"
+                              "\"yawning\":\"%s\",\"head_nod\":\"%s\","
+                              "\"sneeze\":\"%s\",\"no_driver\":\"%s\"}},"
         "\"stream\":{\"viewers\":%d,\"quality\":%d,\"fps\":%d,\"port\":%d},"
         "\"net\":{\"ssid\":\"%s\",\"ip\":\"%s\",\"clients\":%d,\"sta\":%s,"
                  "\"sta_ip\":\"%s\",\"rssi\":%d},"
@@ -418,6 +424,10 @@ static esp_err_t status_handler(httpd_req_t *req) {
         st.detect_roi ? "true" : "false", st.detect_roi_w, st.detect_rejected,
         st.detect_reject != nullptr ? st.detect_reject : "ok",
         st.driver_present ? "true" : "false",
+        st.presence_state != nullptr ? st.presence_state : "warmup",
+        st.health != nullptr ? st.health : "ok",
+        json_float(st.presence_absent_s), json_float(st.presence_alert_after_s),
+        static_cast<unsigned>(st.presence_alerts),
         st.lm.valid ? "true" : "false",
         json_float(st.lm.x[0]), json_float(st.lm.x[1]), json_float(st.lm.x[2]),
         json_float(st.lm.x[3]), json_float(st.lm.x[4]),
@@ -436,6 +446,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
         json_float(st.state.open_index), json_float(st.state.pitch_dev),
         json_float(st.state.blink_rate), json_float(st.state.long_blink_rate), json_float(st.state.yawn_rate),
         json_float(st.state.nod_rate), static_cast<unsigned>(st.state.sneeze_count),
+        static_cast<unsigned>(st.state.sneeze_alerts),
         st.geom.valid ? "true" : "false", json_float(st.geom.roll), json_float(st.geom.jaw_drop),
         json_float(st.geom.nose_frac), json_float(st.geom.nose_norm),
         json_float(st.geom.mouth_ratio), json_float(st.geom.eye_dist),
@@ -446,10 +457,18 @@ static esp_err_t status_handler(httpd_req_t *req) {
         voice_alert_muted() ? "true" : "false",
         voice_alert_language_code(),
         voice_alert_language_persisted() ? "true" : "false",
+        static_cast<unsigned long>(voice_alert_count_for(AlertReason::Drowsy)),
+        static_cast<unsigned long>(voice_alert_count_for(AlertReason::Microsleep)),
+        static_cast<unsigned long>(voice_alert_count_for(AlertReason::Yawning)),
+        static_cast<unsigned long>(voice_alert_count_for(AlertReason::HeadNod)),
+        static_cast<unsigned long>(voice_alert_count_for(AlertReason::Sneeze)),
+        static_cast<unsigned long>(voice_alert_count_for(AlertReason::NoDriver)),
         voice_clip_source_name(voice_clip_probe(voice_alert_language_code(), "drowsy")),
         voice_clip_source_name(voice_clip_probe(voice_alert_language_code(), "microsleep")),
         voice_clip_source_name(voice_clip_probe(voice_alert_language_code(), "yawning")),
         voice_clip_source_name(voice_clip_probe(voice_alert_language_code(), "head_nod")),
+        voice_clip_source_name(voice_clip_probe(voice_alert_language_code(), "sneeze")),
+        voice_clip_source_name(voice_clip_probe(voice_alert_language_code(), "no_driver")),
         web_server_has_viewer() ? (s_viewers.load() > 0 ? s_viewers.load() : 1) : 0,
         s_quality.load(), s_stream_fps.load(), WEB_PORT_STREAM,
         net.ap_ssid, net.ap_ip, net.ap_clients,
@@ -550,7 +569,12 @@ static esp_err_t settings_handler(httpd_req_t *req) {
 static esp_err_t alert_test_handler(httpd_req_t *req) {
     int reason = 0;
     query_int(req, "reason", &reason);
-    const AlertReason r = static_cast<AlertReason>(clamp_int(reason, 0, 3));
+    // Clamped against the enum's own size rather than a literal. That literal was 3
+    // and stayed 3 when Sneeze and NoDriver were added, which would have made the
+    // two newest clips the only ones with no way to audition them - on a device
+    // whose only speaker test is this endpoint.
+    const AlertReason r =
+        static_cast<AlertReason>(clamp_int(reason, 0, ALERT_REASON_COUNT - 1));
     const bool played = voice_alert_test(r);
     // Report the source as well as the fact: with no display, "it spoke Khmer off
     // the card" and "it fell back to the embedded English" sound identical to

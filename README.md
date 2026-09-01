@@ -11,6 +11,11 @@ Low-cost, camera-based driver drowsiness detection research project designed for
 started, the hardware build, configuration, the device and dashboard APIs,
 operations, security and troubleshooting, with search.
 
+**Flash a board from your browser:**
+<https://sengphirum.github.io/PLXY_DrowsyGuard/getting-started/install-esp32/> —
+Chrome or Edge writes the firmware over USB in about a minute, with no toolchain,
+no Python and no ESP-IDF.
+
 **Research proposal:** [view the project overview](./docs/research-proposal.md)
 or [download the complete A4 Word document](./docs/assets/documents/Drowsy_Guard_Research_Project_Proposal.docx).
 
@@ -108,9 +113,50 @@ signal — the same mistake that sank the whole-face classifier.
 
 **Sneezes are detected but are not a drowsiness cue.** A sneeze slams the eyes shut for
 about a second while the head jerks, which an eye-closure detector would score as a
-microsleep. Detecting it (short closure + pronounced jaw movement) lets the system
-*suppress* that false alert instead of counting it. Distinguishing involuntary events
-from drowsiness is the point; classifying the sneeze itself is incidental.
+microsleep. Detecting it lets the system *suppress* that false alert instead of
+counting it. Distinguishing involuntary events from drowsiness is the point.
+
+What separates a sneeze from a yawn that also shuts the eyes is *when* the mouth opened
+relative to the eyes closing (`SNEEZE_MOUTH_LEAD_S`), not how wide — in a yawn the mouth
+has been open for a second by then. Getting that backwards is worse than missing a
+sneeze, because the suppression window would silence a genuine drowsiness cue.
+
+A confirmed sneeze also gets **one short announcement of its own**, on its own alert
+channel. The driver has just closed their eyes for a second and heard nothing; without a
+word from the device, a system that decided correctly is indistinguishable from one that
+missed it. Detection stays per-closure and the announcement is edge-triggered with a
+2.5 s cooldown, so a fit of sneezing is counted three times and announced once.
+
+### Nobody there, versus nothing working
+A drowsiness detector that sees nothing has two completely different reasons for it, and
+`src/drowsyguard/presence.py` (mirrored in `firmware/esp32s3/main/presence.cpp`) keeps
+them apart:
+
+- **Nobody is there.** After the tracking hold expires and the absence persists, the
+  device announces **"No driver detected"** exactly once per episode. A monitoring
+  system that has silently stopped monitoring is worse than none, because the driver
+  believes they are covered.
+- **The device is broken.** No frames, or no models. It cannot see a driver whether or
+  not one is present, so the alert is suppressed and the page reports a *fault* —
+  announcing an absence there would be a claim about the cabin drawn from a fact about
+  the firmware.
+
+Debounced in both directions: absence must persist before it is announced, and presence
+must persist before the alert re-arms — otherwise one flickering detection on an empty
+seat resets the countdown forever and the alert never fires, silently.
+
+### Which detections to believe
+Taking the highest-scoring box the detector returns is fine when the only thing in frame
+is a face and wrong in every other case: a hand, a headrest, a phone or low-light noise
+all produce boxes, and one believed frame is enough to feed a rolling baseline and a
+PERCLOS window with measurements of something that is not a person.
+
+`face_gate.cpp` / `facegate.py` gate every candidate on detector confidence, box size and
+aspect, and the five landmarks' geometry — then require consecutive detections to *agree*
+before calling a driver present, refuse a candidate that has moved further than a head
+can move between detections, and never let a new track inherit the old one's confirmation.
+Each rejection is reported by name (`score-too-low`, `box-not-head-shaped`,
+`nose-outside-eye-pair`, `moved-too-far`, …), because a bare count is not a diagnosis.
 
 Timing thresholds are literature-informed defaults in `behavior.py`, not tuned on
 labelled yawn/nod/sneeze video — this project has none yet, so treat the event
@@ -243,12 +289,15 @@ src/drowsyguard/     desktop toolkit: dataset prep, training, export, live dashb
 firmware/esp32s3/    ESP-IDF application for the target board
   main/board_*.h     the only files that hold pin assignments
 configs/             training configurations
-scripts/             one-off tooling (ESP-DL quantization, tutorial diagrams)
+scripts/             one-off tooling (ESP-DL quantization, diagrams, web-installer manifest)
 tests/               pytest suite, including firmware/Python parity checks
 docs/                the documentation site sources (mkdocs.yml at the root)
 docs/prompts/        the task briefs this repository has been worked against
-.github/workflows/   docs-only validation and GitHub Pages deployment
+.github/workflows/   docs validation and Pages deployment, plus the firmware release build
 ```
 
 ## Safety
-Research prototype only; not a certified automotive safety device.
+Research prototype only; not a certified automotive safety device. The event
+detectors use literature-informed thresholds that have not been tuned on labelled
+video, and the eye model is IR-trained with an AUC of 0.62 on visible light. See
+[Security and safety](./docs/security.md) for what each alert does and does not claim.

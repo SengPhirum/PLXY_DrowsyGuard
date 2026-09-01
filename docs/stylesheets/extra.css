@@ -808,3 +808,34 @@ body {
     box-shadow: none;
   }
 }
+
+/* --- browser installer (getting-started/install-esp32.md) ----------------- */
+/*
+ * The status line is the only thing that distinguishes "no build has been
+ * published" from "your browser cannot do this" from "ready", and a visitor who
+ * misreads the first as the second goes looking for the wrong problem. So it is
+ * coloured by kind rather than left as body text.
+ */
+.dg-status {
+  border-left: 3px solid var(--md-default-fg-color--lighter);
+  padding: 0.4rem 0.8rem;
+  margin: 0 0 1rem;
+  font-size: 0.8rem;
+  color: var(--md-default-fg-color--light);
+}
+.dg-status.dg-ok {
+  border-left-color: var(--md-typeset-a-color);
+  color: var(--md-default-fg-color);
+}
+.dg-status.dg-warn {
+  border-left-color: #f9a825;
+}
+
+#dg-build {
+  font-size: 0.72rem;
+  margin-top: 1rem;
+}
+/* A SHA-256 is 64 characters and must not stretch the page on a phone. */
+#dg-build code {
+  overflow-wrap: anywhere;
+}

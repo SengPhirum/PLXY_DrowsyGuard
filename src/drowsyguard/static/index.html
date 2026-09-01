@@ -171,6 +171,8 @@
         <div><span class="muted">inference</span><span id="ims">0 ms</span></div>
         <div><span class="muted">frames</span><span id="frames">0</span></div>
         <div><span class="muted">alerts</span><span id="alerts">0</span></div>
+        <div title="How long the seat has looked empty, against the threshold at which the device announces it. Blank while the pipeline is faulty: an absence that cannot be verified is not an absence."><span class="muted">driver</span><span id="presence">&mdash;</span></div>
+        <div title="Sneezes detected, and of those how many were announced. A fit of sneezing is several detections and one announcement."><span class="muted">sneezes</span><span id="sneezes">&mdash;</span></div>
       </div>
     </div>
 
@@ -331,13 +333,21 @@
     }
     $('pval').textContent = s.p_drowsy.toFixed(3);
     const pct = Math.round(s.p_drowsy * 100);
-    const colour = s.state === 'drowsy' ? 'var(--bad)' : s.state === 'cooldown' ? 'var(--warn)' : 'var(--ok)';
+    const colour = (s.state === 'drowsy' || s.state === 'no-driver' || s.state === 'fault')
+                   ? 'var(--bad)' : s.state === 'cooldown' ? 'var(--warn)' : 'var(--ok)';
     $('pbar').style.width = pct + '%';
     $('pbar').style.background = colour;
 
+    // Presence outranks risk and a fault outranks both. A score computed while
+    // nobody is there is stale by definition, and showing it as OK would be the page
+    // saying the driver looks fine when the device cannot see one.
     const pill = $('statePill');
-    pill.className = 'pill ' + s.state;
-    pill.textContent = s.state === 'drowsy' ? 'DROWSY' : s.state === 'cooldown' ? 'COOLDOWN' : 'OK';
+    const LABEL = {drowsy: 'DROWSY', cooldown: 'COOLDOWN', 'no-driver': 'NO DRIVER',
+                   fault: 'PIPELINE FAULT', ok: 'OK'};
+    const CLASS = {drowsy: 'drowsy', cooldown: 'cooldown', 'no-driver': 'drowsy',
+                   fault: 'drowsy', ok: 'ok'};
+    pill.className = 'pill ' + (CLASS[s.state] || 'ok');
+    pill.textContent = LABEL[s.state] || s.state.toUpperCase();
 
     $('streakTxt').textContent = s.streak + ' / ' + s.config.required;
     $('streakBar').style.width = Math.min(100, 100*s.streak/Math.max(1,s.config.required)) + '%';
@@ -359,12 +369,32 @@
     if(!s.face_detect){ fp.className = 'pill'; fp.textContent = 'face detect off'; }
     else if(f.found){ fp.className = 'pill ok'; fp.textContent = 'face ' + f.score.toFixed(2); }
     else if(f.held){ fp.className = 'pill cooldown'; fp.textContent = 'face held'; }
+    // The reject reason is the difference between "nobody is there" and "something
+    // is there and the gate refused it" - two causes with two different fixes that
+    // are indistinguishable from a missing box alone.
+    else if(f.reject){ fp.className = 'pill drowsy'; fp.textContent = f.reject; }
     else { fp.className = 'pill drowsy'; fp.textContent = 'no face'; }
+
+    const pr = s.presence;
+    if(pr){
+      $('presence').textContent =
+        pr.health !== 'ok' ? pr.health.replace('-', ' ')
+        : pr.state === 'present' || pr.state === 'warmup' ? 'present'
+        : pr.absent_s.toFixed(1) + ' s / ' + pr.alert_after_s.toFixed(0) + ' s';
+    }
+    const ey = s.eyes || {};
+    if(ey.sneeze_count !== undefined){
+      $('sneezes').textContent = ey.sneeze_count + ' / ' +
+        (ey.sneeze_alerts !== undefined ? ey.sneeze_alerts : 0) + ' said';
+    }
     $('inputDims').innerHTML = s.image_size + '&times;' + s.image_size + ' gray';
 
+    // Every alert carries its reason. A log of forty undifferentiated alerts says
+    // nothing about what happened; forty microsleeps and forty no-driver
+    // announcements describe completely different sessions.
     const list = $('alertList');
     list.innerHTML = s.alerts.map(a =>
-      '<li><span>frame ' + a.index + '</span><span class="muted">' + a.time +
+      '<li><span>' + (a.kind || 'ALERT') + '</span><span class="muted">' + a.time +
       '</span><span>p=' + a.p.toFixed(3) + '</span></li>').join('');
     $('alertEmpty').style.display = s.alerts.length ? 'none' : 'block';
 

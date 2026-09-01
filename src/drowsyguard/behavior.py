@@ -55,6 +55,35 @@ JAW_OPEN_DELTA = 0.10       # opening index rise that counts as an open mouth
 NOD_PITCH_DELTA = 0.06      # nose_frac drop that counts as the head pitching down
 SNEEZE_JAW_DELTA = 0.13     # sneezes involve a pronounced mouth movement
 
+# How long the mouth may already have been open when the eyes closed, for the event
+# to still be a sneeze rather than a yawn with the eyes shut.
+#
+# SNEEZE_JAW_DELTA cannot separate those two on its own, and that is not hypothetical:
+# a yawn opens the mouth wide and closes the eyes, so it clears the absolute threshold
+# comfortably - and a yawn misread as a sneeze is worse than a missed sneeze, because
+# the suppression window then silences a genuine drowsiness cue for SNEEZE_MAX_S.
+#
+# What differs is the *order* of the two movements, not their size. In a sneeze the
+# mouth and the eyes go together, in one reflex; in a yawn the mouth has been open for
+# a while by the time the eyes close - YAWN_MIN_S is 1.2 s of continuous opening, so
+# any yawn worth the name has a long lead. Measuring the lead directly is cheaper and
+# more robust than measuring how fast the mouth moved, and it does not depend on fps.
+#
+# The obvious alternative - require the opening index to *rise* during the closure -
+# was tried and is wrong, for a reason worth keeping: EyeGate's median-of-3 delays the
+# closure decision by two frames, so a mouth that opened simultaneously with the eyes
+# has already finished opening by the time the closure is declared, and the measured
+# rise is zero. It would have rejected precisely the sneezes it was meant to find.
+# 0.5 s is comfortably longer than that lag and comfortably shorter than a yawn.
+SNEEZE_MOUTH_LEAD_S = 0.50
+
+# Minimum spacing between sneeze *alerts*, as opposed to sneeze detections. One
+# sneeze is frequently two or three closures a second apart, each a real detection
+# that belongs in the counter; announcing every one of them is noise that trains a
+# driver to ignore the speaker. Detection is per closure, the announcement is
+# edge-triggered with this cooldown.
+SNEEZE_ALERT_COOLDOWN_S = 2.50
+
 # Peak magnitudes an event must reach, as distinct from the threshold that starts it.
 # Entering low keeps the measured *duration* honest; the peak gate is what rejects a
 # slow drift that never becomes a real yawn or nod.
@@ -316,6 +345,8 @@ class BehaviorState:
     yawn_rate: float = 0.0
     nod_rate: float = 0.0
     sneeze_count: int = 0
+    sneeze_alerts: int = 0                          # of those, how many were announced
+    sneeze_alert: bool = False                      # edge: announce one now
     suppressed: bool = False                        # sneeze suppression active
     stale: bool = False                             # geometry was held, not detected
     closure_s: float = 0.0                          # current unbroken closure
@@ -350,7 +381,13 @@ class BehaviorAnalyzer:
         self._nod_lapse = None
         self._nod_peak = 0.0
         self._sneezes = 0
+        self._sneeze_alerts = 0
         self._suppress_until = -1.0
+        self._sneeze_alert_until = -1.0
+        # How long the mouth had already been open when the current closure began,
+        # in seconds. Sampled once, at the closure's start, and compared against
+        # SNEEZE_MOUTH_LEAD_S. Only meaningful while _closure_start is set.
+        self._mouth_lead = 0.0
         self._yawn_fired = False
         self._micro_fired = False
         self._sneeze_fired = False
@@ -368,7 +405,10 @@ class BehaviorAnalyzer:
         self._nod_start = self._nod_lapse = None
         self._nod_peak = 0.0
         self._sneezes = 0
+        self._sneeze_alerts = 0
         self._suppress_until = -1.0
+        self._sneeze_alert_until = -1.0
+        self._mouth_lead = 0.0
         self._yawn_fired = self._micro_fired = self._sneeze_fired = False
 
     def update(self, p_closed, geometry: FaceGeometry, perclos, dt=None, fresh=True):
@@ -453,23 +493,43 @@ class BehaviorAnalyzer:
 
         # --- eyes ---
         closure_s = 0.0
+        sneeze_alert = False
         if closed:
             self._closure_lapse = None
             if self._closure_start is None:
                 self._closure_start = now
+                # How long the mouth had already been open when the eyes shut. This
+                # is what separates a sneeze from a yawn that also closes the eyes:
+                # in a yawn the mouth has been wide for a second by now. Sampled
+                # once, here, because by the time the sneeze window opens at
+                # BLINK_MAX_S the mouth episode may already have ended.
+                self._mouth_lead = (now - self._mouth_start
+                                    if self._mouth_start is not None else 0.0)
                 self._sneeze_fired = False
                 self._micro_fired = False
             closure_s = now - self._closure_start
 
-            # A long closure that coincides with a big mouth movement is a sneeze,
-            # not a microsleep. Decided while it is happening so the alert is
-            # suppressed rather than retracted afterwards. Fire once per closure.
+            # A long closure with the mouth flung open at the same moment is a
+            # sneeze, not a microsleep. Decided while it is happening so the alert is
+            # suppressed rather than retracted afterwards, and fired once per closure.
+            # Three conditions, each rejecting a different impostor: the duration
+            # window rejects blinks and real microsleeps, the absolute level rejects a
+            # closed mouth, and the lead rejects a yawn.
             if (not self._sneeze_fired and BLINK_MAX_S <= closure_s <= SNEEZE_MAX_S
-                    and open_index >= SNEEZE_JAW_DELTA):
+                    and open_index >= SNEEZE_JAW_DELTA
+                    and self._mouth_lead <= SNEEZE_MOUTH_LEAD_S):
                 self._sneezes += 1
                 self._suppress_until = now + SNEEZE_MAX_S
                 events.append('sneeze')
                 self._sneeze_fired = True
+
+                # The announcement is a separate decision from the detection. One
+                # sneeze is often several closures in a row, each a real detection;
+                # the cooldown turns that into one alert and leaves the counter honest.
+                if now >= self._sneeze_alert_until:
+                    self._sneeze_alert_until = now + SNEEZE_ALERT_COOLDOWN_S
+                    self._sneeze_alerts += 1
+                    sneeze_alert = True
 
             # Microsleep, announced WHILE THE EYES ARE STILL SHUT.
             #
@@ -539,6 +599,8 @@ class BehaviorAnalyzer:
             yawn_rate=round(yawn_rate, 2),
             nod_rate=round(nod_rate, 2),
             sneeze_count=self._sneezes,
+            sneeze_alerts=self._sneeze_alerts,
+            sneeze_alert=sneeze_alert,
             suppressed=suppressed,
             stale=bool(geometry.valid and not fresh),
             closure_s=round(closure_s, 3),

@@ -85,6 +85,18 @@ struct WebStatus {
     // and only drops when the face has really been given up on.
     bool driver_present = false;
 
+    // Presence as PresenceMonitor sees it, and - separately - whether the device is
+    // in a position to judge. Two fields rather than one because "nobody is in the
+    // seat" and "the camera stopped" are the same observation and opposite
+    // conclusions, and a page that shows only the first would report a hardware
+    // failure as an empty cabin. Both point at string literals from
+    // presence_state_name() and presence_health_name(); see presence.h.
+    const char *presence_state = nullptr;
+    const char *health = nullptr;
+    float presence_absent_s = 0.0f;      // continuous absence so far, seconds
+    float presence_alert_after_s = 0.0f; // the configured threshold, for the page
+    uint16_t presence_alerts = 0;        // no-driver announcements since boot
+
     BehaviorState state{};
     FaceGeometry geom{};
     float trigger = 0.55f;       // RiskFilter threshold, drawn as a mark on the bar

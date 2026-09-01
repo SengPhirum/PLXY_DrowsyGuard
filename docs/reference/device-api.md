@@ -24,7 +24,7 @@ The single-page UI (`main/web/index.html`), compiled into the firmware.
 ### `GET /api/status`
 
 The whole device state, polled by the page at 5 Hz. Hand-rolled with one
-`snprintf` into a static 3584-byte buffer rather than a cJSON tree: the control
+`snprintf` into a static 4608-byte buffer rather than a cJSON tree: the control
 server has a 6 kB task stack, only one task ever serves port 80, and truncation
 returns **500** rather than letting the page parse half an object.
 
@@ -34,13 +34,14 @@ returns **500** rather than letting the page parse half an object.
 | `ms` | `detect`, `eye` — per-stage milliseconds |
 | `frame` | `w`, `h` |
 | `face` | `found`, `held`, `x`, `y`, `w`, `h`, `score`, `roi`, `roi_w`, `rejected`, `reject` |
+| `presence` | `state`, `health`, `absent_s`, `alert_after_s`, `alerts` |
 | `lm` | `valid`, `x[5]`, `y[5]` — the five landmarks |
 | `risk` | `score`, `trigger`, `streak`, `required` |
 | `eyes` | `closed`, `smooth`, `shut`, `perclos`, `closure_s` |
 | `cues` | `mouth_open`, `head_down`, `suppressed`, `baselines_ready`, `stale`, `events`, `open_index`, `pitch_dev` |
-| `rates` | `blink`, `long_blink`, `yawn`, `nod` (per minute), `sneeze` (count) |
+| `rates` | `blink`, `long_blink`, `yawn`, `nod` (per minute), `sneeze` and `sneeze_alerts` (counts) |
 | `geom` | `valid`, `roll`, `jaw_drop`, `nose_frac`, `nose_norm`, `mouth_ratio`, `eye_dist` |
-| `alert` | `active`, `text`, `reason`, `count`, `muted`, `lang`, `lang_stored`, `clips{drowsy,microsleep,yawning,head_nod}` |
+| `alert` | `active`, `text`, `reason`, `count`, `muted`, `lang`, `lang_stored`, `counts{…}`, `clips{…}` |
 | `stream` | `viewers`, `quality`, `fps`, `port` |
 | `net` | `ssid`, `ip`, `clients`, `sta`, `sta_ip`, `rssi` |
 | `image` | `luma`, `min`, `max`, `peak` |
@@ -57,6 +58,43 @@ The fields worth watching first:
 | `face.reject` | why a detection was rejected (`ok` when it was not) |
 | `cues.baselines_ready` | the per-driver baselines have not converged yet if `false` |
 | `cues.stale` | the cue inputs are older than they should be |
+| `presence.health` | `ok`, `camera-fault` or `model-fault`. Anything but `ok` means every other field below is stale and no absence is being judged |
+| `presence.state` | `warmup`, `present`, `absent`, `no-driver` or `fault` |
+
+#### `presence` — is anyone there, and can the device tell
+
+Two fields rather than one, because "nobody is in the seat" and "the camera stopped"
+are the same observation and opposite conclusions. A monitor that reported the second
+as the first would send someone looking for a missing person instead of a loose
+ribbon cable.
+
+| Field | Meaning |
+| --- | --- |
+| `state` | `warmup` — healthy but not yet trusted to judge (the first `PRESENCE_WARMUP_S` after boot, or after a fault clears). `present` — a confirmed driver. `absent` — nobody, counting down. `no-driver` — nobody, and the alert has been announced. `fault` — the device cannot tell. |
+| `health` | `ok`, `camera-fault` (frames have stopped arriving) or `model-fault` (the face detector did not load). The no-driver alert is suppressed in both fault states, and the absence episode is discarded rather than frozen. |
+| `absent_s` | Continuous absence so far, in seconds. Still measured during `warmup`, so the page can show what is happening while the alert is disarmed. |
+| `alert_after_s` | The configured threshold, so a client does not have to know the firmware constant. |
+| `alerts` | No-driver announcements since boot. |
+
+`driver` at the top level is the raw presence boolean from the tracker;
+`presence.state` is the debounced interpretation of it. Use the latter for anything
+a person reads.
+
+#### `alert.counts` — announcements per reason
+
+`{"drowsy":N,"microsleep":N,"yawning":N,"head_nod":N,"sneeze":N,"no_driver":N}`.
+
+`alert.count` alone is not diagnosable: forty microsleep announcements and forty
+no-driver announcements describe completely different drives, and one of them is not
+about the driver at all.
+
+#### `rates.sneeze` and `rates.sneeze_alerts`
+
+Detections and announcements, and they are deliberately different numbers. One sneeze
+is frequently two or three closures a second apart — every one is a real detection and
+belongs in `sneeze`, and announcing each of them is noise that trains a driver to
+ignore the speaker. `SNEEZE_ALERT_COOLDOWN_S` collapses a fit into one announcement,
+so `sneeze_alerts` is the count of times the speaker actually interrupted anyone.
 
 ```bash
 curl http://192.168.4.1/api/status | python -m json.tool
@@ -106,14 +144,22 @@ curl -X POST 'http://192.168.4.1/api/alert-test?reason=1'
 ./plxy.sh alert microsleep
 ```
 
-| `reason` | Meaning |
-| --- | --- |
-| `0` | drowsy |
-| `1` | microsleep |
-| `2` | yawning |
-| `3` | head nod |
+| `reason` | Meaning | Clip |
+| --- | --- | --- |
+| `0` | drowsy | "Warning. You appear drowsy." |
+| `1` | microsleep | "Wake up! Wake up!" |
+| `2` | yawning | "You seem tired. Take a break." |
+| `3` | head nod | "Stay alert. Eyes on the road." |
+| `4` | sneeze | "Sneeze detected." |
+| `5` | no driver | "No driver detected." |
 
-Out-of-range values are clamped to 0–3. The response:
+All six exist in English and Khmer, embedded in the firmware, and any of them can be
+replaced by dropping `<lang>_<reason>.wav` on the SD card — no rebuild. The numbering
+is part of this API and is appended to, never renumbered; out-of-range values are
+clamped to the valid range rather than rejected, so a client written against an older
+firmware still gets a sound.
+
+The response:
 
 ```json
 {"played": true, "text": "...", "reason": "microsleep",

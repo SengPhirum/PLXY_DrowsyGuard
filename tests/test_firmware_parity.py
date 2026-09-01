@@ -41,6 +41,8 @@ PAIRS = [
     ('JAW_OPEN_DELTA', 'JAW_OPEN_DELTA'),
     ('NOD_PITCH_DELTA', 'NOD_PITCH_DELTA'),
     ('SNEEZE_JAW_DELTA', 'SNEEZE_JAW_DELTA'),
+    ('SNEEZE_MOUTH_LEAD_S', 'SNEEZE_MOUTH_LEAD_S'),
+    ('SNEEZE_ALERT_COOLDOWN_S', 'SNEEZE_ALERT_COOLDOWN_S'),
     ('YAWN_PEAK_DELTA', 'YAWN_PEAK_DELTA'),
     ('NOD_PEAK_DELTA', 'NOD_PEAK_DELTA'),
     ('NOD_NORM_DELTA', 'NOD_NORM_DELTA'),
@@ -83,6 +85,84 @@ def test_risk_filter_defaults_match_firmware():
     assert trigger == pytest.approx(risk.DEFAULT_TRIGGER)
     assert required == risk.DEFAULT_REQUIRED
     assert cooldown == risk.DEFAULT_COOLDOWN
+
+
+def test_every_behaviour_constant_in_the_header_is_checked(fw_behavior):
+    """The pair list above is hand-maintained, which is exactly how a new constant
+    gets added to both sides and checked on neither. Anything in behavior.h that also
+    exists in behavior.py has to appear in PAIRS."""
+    checked = {cpp for cpp, _ in PAIRS}
+    shared = {name for name in fw_behavior
+              if hasattr(behavior, name) and isinstance(getattr(behavior, name), float)}
+    missing = sorted(shared - checked)
+    assert not missing, f'not covered by PAIRS: {missing}'
+
+
+# --------------------------------------------------------------------------- #
+# the alert reasons
+# --------------------------------------------------------------------------- #
+#
+# AlertReason's numbering is part of the HTTP API - /api/alert-test takes it as
+# ?reason=N - so it is published in docs/reference/device-api.md, wired into the
+# device page's buttons, and switched on by ./plxy.sh alert. Four places that must
+# agree with one enum, and nothing else would notice if they stopped.
+
+REASONS = ['drowsy', 'microsleep', 'yawning', 'head_nod', 'sneeze', 'no_driver']
+
+VOICE_H = FW / 'voice_alert.h'
+VOICE_CPP = FW / 'voice_alert.cpp'
+ASSETS = FW.parent / 'assets' / 'audio'
+
+
+def test_the_alert_reason_numbering_is_what_the_api_publishes():
+    text = VOICE_H.read_text(encoding='utf-8')
+    # Scoped to the AlertReason block, not the whole header: AlertChannel also has a
+    # `Sneeze = 1` and a header-wide search would happily match that instead and pass
+    # or fail for the wrong reason.
+    body = text.split('enum class AlertReason', 1)[1].split('};', 1)[0]
+    found = dict(re.findall(r'^\s*(\w+)\s*=\s*(\d+),', body, re.M))
+    for i, name in enumerate(['Drowsy', 'Microsleep', 'Yawning', 'HeadNod',
+                              'Sneeze', 'NoDriver']):
+        assert found.get(name) == str(i), f'{name} should be {i}, got {found.get(name)}'
+    m = re.search(r'ALERT_REASON_COUNT\s*=\s*(\d+)', text)
+    assert m and int(m.group(1)) == len(REASONS)
+
+
+@pytest.mark.parametrize('reason', REASONS)
+def test_every_reason_has_a_clip_name_a_banner_and_a_tone(reason):
+    cpp = VOICE_CPP.read_text(encoding='utf-8')
+    assert f'return "{reason}";' in cpp, f'{reason} has no clip name'
+
+
+def test_every_reason_has_an_embedded_clip_in_both_languages():
+    """The board has to speak with no SD card in it. A reason with no embedded clip
+    falls back to a tone pattern, which is audible but not actionable - and the only
+    way to discover it is to trigger that alert and listen."""
+    cmake = (FW / 'CMakeLists.txt').read_text(encoding='utf-8')
+    clips = (FW / 'voice_clips.cpp').read_text(encoding='utf-8')
+    for lang in ('en', 'km'):
+        for reason in REASONS:
+            wav = ASSETS / f'{lang}_{reason}.wav'
+            assert wav.is_file(), f'missing {wav.name}'
+            assert wav.stat().st_size > 1024, f'{wav.name} is suspiciously small'
+            assert f'{lang}_{reason}.wav' in cmake, f'{wav.name} is not embedded'
+            assert f'{{"{lang}", "{reason}"' in clips, f'{wav.name} is not in the table'
+
+
+def test_the_alert_test_endpoint_accepts_every_reason():
+    """The clamp used to be a literal 3 and would have silently made the two newest
+    clips the only ones with no way to audition them - on a device whose only speaker
+    test is this endpoint."""
+    server = (FW / 'web_server.cpp').read_text(encoding='utf-8')
+    assert 'ALERT_REASON_COUNT - 1' in server
+
+
+def test_the_shell_helper_knows_every_reason():
+    """./plxy.sh alert <reason> is how the speaker gets tested on the bench."""
+    plxy = (FW.parents[2] / 'plxy.sh').read_text(encoding='utf-8')
+    body = plxy.split('cmd_alert()', 1)[1].split('\n}', 1)[0]
+    for token in ('microsleep', 'sneeze', 'no_driver'):
+        assert token in body, f'./plxy.sh alert cannot send {token}'
 
 
 def test_espdl_landmark_reordering_is_documented():

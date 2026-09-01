@@ -44,6 +44,24 @@ skipping quantization, and the observable effect is direct:
 | face held (eye model on both eyes, every frame) | 10.2-10.7 |
 | a browser streaming as well | 16-19, dipping to 10 while tracking |
 
+Re-measured on 2026-09-01, after the detection gate, the presence monitor and the
+sneeze announcement were added, on the same board:
+
+```
+nobody in frame:  fps 19.7  detect 39.2-39.6 ms  eye 17.8 ms   gate would drop 0 ok
+tracking, 1 viewer: fps 11.5-17.2  detect up to 70.3 ms  eye 18.2 ms  face 20/20 @ 1.00
+```
+
+`detect` is the whole of `model_detect_face()`, gate included. At 0-1 candidates it
+matches the 39.6 ms recorded before any of those checks existed; the 70 ms figure is
+the pre-existing per-candidate cost of the refinement stage, not the gate - the gate
+adds a few float comparisons per candidate, at most eight candidates, every third
+frame.
+
+`gate would drop 0 ok` across every interval is the number that mattered: an earlier
+version of this gate rejected **100%** of real candidates on hardware, and a bare
+rejection count is indistinguishable from an empty frame.
+
 ### What was done about it
 
 **One eye per frame, alternating.** The eye model ran on both eyes every frame; it
@@ -93,11 +111,11 @@ be wrong - and the risk filter keeps its streak.
 | face detect stage 1 | `msr_s8_v1` | 120x160x3 | 33.1 ms | every 3rd frame |
 | face detect stage 2 | `mnp_s8_v1` | 48x48x3 | 5.8 ms | every 3rd frame |
 | crop staging for the detector | — | up to 240x240 RGB565 | <0.1 ms | every 3rd frame, while tracking |
-| eye state | `open_closed_eye` | 32x32x3 | **~22 ms measured, per eye** | one eye per frame, alternating |
+| eye state | `open_closed_eye` | 32x32x3 | **17.9 ms measured, per eye** | one eye per frame, alternating |
 | behaviour + PERCLOS | — | — | <1 ms | every frame |
 | frame copy for the preview | — | 240x240 RGB565 | ~1-2 ms | only while a browser is connected |
 
-Amortised: `(33.1 + 5.8) / 3 ≈ 13 ms` detector + ~22 ms for one eye + ~2 ms handoff
+Amortised: `(33.1 + 5.8) / 3 ≈ 13 ms` detector + ~18 ms for one eye + ~2 ms handoff
 ≈ **37 ms/frame while tracking**. Take the fps column above as the record of what the
 board produced before this change; the numbers after it are what `ms.detect`,
 `ms.eye` and the boot benchmark now report, and they should be re-read off the device
@@ -133,15 +151,39 @@ JPEG buffers, all in PSRAM, allocated once at boot by `web_server_start()`.
 
 Everything downstream - jaw drop, mouth width, both pitch channels, the eye crops -
 is computed from five landmark positions, so which detection is believed and how
-precisely it is placed is not a detail. `face_gate.cpp` holds three decisions, and it
+precisely it is placed is not a detail. `face_gate.cpp` holds four decisions, and it
 is deliberately free of ESP-IDF headers so `tests/test_face_gate.py` can compile it on
 the host and check the arithmetic.
 
 **Plausibility.** A five-point landmark set has structure: the eyes are roughly level,
-the mouth is below them, the nose is between them, and the interocular distance is a
-fairly fixed fraction of face width. `face_gate_plausible()` rejects anything that
-violates it. This is what pays for the loose 0.10 stage threshold - lowering a score
-gate without it is how a headrest ends up driving PERCLOS.
+the mouth is below them, the nose is between them, the nose is *inside* the eye pair
+horizontally, and the mouth is narrower than the head. `face_gate_check()` rejects
+anything that violates it, and reports which check failed by name rather than a bare
+count. Alongside the landmarks it checks the refined detector score, the box size and
+the box aspect ratio - because a hand held up to the camera is the case that satisfies
+the landmark checks least often and the box checks most often. This is what pays for
+the loose 0.10 stage threshold: lowering a score gate without it is how a headrest ends
+up driving PERCLOS.
+
+The reject reasons are worth listing, because each one names a different physical
+object and a different fix:
+
+| Reason | Typically |
+| --- | --- |
+| `score-too-low` | Low light. It collapses the detector's confidence rather than distorting its geometry, so the score is the only thing that separates a dark face from a dark wall. |
+| `face-too-small` | Too far away for the eye crop to contain an eye: at 240 px the floor is a 24 px box, whose patch is already at `eyestate.py`'s 8 px minimum. |
+| `face-too-large`, `box-not-head-shaped` | A hand, a forearm, a jacket against the lens, the vertical edge of a headrest. |
+| `nose-outside-eye-pair`, `mouth-too-narrow`, `mouth-too-wide` | Five points fitted to something with face-like vertical structure and no face-like horizontal structure. |
+| `moved-too-far` | A plausible face, somewhere the tracked one could not have got to. |
+
+**Agreement across time.** A single frame is not evidence. One implausibly-lucky
+detection on a headrest passes every static check often enough to matter at five
+detections a second, so `FaceTrack` will not call a driver present until
+`FACE_CONFIRM_DETECTIONS` detections in a row agree *and* line up with each other
+spatially. It also holds the last box through `FACE_HOLD_DETECTIONS` misses, and -
+the part that is easy to get wrong - never lets a new track inherit the old one's
+confirmation. Presence is re-earned across a discontinuity, never inherited, which is
+what stops a track sliding off the driver and onto whoever is behind them.
 
 **Which face is the driver.** Previously the largest box won. A passenger leaning
 forward is a bigger face than the driver, so that rule handed them the box, the
@@ -162,9 +204,39 @@ its own window, and a driver who moved outside it would never be re-found. A mis
 inside a crop costs the track rather than triggering a retry, so the next detection is
 a full sweep - one detect interval later, which the held box already covers.
 
-`/api/status` reports `face.roi`, `face.roi_w` and `face.rejected`, because "no face
-in the frame" and "a face the gate threw away" look identical without them and have
-completely different fixes.
+`/api/status` reports `face.roi`, `face.roi_w`, `face.rejected` and `face.reject`,
+because "no face in the frame" and "a face the gate threw away" look identical without
+them and have completely different fixes.
+
+## Nobody there, versus nothing working
+
+A drowsiness detector that sees nothing has two completely different reasons for it,
+and conflating them is a safety defect rather than a UX wrinkle.
+
+`presence.cpp` - host-compilable for the same reason `face_gate.cpp` is - takes the
+tracker's verdict *and* a `PipelineHealth`, and keeps them apart:
+
+- **Nobody is there.** The device works; there is no driver in front of it. After
+  `PRESENCE_ALERT_S` of continuous absence - measured from *after* the tracking hold
+  has already expired - it announces exactly once. A monitoring system that has
+  silently stopped monitoring is worse than none, because the driver believes they
+  are covered.
+- **The device is broken.** The camera stopped returning frames (ten consecutive
+  failed grabs, `CAM_FAIL_FAULT`), or the models never loaded. It cannot see a driver
+  whether or not one is present, so "no driver detected" would be a statement about
+  the firmware dressed up as a statement about the cabin. The alert is suppressed and
+  the absence episode is *discarded* rather than frozen - when the camera comes back
+  the cabin may hold something else entirely.
+
+Two debounces, in opposite directions, and both are needed. Absence must persist
+before it is announced, so a mirror check is not an alarm. Presence must persist for
+`PRESENCE_CLEAR_S` before the alert re-arms, so a single flickering detection on an
+empty seat cannot cancel a real absence and restart the countdown from zero, over and
+over, and thereby never announce anything at all. That second failure mode is silent,
+which is what makes it the dangerous one.
+
+The capture loop keeps publishing status while the camera is down, so the page reads
+`camera fault` rather than freezing on the last good frame.
 
 ## Landmark order differs between desktop and device
 
@@ -183,7 +255,28 @@ ESP-DL keypoints directly. `tests/test_firmware_parity.py` asserts the mapping t
 The thresholds are tuned on the desktop dashboard, so they must be numerically identical
 on the device or the tuning is meaningless. `firmware/esp32s3/main/behavior.h` mirrors
 `src/drowsyguard/behavior.py`, and `tests/test_firmware_parity.py` parses the header and
-fails if any constant, the fusion weights, or the `RiskFilter` defaults diverge.
+fails if any constant, the fusion weights, or the `RiskFilter` defaults diverge - and
+fails if a constant is added to both sides but to neither's comparison list.
+
+Matching constants is necessary and not sufficient. The gate and the presence monitor
+are *ordered* (which check is reported first), *stateful* (how many detections have
+agreed, how many have been missed) and full of boundary cases, and every one of those
+is somewhere a transcription can drift without a single number changing. So those two
+get a stronger test: `tests/test_facegate_parity.py` and `tests/test_presence.py`
+compile the C++ on the host and drive **both** implementations through the same
+inputs - a 400-candidate randomised sweep, eleven named detection sequences, a
+120-step random walk, eight presence timelines - requiring the same verdict, the same
+reject reason, the same state and the same alert edges at every step.
+
+One detail from building that: the presence timelines use a frame interval of 1/16 s
+rather than the device's nominal 1/15. Both are ~15 fps and either exercises the
+logic, but 0.0625 is exactly representable in binary and 1/15 is not - and the
+firmware accumulates in float32 while Python accumulates in double. With an inexact
+step the two totals cross a threshold on *different frames*, which is a
+floating-point artefact rather than a behavioural difference, and letting it into
+every assertion would mean every assertion needed slack - which would also hide a
+real one-frame disagreement. The inexact case gets one test of its own, with the
+slack it actually needs.
 
 ## The interface: a web page, not a panel
 

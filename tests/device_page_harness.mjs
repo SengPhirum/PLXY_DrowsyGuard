@@ -82,6 +82,8 @@ const status = {
   face: {found: true, held: false, x: 62, y: 48, w: 118, h: 118, score: 0.87,
          roi: true, roi_w: 188, rejected: 0, reject: 'ok'},
   driver: true,
+  presence: {state: 'present', health: 'ok', absent_s: 0.0, alert_after_s: 3.0,
+             alerts: 0},
   // Canonical order and frame pixels: image-left eye, image-right eye, nose, then
   // the two mouth corners. Placed consistently with the face box above.
   lm: {valid: true, x: [90, 133, 111, 96, 127], y: [86, 86, 108, 132, 132]},
@@ -90,13 +92,17 @@ const status = {
   cues: {mouth_open: false, head_down: false, suppressed: false,
          baselines_ready: true, stale: false, events: 8,
          open_index: 0.014, pitch_dev: -0.006},
-  rates: {blink: 14.5, long_blink: 1.2, yawn: 0.9, nod: 0.0, sneeze: 2},
+  rates: {blink: 14.5, long_blink: 1.2, yawn: 0.9, nod: 0.0, sneeze: 2,
+          sneeze_alerts: 1},
   geom: {valid: true, roll: -3.4, jaw_drop: 0.612, nose_frac: 0.481,
          nose_norm: 0.294, mouth_ratio: 0.583, eye_dist: 46.2},
   alert: {active: false, text: 'DROWSY', reason: 'drowsy', count: 1, muted: false,
           lang: 'en', lang_stored: true,
+          counts: {drowsy: 1, microsleep: 0, yawning: 0, head_nod: 0, sneeze: 0,
+                   no_driver: 0},
           clips: {drowsy: 'embedded', microsleep: 'embedded',
-                  yawning: 'embedded', head_nod: 'embedded'}},
+                  yawning: 'embedded', head_nod: 'embedded',
+                  sneeze: 'embedded', no_driver: 'embedded'}},
   stream: {viewers: 1, quality: 80, fps: 12, port: 81},
   net: {ssid: 'DrowsyGuard-A1B2C3', ip: '192.168.4.1', clients: 1, sta: false,
         sta_ip: '0.0.0.0', rssi: 0},
@@ -196,18 +202,68 @@ run('stream slot taken - viewers 0', () => page.render({...status, stream: {...s
 run('openShot lightbox', () => page.openShot(
   {id: '0000042', uptime_ms: 3723456, size: 12345, risk: 0.71, perclos: 0.42, reason: 'microsleep'}));
 
+const clipsAll = (src) => ({drowsy: src, microsleep: src, yawning: src,
+                            head_nod: src, sneeze: src, no_driver: src});
 run('khmer selected, clips off the card', () => page.render({...status,
-  alert: {...status.alert, lang: 'km',
-          clips: {drowsy: 'card', microsleep: 'card', yawning: 'card', head_nod: 'card'}}}));
+  alert: {...status.alert, lang: 'km', clips: clipsAll('card')}}));
 run('khmer selected but no clips - falls back to tones', () => page.render({...status,
-  alert: {...status.alert, lang: 'km',
-          clips: {drowsy: 'tone', microsleep: 'tone', yawning: 'tone', head_nod: 'tone'}}}));
+  alert: {...status.alert, lang: 'km', clips: clipsAll('tone')}}));
 run('mixed clip sources', () => page.render({...status,
   alert: {...status.alert, lang: 'km',
-          clips: {drowsy: 'card', microsleep: 'tone', yawning: 'card', head_nod: 'embedded'}}}));
+          clips: {...clipsAll('card'), microsleep: 'tone', head_nod: 'embedded'}}}));
+// The clip readout is built from Object.values, so a reason the page has never heard
+// of has to pass through rather than throw or be silently dropped - it is the one
+// readout whose job is to report a missing clip.
+run('a reason the page does not know about', () => page.render({...status,
+  alert: {...status.alert, clips: {...clipsAll('embedded'), something_new: 'tone'}}}));
 run('alert.lang and clips absent (older firmware)', () => {
   const a = {...status.alert}; delete a.lang; delete a.clips;
   page.render({...status, alert: a});
+});
+
+// Presence. Every state the firmware can publish, including the two that are NOT
+// an empty seat - a page that shows a camera fault as "no driver" would send someone
+// looking for a missing person instead of a loose ribbon cable.
+console.log('presence states:');
+run('counting down to the no-driver alert', () => page.render({...status,
+  driver: false, face: {...status.face, found: false},
+  presence: {state: 'absent', health: 'ok', absent_s: 1.8, alert_after_s: 3.0,
+             alerts: 0}}));
+run('no driver announced', () => page.render({...status,
+  driver: false, face: {...status.face, found: false},
+  presence: {state: 'no-driver', health: 'ok', absent_s: 7.4, alert_after_s: 3.0,
+             alerts: 1},
+  alert: {...status.alert, active: true, text: 'NO DRIVER DETECTED',
+          reason: 'no_driver', count: 2,
+          counts: {...status.alert.counts, no_driver: 1}}}));
+run('camera fault, not an empty seat', () => page.render({...status,
+  camera: false, driver: false, face: {...status.face, found: false},
+  presence: {state: 'fault', health: 'camera-fault', absent_s: 0.0,
+             alert_after_s: 3.0, alerts: 0}}));
+run('model fault, not an empty seat', () => page.render({...status,
+  models: false, driver: false,
+  presence: {state: 'fault', health: 'model-fault', absent_s: 0.0,
+             alert_after_s: 3.0, alerts: 0}}));
+run('still settling after boot', () => page.render({...status,
+  presence: {state: 'warmup', health: 'ok', absent_s: 0.0, alert_after_s: 3.0,
+             alerts: 0}}));
+run('presence field absent (older firmware)', () => {
+  const o = {...status}; delete o.presence; page.render(o);
+});
+
+console.log('sneeze:');
+run('sneeze suppressing the alarm', () => page.render({...status,
+  cues: {...status.cues, suppressed: true, events: 32, mouth_open: true,
+         open_index: 0.22},
+  eyes: {...status.eyes, closed: 0.95, shut: true, closure_s: 0.7},
+  rates: {...status.rates, sneeze: 3, sneeze_alerts: 2}}));
+run('sneeze announced', () => page.render({...status,
+  alert: {...status.alert, active: true, text: 'SNEEZE DETECTED', reason: 'sneeze',
+          count: 3, counts: {...status.alert.counts, sneeze: 2}}}));
+run('sneeze_alerts absent (older firmware)', () => {
+  const o = {...status, rates: {...status.rates}};
+  delete o.rates.sneeze_alerts;
+  page.render(o);
 });
 
 run('blown-out frame', () => page.render({...status, image: {luma: 244, min: 180, max: 255}}));

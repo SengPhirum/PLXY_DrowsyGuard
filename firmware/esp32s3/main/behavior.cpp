@@ -269,7 +269,10 @@ void BehaviorAnalyzer::reset() {
     nod_start_ = nod_lapse_ = -1.0f;
     nod_peak_ = 0.0f;
     suppress_until_ = -1.0f;
+    mouth_lead_ = 0.0f;
+    sneeze_alert_until_ = -1.0f;
     sneezes_ = 0;
+    sneeze_alerts_ = 0;
     yawn_fired_ = micro_fired_ = sneeze_fired_ = false;
 }
 
@@ -363,20 +366,37 @@ BehaviorState BehaviorAnalyzer::update(float p_closed, const FaceGeometry &geom,
         closure_lapse_ = -1.0f;
         if (closure_start_ < 0.0f) {
             closure_start_ = now;
+            // How long the mouth had already been open when the eyes shut. This is
+            // what separates a sneeze from a yawn that also closes the eyes: in a
+            // yawn the mouth has been wide for a second by now. Sampled once, here,
+            // because by the time the sneeze window opens at BLINK_MAX_S the mouth
+            // episode may already have ended.
+            mouth_lead_ = (mouth_start_ >= 0.0f) ? (now - mouth_start_) : 0.0f;
             sneeze_fired_ = false;
             micro_fired_ = false;
         }
         closure_s = now - closure_start_;
 
-        // A long closure with a pronounced mouth movement is a sneeze, not a
-        // microsleep. Decided during the event so the alert is suppressed, not
-        // retracted.
+        // A long closure with the mouth flung open at the same moment is a sneeze,
+        // not a microsleep. Decided during the event so the alert is suppressed, not
+        // retracted. Three conditions, and each rejects a different impostor: the
+        // duration window rejects blinks and real microsleeps, the absolute level
+        // rejects a closed mouth, and the lead rejects a yawn.
         if (!sneeze_fired_ && closure_s >= BLINK_MAX_S && closure_s <= SNEEZE_MAX_S &&
-            open_index >= SNEEZE_JAW_DELTA) {
+            open_index >= SNEEZE_JAW_DELTA && mouth_lead_ <= SNEEZE_MOUTH_LEAD_S) {
             ++sneezes_;
             suppress_until_ = now + SNEEZE_MAX_S;
             st.events |= EVENT_SNEEZE;
             sneeze_fired_ = true;
+
+            // The announcement is a separate decision from the detection. One sneeze
+            // is often several closures in a row, each a real detection; the cooldown
+            // turns that into one alert while leaving the counter honest.
+            if (now >= sneeze_alert_until_) {
+                sneeze_alert_until_ = now + SNEEZE_ALERT_COOLDOWN_S;
+                ++sneeze_alerts_;
+                st.sneeze_alert = true;
+            }
         }
 
         // Microsleep, announced WHILE THE EYES ARE STILL SHUT.
@@ -453,6 +473,7 @@ BehaviorState BehaviorAnalyzer::update(float p_closed, const FaceGeometry &geom,
     st.yawn_rate = yawn_rate;
     st.nod_rate = nod_rate;
     st.sneeze_count = sneezes_;
+    st.sneeze_alerts = sneeze_alerts_;
     st.closure_s = closure_s;
     return st;
 }

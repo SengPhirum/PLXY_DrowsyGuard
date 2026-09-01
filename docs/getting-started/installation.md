@@ -4,6 +4,11 @@ title: Install the toolkit
 
 # Install the desktop toolkit
 
+!!! tip "Only want the firmware on a board?"
+    You do not need any of this. [Install to ESP32 from your browser](install-esp32.md)
+    writes the firmware over USB from Chrome or Edge, with no toolchain at all. This
+    page is for the training, evaluation and live-dashboard tooling.
+
 The desktop side of DrowsyGuard is a normal Python package. It prepares
 datasets, trains and exports the model, and serves the live tuning dashboard.
 None of it needs a board.

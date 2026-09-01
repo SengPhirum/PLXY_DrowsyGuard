@@ -118,7 +118,7 @@ all the detection telemetry over HTTP:
 | `/api/snapshot` | 80 | one JPEG; the page's fallback for extra viewers |
 | `/api/status` | 80 | risk, PERCLOS, face box, event rates, heap, uptime |
 | `/api/settings` | 80 | `?quality=`, `?fps=`, `?muted=` |
-| `/api/alert-test` | 80 | `?reason=0..3`, plays one warning |
+| `/api/alert-test` | 80 | `?reason=0..5`, plays one warning |
 
 Two servers because `esp_http_server` serves one request at a time per instance
 and an MJPEG stream never ends; a stream on port 80 would block the page and the

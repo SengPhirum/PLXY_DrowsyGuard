@@ -200,6 +200,100 @@ def test_slow_closure_without_mouth_movement_is_still_a_microsleep():
     assert 'sneeze' not in fired
 
 
+def test_a_yawn_that_also_closes_the_eyes_is_not_a_sneeze():
+    """The discriminator SNEEZE_MOUTH_LEAD_S exists for.
+
+    A yawn opens the mouth wide and closes the eyes, so it clears SNEEZE_JAW_DELTA
+    comfortably - the absolute level cannot tell the two apart. What differs is the
+    order: the mouth has been open for a second by the time the eyes close. Getting
+    this wrong is worse than missing a sneeze, because the suppression window would
+    then silence a genuine drowsiness cue for SNEEZE_MAX_S.
+    """
+    an = BehaviorAnalyzer(fps=FPS)
+    feed(an, 90)
+    states = feed(an, 30, jaw=1.32)                              # 1 s of open mouth
+    states += feed(an, 45, p_closed=0.95, jaw=1.32)              # then the eyes close
+    states += feed(an, 5, jaw=1.05)
+    fired = events_of(states)
+    assert 'sneeze' not in fired, 'a yawn must not be reclassified as a sneeze'
+    assert 'microsleep' in fired, 'and the closure must still be alarmed on'
+    assert states[-1].sneeze_count == 0
+
+
+def test_a_sneeze_produces_exactly_one_alert():
+    """Detection is per closure; the announcement is an edge. The distinction is the
+    difference between a counter that is honest and a speaker that is bearable."""
+    an = BehaviorAnalyzer(fps=FPS)
+    feed(an, 90)
+    states = feed(an, 24, p_closed=0.95, jaw=1.32)
+    states += feed(an, 10, jaw=1.05)
+    assert sum(1 for s in states if s.sneeze_alert) == 1
+    assert states[-1].sneeze_alerts == 1
+    assert states[-1].sneeze_count == 1
+
+
+def test_a_burst_of_sneezes_is_counted_fully_but_announced_once():
+    """One sneeze is often two or three closures a second apart. Each is a real
+    detection and belongs in the counter; three announcements in three seconds is
+    noise that trains a driver to ignore the speaker."""
+    an = BehaviorAnalyzer(fps=FPS)
+    feed(an, 90)
+    states = []
+    for _ in range(3):                       # three closures, ~1.1 s apart
+        states += feed(an, 20, p_closed=0.95, jaw=1.32)
+        states += feed(an, 13, jaw=1.05)
+    assert states[-1].sneeze_count == 3, 'every sneeze is counted'
+    assert states[-1].sneeze_alerts == 1, 'and the burst is one announcement'
+
+
+def test_sneezes_further_apart_than_the_cooldown_are_announced_separately():
+    """The other side of the same rule: the cooldown collapses a fit, it does not
+    collapse a drive."""
+    an = BehaviorAnalyzer(fps=FPS)
+    feed(an, 90)
+    states = []
+    for _ in range(3):
+        states += feed(an, 20, p_closed=0.95, jaw=1.32)
+        states += feed(an, 120, jaw=1.05)    # 4 s apart, past SNEEZE_ALERT_COOLDOWN_S
+    assert states[-1].sneeze_count == 3
+    assert states[-1].sneeze_alerts == 3
+
+
+def test_the_sneeze_alert_is_an_edge_not_a_level():
+    """The caller triggers audio directly on this flag, so it must be true on exactly
+    one frame. A level would announce once per frame for the length of the closure."""
+    an = BehaviorAnalyzer(fps=FPS)
+    feed(an, 90)
+    states = feed(an, 24, p_closed=0.95, jaw=1.32)
+    flags = [s.sneeze_alert for s in states]
+    assert flags.count(True) == 1
+    assert not states[0].sneeze_alert, 'not on the first frame of the closure either'
+
+
+def test_sneeze_suppression_still_holds_the_score_down():
+    """The original purpose, unchanged by adding the announcement: an involuntary
+    reflex must not drive a drowsiness alert."""
+    an = BehaviorAnalyzer(fps=FPS)
+    feed(an, 90)
+    states = feed(an, 24, p_closed=0.95, jaw=1.32, perclos=0.5)
+    assert states[-1].suppressed
+    # Capped at the PERCLOS term alone: the long-blink, yawn and nod contributions
+    # accumulated during the reflex are excluded.
+    from drowsyguard.behavior import W_PERCLOS
+    assert states[-1].score <= W_PERCLOS * 0.5 + 1e-6
+
+
+def test_reset_clears_the_sneeze_alert_state():
+    an = BehaviorAnalyzer(fps=FPS)
+    feed(an, 90)
+    feed(an, 24, p_closed=0.95, jaw=1.32)
+    an.reset()
+    feed(an, 90)
+    states = feed(an, 24, p_closed=0.95, jaw=1.32)
+    assert states[-1].sneeze_count == 1
+    assert states[-1].sneeze_alerts == 1, 'the cooldown must not survive a reset'
+
+
 # ---------- fusion ----------
 
 def test_score_rises_with_perclos():

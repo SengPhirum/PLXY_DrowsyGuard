@@ -13,6 +13,7 @@
 #include "board_wifi.h"
 #include "face_gate.h"
 #include "model_adapter.h"
+#include "presence.h"
 #include "risk_filter.h"
 #include "voice_alert.h"
 #include "web_server.h"
@@ -78,6 +79,17 @@ static constexpr float RISK_COOLDOWN_S = 4.0f;
 // Risk is the fused behaviour score, so the trigger is a risk level rather than a
 // raw probability. Tune this on the desktop dashboard and paste it here.
 static constexpr float RISK_TRIGGER = 0.55f;
+
+// Consecutive failed frame grabs before the camera is declared faulty.
+//
+// The distinction this number draws is the whole reason PresenceMonitor takes a
+// health argument. A camera that has stopped delivering frames and a cabin with
+// nobody in it both produce "no face", and announcing the wrong one is worse than
+// saying nothing: "no driver detected" aimed at a driver who is sitting right there
+// teaches them the device is broken, and it happens to be right - just not about
+// them. Ten grabs is roughly 700 ms at the loop's own pace and comfortably past any
+// single dropped frame, which esp32-camera produces routinely under Wi-Fi load.
+static constexpr int CAM_FAIL_FAULT = 10;
 
 // Bring-up aid, off by default. Runs the face detector over the captured frames in
 // test_frames.h - the same bytes every boot, at three face scales - which separates
@@ -192,9 +204,12 @@ extern "C" void app_main(void) {
 
     VoiceAlertConfig alert_config{};
     alert_config.language = AlertLanguage::English; // switch to Khmer once the clip is approved
-    alert_config.cooldown_ms = 30000;
-    alert_config.max_repeat_count = 3;
-    alert_config.repeat_reset_ms = 300000;
+    // Per channel, not global. A sneeze acknowledgement or a "no driver" warning
+    // held back by a drowsiness cooldown is a message that silently never arrives,
+    // and silence is the one failure this device must not have - see voice_alert.h.
+    alert_config.drowsiness = {30000, 3, 300000};
+    alert_config.sneeze = {2000, 0, 0};
+    alert_config.presence = {5000, 0, 0};
     alert_config.buzzer_fallback = true;
     if (!voice_alert_init(alert_config)) {
         ESP_LOGE(TAG, "Alert subsystem initialization failed");
@@ -257,11 +272,22 @@ extern "C" void app_main(void) {
     BehaviorAnalyzer behavior(0.5f, TARGET_FPS);
     ui.required = filter.required();
 
+    // Who the driver is, across time. Confirmation, the hold, the continuity check
+    // and safe reacquisition all live in here rather than in this loop, because they
+    // are arithmetic on boxes and the host tests drive them through whole sequences -
+    // hands, empty frames, occlusion, a passenger appearing mid-track.
+    FaceTrack track;
+    // Whether there is a driver at all, and whether the answer can be trusted. The
+    // second half is the point: an empty seat and a dead camera are the same
+    // observation and completely different conclusions.
+    PresenceMonitor presence;
+    ui.presence_alert_after_s = presence.config().alert_after_s;
+
     Landmarks last_lm{};
     FaceDetection det{};
     uint32_t frame_no = 0;
-    int misses = 0;
     int detections = 0;
+    int cam_fails = 0;
 
     // Latest reading for each eye, and which one is due. Held across frames because
     // only one is refreshed per frame; both are dropped when the face is lost, so a
@@ -288,16 +314,45 @@ extern "C" void app_main(void) {
     for (;;) {
         camera_fb_t *fb = esp_camera_fb_get();
         if (fb == nullptr) {
-            ESP_LOGW(TAG, "frame grab failed");
+            const int64_t fail_us = esp_timer_get_time();
+            const float fail_dt = static_cast<float>(fail_us - last_us) / 1e6f;
+            last_us = fail_us;
+            if (++cam_fails == CAM_FAIL_FAULT) {
+                ESP_LOGE(TAG, "camera has returned no frames for %d grabs; "
+                              "reporting a camera fault, NOT an empty seat", cam_fails);
+            }
+            if (cam_fails >= CAM_FAIL_FAULT) {
+                // Keep the status endpoint truthful while the pipeline is down. The
+                // page then says "camera fault" instead of freezing on the last good
+                // frame, and PresenceMonitor is told the reason so it suppresses the
+                // no-driver alert rather than announcing a conclusion it cannot draw.
+                const PresenceResult pr =
+                    presence.update(false, PipelineHealth::CameraFault, fail_dt);
+                ui.camera_ok = false;
+                ui.face_found = false;
+                ui.face_held = false;
+                ui.driver_present = false;
+                ui.presence_state = presence_state_name(pr.state);
+                ui.health = presence_health_name(pr.health);
+                ui.presence_absent_s = pr.absent_s;
+                ui.presence_alerts = pr.alerts;
+                web_server_publish_status(ui);
+            }
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
+        if (cam_fails >= CAM_FAIL_FAULT) {
+            ESP_LOGW(TAG, "camera recovered after %d failed grabs", cam_fails);
+            ui.camera_ok = true;
+        }
+        cam_fails = 0;
         const int64_t now_us = esp_timer_get_time();
         const float dt = static_cast<float>(now_us - last_us) / 1e6f;
         last_us = now_us;
 
         bool found = false;
         bool fresh = false;                 // landmarks from THIS frame, not held
+        FaceReject track_reject = FaceReject::None;
         float p_closed = 0.0f;
         BehaviorState st{};
         FaceGeometry geom{};
@@ -321,23 +376,49 @@ extern "C" void app_main(void) {
                     ++det_hits;
                     ++det_hits_total;
                     if (d.score > det_best_score) det_best_score = d.score;
-                    det = d;
-                    last_lm = d.lm;         // canonical order, frame coordinates
-                    found = true;
-                    fresh = true;
-                    misses = 0;
-                } else if (++misses < DETECT_EVERY * 5) {
-                    found = last_lm.valid;                 // hold
-                } else {
-                    // Give up on the face rather than keep scoring a stale pose, and
-                    // tell the detector to stop searching where it used to be.
-                    last_lm.valid = false;
+                }
+
+                // Everything about whether this detection is believed, whether it
+                // continues the same face, and whether the hold has run out is
+                // FaceTrack's. This loop used to do it inline with one integer, and
+                // that integer could not express the two things that matter most:
+                // that a single frame is not evidence, and that a candidate which
+                // teleports is a different object rather than the same one moving.
+                FaceBox cand;
+                cand.x = d.x;
+                cand.y = d.y;
+                cand.w = d.w;
+                cand.h = d.h;
+                cand.valid = d.valid;
+                const FaceTrackResult tr = track.update(hit, cand, d.lm, d.score,
+                                                        fb->width, fb->height);
+                track_reject = tr.reject;
+                if (tr.fresh) {
+                    det = d;                // box, score and landmarks all from this frame
+                } else if (!tr.present) {
                     det.valid = false;
+                }
+                if (tr.lost) {
+                    // The face has really been given up on. Stop searching where it
+                    // used to be, and drop both eye readings: a closure measured
+                    // before the driver moved must not leak into whatever comes next.
                     model_detect_forget();
                     p_eye[0] = p_eye[1] = 0.0f;
                 }
+                found = tr.present;
+                // Landmarks count as fresh only when this frame produced them AND the
+                // track is confirmed. A pending track has landmarks but no standing to
+                // push them into a baseline.
+                fresh = tr.fresh && tr.present;
+                last_lm = tr.present ? tr.lm : Landmarks{};
             } else {
-                found = last_lm.valid;
+                // Between detections nothing new is known, so the track is read
+                // rather than advanced - the hold is counted in detection attempts,
+                // not in frames, so that a change to DETECT_EVERY cannot silently
+                // change how long a face is held for.
+                const FaceTrackResult tr = track.peek();
+                found = tr.present;
+                last_lm = tr.present ? tr.lm : Landmarks{};
             }
 
             // 2. Eye state - ONE eye per frame, alternating. See the frame budget
@@ -395,8 +476,8 @@ extern "C" void app_main(void) {
             //    can only under-report, and for a drowsiness alarm silence is the
             //    dangerous way to be wrong. The web page says EYE MODEL MISSING
             //    rather than shipping an alarm that quietly never fires.
+            const uint32_t now_ms = static_cast<uint32_t>(now_us / 1000);
             if (eye_model && found) {
-                const uint32_t now_ms = static_cast<uint32_t>(now_us / 1000);
                 if (filter.update(st.score)) {
                     last_reason = AlertReason::Drowsy;
                     if (st.events & EVENT_MICROSLEEP)   last_reason = AlertReason::Microsleep;
@@ -412,7 +493,68 @@ extern "C" void app_main(void) {
                                              st.score, st.perclos,
                                              voice_alert_clip_name(last_reason), now_ms);
                 }
+
+                // 4b. The sneeze announcement, which deliberately does NOT go through
+                //     the risk filter.
+                //
+                //     A sneeze is not drowsiness - the entire reason it is detected is
+                //     to suppress the microsleep alarm it would otherwise trigger - so
+                //     routing it through an accumulator that measures drowsiness would
+                //     be wrong twice over: it would never reach the trigger on its own,
+                //     and if it did it would be announcing the wrong thing. It is an
+                //     edge, already de-duplicated and rate-limited inside
+                //     BehaviorAnalyzer by SNEEZE_ALERT_COOLDOWN_S, and it lands on its
+                //     own alert channel so a drowsiness cooldown cannot swallow it.
+                //
+                //     Announcing it at all is a decision worth defending. The driver
+                //     has just closed their eyes for a second and heard nothing; the
+                //     alternative is a system that appears to have missed it. One short
+                //     acknowledgement says the device saw the event and classified it.
+                if (st.sneeze_alert) {
+                    last_reason = AlertReason::Sneeze;
+                    voice_alert_trigger(now_ms, last_reason);
+                    web_server_capture_event(fb->buf, fb->width, fb->height, fb->len,
+                                             st.score, st.perclos,
+                                             voice_alert_clip_name(last_reason), now_ms);
+                }
             }
+
+            // 4c. Nobody there.
+            //
+            //     Gated on `models` only, not on the eye model: finding a driver needs
+            //     the face detector and nothing else, so this alert still works on a
+            //     build where the eye model is missing - which is the build most
+            //     likely to be silent about everything else.
+            //
+            //     PresenceMonitor decides, because the decision needs the one thing
+            //     this loop cannot express in a boolean: whether "no face" means the
+            //     seat is empty or the device has stopped working. It is fed the
+            //     health, it debounces in both directions, and it returns an edge.
+            const PresenceResult pres = presence.update(found, PipelineHealth::Ok, dt);
+            if (pres.alert) {
+                last_reason = AlertReason::NoDriver;
+                voice_alert_trigger(now_ms, last_reason);
+                web_server_capture_event(fb->buf, fb->width, fb->height, fb->len,
+                                         st.score, st.perclos,
+                                         voice_alert_clip_name(last_reason), now_ms);
+                ESP_LOGW(TAG, "no driver for %.1f s (announcement %u)",
+                         static_cast<double>(pres.absent_s),
+                         static_cast<unsigned>(pres.alerts));
+            }
+            ui.presence_state = presence_state_name(pres.state);
+            ui.health = presence_health_name(pres.health);
+            ui.presence_absent_s = pres.absent_s;
+            ui.presence_alerts = pres.alerts;
+        } else {
+            // No face detector at all. Nothing can be seen, so this is a device fault
+            // and never an empty seat; PresenceMonitor is told so explicitly rather
+            // than being left to infer it from a permanent absence.
+            const PresenceResult pres =
+                presence.update(false, PipelineHealth::ModelFault, dt);
+            ui.presence_state = presence_state_name(pres.state);
+            ui.health = presence_health_name(pres.health);
+            ui.presence_absent_s = pres.absent_s;
+            ui.presence_alerts = pres.alerts;
         }
 
         // 5. Hand the frame to the browser. Returns immediately - and does nothing
@@ -445,7 +587,12 @@ extern "C" void app_main(void) {
             ui.detect_roi = ds.used_roi;
             ui.detect_roi_w = ds.roi_w;
             ui.detect_rejected = ds.rejected;
-            ui.detect_reject = face_gate_reject_name(ds.reject);
+            // The track's verdict when it has one, because that is the decision that
+            // was actually acted on: model_adapter's stats describe the candidates
+            // ESP-DL produced, and FaceTrack can refuse a candidate those stats call
+            // perfectly good - a plausible face in the wrong place.
+            ui.detect_reject = face_gate_reject_name(
+                track_reject != FaceReject::None ? track_reject : ds.reject);
         }
 
         // Frame brightness, on a 1024-pixel stride sample so it costs nothing.
@@ -479,8 +626,10 @@ extern "C" void app_main(void) {
                 ui.luma_peak = static_cast<int>(ui.luma);
             }
         }
-        ui.alerting = found &&
-                      voice_alert_is_active(static_cast<uint32_t>(now_us / 1000));
+        // Not gated on `found` any more. The no-driver announcement happens exactly
+        // when no face is present, so requiring one would have hidden the banner for
+        // the one alert whose entire subject is that there is nobody there.
+        ui.alerting = voice_alert_is_active(static_cast<uint32_t>(now_us / 1000));
         ui.alert_text = voice_alert_banner_text(last_reason);
         ui.alert_reason = voice_alert_clip_name(last_reason);
         ui.alert_count = voice_alert_count();

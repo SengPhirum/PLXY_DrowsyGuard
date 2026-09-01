@@ -14,7 +14,9 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from .alerts import AlertReason, reason_for_events
 from .data import preprocess_gray
+from .presence import PipelineHealth, PresenceConfig, PresenceMonitor, PresenceState
 from .risk import DEFAULT_COOLDOWN, DEFAULT_REQUIRED, DEFAULT_TRIGGER, RiskFilter
 
 # A live webcam that delivers far below this is not merely a slow machine; on
@@ -182,12 +184,27 @@ class LiveEngine:
                                        'Run `python -m drowsyguard.cli fetch-models`. '
                                        'Falling back to a centre crop; set --zoom manually.')
 
+        # Whether there is a driver at all, and - separately - whether the answer
+        # can be trusted. Mirrors the firmware exactly (src/drowsyguard/presence.py is
+        # parity-tested against presence.cpp), so the timings a developer sees here are
+        # the timings the device will use.
+        self._presence = PresenceMonitor(PresenceConfig())
+        self._presence_state = {'state': PresenceState.WARMUP.value,
+                                'health': PipelineHealth.OK.value,
+                                'absent_s': 0.0,
+                                'alert_after_s': self._presence.config.alert_after_s,
+                                'alerts': 0}
+
         self._lock = threading.Lock()
         self._thread = None
         self._stop = threading.Event()
         self._history = deque(maxlen=history)
         self._alerts = deque(maxlen=50)
         self._behavior_log = deque(maxlen=60)
+        # Per reason, so "the device alerted 40 times" becomes something that can be
+        # acted on: 40 microsleeps and 40 no-driver announcements describe completely
+        # different drives.
+        self._alert_counts = {r.clip: 0 for r in AlertReason}
         self._frame_jpeg = None
         self._input_jpeg = None
         self._error = None
@@ -269,6 +286,12 @@ class LiveEngine:
                 file_interval = 1.0 / src_fps
         last = time.perf_counter()
         started = last
+        # Its own clock, deliberately. `last` is stamped after the JPEG encode, so
+        # differencing against it would charge the encode of frame N to the interval
+        # before frame N and leave the interval after it short - which is invisible
+        # per frame and adds up to a countdown that runs slow. The no-driver
+        # threshold is a wall-clock promise, so it gets a wall-clock measurement.
+        last_presence = last
         fps_ema = None
         checked_capture = False
         try:
@@ -294,20 +317,31 @@ class LiveEngine:
                     x0, y0, side = face.box
                     landmarks = face.landmarks
                     face_state = {'found': face.found, 'held': face.held,
-                                  'score': round(face.score, 3),
+                                  'present': True, 'score': round(face.score, 3),
+                                  'reject': face.reject, 'rejected': face.rejected,
                                   'source': 'face (held)' if face.held else 'face'}
                 else:
                     side = int(min(h, w) * zoom)
                     x0, y0 = (w - side) // 2, (h - side) // 2
-                    face_state = {'found': False, 'held': False, 'score': 0.0,
-                                  'source': 'centre crop' if use_face else 'centre crop (detector off)'}
+                    # Naming the rejection here is what separates "nobody is there"
+                    # from "something is there and the gate refused it" on the page.
+                    # They look identical from a missing box and have different fixes.
+                    why = face.reject if face is not None else ''
+                    source = ('centre crop (detector off)' if not use_face
+                              else f'centre crop - {why}' if why else 'centre crop')
+                    face_state = {'found': False, 'held': False, 'present': False,
+                                  'score': 0.0, 'reject': why,
+                                  'rejected': face.rejected if face is not None else 0,
+                                  'source': source}
 
                 rgb = cv2.cvtColor(frame[y0:y0 + side, x0:x0 + side], cv2.COLOR_BGR2RGB)
                 t0 = time.perf_counter()
                 behavior_events = []
+                sneeze_alert = False
                 if self._eye is not None:
-                    p, arr, eye_state, behavior_events = self._eye_risk(
-                        cv2, frame, (x0, y0, side), landmarks)
+                    p, arr, eye_state, behavior_events, sneeze_alert = self._eye_risk(
+                        cv2, frame, (x0, y0, side), landmarks,
+                        present=face_state['present'])
                 else:
                     arr = preprocess_gray(Image.fromarray(rgb), self.image_size,
                                           normalize=self.model.normalize)
@@ -315,15 +349,49 @@ class LiveEngine:
                     eye_state = None
                 infer_ms = (time.perf_counter() - t0) * 1000.0
 
+                # Presence, before the lock: it needs a wall-clock delta and it is
+                # the same decision the firmware makes at the same point in its loop.
+                #
+                # Health is not a formality. A camera that has stopped and a cabin
+                # with nobody in it both produce "no face", and announcing the wrong
+                # one is worse than saying nothing - "no driver detected" aimed at a
+                # driver sitting right there teaches them the device is broken.
+                if not use_face:
+                    # Either the YuNet model is missing or detection was turned off
+                    # from the UI. The two have different causes and the same
+                    # consequence - no face can be found - and in both cases reporting
+                    # an absence would be a statement about the cabin drawn from a
+                    # fact about this process. `face_detect` in the snapshot is what
+                    # tells the two apart.
+                    health = PipelineHealth.MODEL_FAULT
+                else:
+                    health = PipelineHealth.OK
+                pres_now = time.perf_counter()
+                pres = self._presence.update(face_state['present'], health,
+                                             pres_now - last_presence)
+                last_presence = pres_now
+
                 with self._lock:
                     fired = self.filter.update(p)
                     streak, cooldown_left = self.filter.streak, self.filter.cooldown_left
                     required, cooldown = self.filter.required, self.filter.cooldown
                     trigger = self.filter.trigger
-                    if fired:
-                        self._alert_count += 1
-                        self._alerts.append({'index': self._frames, 'p': round(p, 4),
-                                             'time': time.strftime('%H:%M:%S'), 'kind': 'ALERT'})
+                    # Only the drowsiness channel goes through the risk filter. The
+                    # other two are edges from their own detectors and are announced
+                    # independently, exactly as main.cpp does it: routing a sneeze or
+                    # an empty seat through an accumulator that measures drowsiness
+                    # would mean neither ever reached the trigger.
+                    if fired and face_state['present']:
+                        self._log_alert(reason_for_events(behavior_events), p)
+                    if sneeze_alert:
+                        self._log_alert(AlertReason.SNEEZE, p)
+                    if pres.alert:
+                        self._log_alert(AlertReason.NO_DRIVER, p)
+                    self._presence_state = {
+                        'state': pres.state.value, 'health': pres.health.value,
+                        'absent_s': round(pres.absent_s, 2),
+                        'alert_after_s': self._presence.config.alert_after_s,
+                        'alerts': pres.alerts}
                     for ev in behavior_events:
                         self._behavior_log.append({'index': self._frames, 'kind': ev,
                                                    'time': time.strftime('%H:%M:%S')})
@@ -363,21 +431,26 @@ class LiveEngine:
         finally:
             cap.release()
 
-    def _eye_risk(self, cv2, frame, crop, landmarks):
-        """Measure eyelid closure and return (risk, display_patch, state).
+    def _eye_risk(self, cv2, frame, crop, landmarks, present=True):
+        """Measure eyelid closure and return (risk, patch, state, events, sneeze).
 
         Risk is PERCLOS - the fraction of recent frames with eyes closed - not the
         instantaneous probability, so a blink cannot trigger an alert while a
         sustained closure can. When no face is available the eyes are unknown, so
         PERCLOS is held rather than assumed open: guessing "awake" is the unsafe
         direction for this device.
+
+        `present` is the gate's verdict, and nothing runs without it. Feeding an
+        unconfirmed detection in was worse than skipping: the measurements would be of
+        whatever the gate refused to believe, and they would go into a rolling
+        baseline that takes ten seconds to forget them.
         """
         import numpy as np
 
         from .eyestate import eye_patch_boxes
 
         h, w = frame.shape[:2]
-        boxes = eye_patch_boxes(crop, landmarks)
+        boxes = eye_patch_boxes(crop, landmarks) if present else []
         patches = []
         for bx, by, bside in boxes:
             x0c, y0c = max(0, bx), max(0, by)
@@ -390,7 +463,7 @@ class LiveEngine:
             state.update({'available': False, 'perclos': self._perclos.value,
                           'window': self._perclos.window})
             grey = np.full((32, 64), 0.5, np.float32)
-            return self._perclos.value, grey, state, []
+            return self._perclos.value, grey, state, [], False
 
         right_p = self._eye.p_closed(patches[0])
         left_p = self._eye.p_closed(patches[1])
@@ -416,9 +489,11 @@ class LiveEngine:
                  'blink_rate': behavior.blink_rate, 'long_blink_rate': behavior.long_blink_rate,
                  'yawn_rate': behavior.yawn_rate, 'nod_rate': behavior.nod_rate,
                  'sneeze_count': behavior.sneeze_count,
+                 'sneeze_alerts': behavior.sneeze_alerts,
                  'roll': round(geometry.roll, 1) if geometry.valid else None}
         self._encode_eyes(cv2, patches)
-        return behavior.score, (pair.astype(np.float32) / 255.0), state, behavior.events
+        return (behavior.score, (pair.astype(np.float32) / 255.0), state,
+                behavior.events, behavior.sneeze_alert)
 
     def _encode_eyes(self, cv2, patches):
         big = [cv2.resize(p, (96, 96), interpolation=cv2.INTER_NEAREST) for p in patches]
@@ -428,6 +503,19 @@ class LiveEngine:
         if ok:
             with self._lock:
                 self._eye_jpeg = buf.tobytes()
+
+    def _log_alert(self, reason, p):
+        """Record one announcement. Caller holds the lock.
+
+        Every alert carries its reason, because a log of forty undifferentiated
+        alerts says nothing about what happened. The dashboard has no speaker, so this
+        - plus the banner - is the whole of its alert output.
+        """
+        self._alert_count += 1
+        self._alert_counts[reason.clip] = self._alert_counts.get(reason.clip, 0) + 1
+        self._alerts.append({'index': self._frames, 'p': round(p, 4),
+                             'time': time.strftime('%H:%M:%S'),
+                             'kind': reason.banner, 'reason': reason.clip})
 
     def eye_jpeg(self):
         with self._lock:
@@ -504,8 +592,19 @@ class LiveEngine:
             return self._input_jpeg
 
     def configure(self, trigger=None, required=None, cooldown=None, zoom=None, face_detect=None,
-                  perclos_window=None, eye_closed_threshold=None):
+                  perclos_window=None, eye_closed_threshold=None,
+                  no_driver_after=None, no_driver_alert=None):
         with self._lock:
+            if no_driver_after is not None or no_driver_alert is not None:
+                cfg = self._presence.config
+                if no_driver_after is not None:
+                    # Floored rather than left free: below about a second the
+                    # tracking hold has barely expired, so the "absence" being
+                    # announced is a detector miss.
+                    cfg.alert_after_s = max(1.0, float(no_driver_after))
+                if no_driver_alert is not None:
+                    cfg.enabled = bool(no_driver_alert)
+                self._presence.configure(cfg)
             if self._perclos is not None:
                 if perclos_window is not None:
                     self._perclos.resize(perclos_window)
@@ -535,6 +634,10 @@ class LiveEngine:
             self._behavior_log.clear()
             self._alerts.clear()
             self._alert_count = 0
+            self._alert_counts = {r.clip: 0 for r in AlertReason}
+            self._presence.reset()
+            if self._tracker is not None:
+                self._tracker.reset()
             self._history.clear()
 
     def _config_locked(self):
@@ -544,7 +647,9 @@ class LiveEngine:
                 'zoom': round(self.zoom, 2),
                 'face_detect': bool(self._tracker is not None and self.face_detect),
                 'perclos_window': self._perclos.window if self._perclos else None,
-                'eye_closed_threshold': self._perclos.closed_threshold if self._perclos else None}
+                'eye_closed_threshold': self._perclos.closed_threshold if self._perclos else None,
+                'no_driver_after': self._presence.config.alert_after_s,
+                'no_driver_alert': self._presence.config.enabled}
 
     def snapshot(self):
         with self._lock:
@@ -563,6 +668,8 @@ class LiveEngine:
                 'alerts': list(self._alerts)[-10:][::-1],
                 'behavior_events': list(self._behavior_log)[-12:][::-1],
                 'alert_count': self._alert_count,
+                'alert_counts': dict(self._alert_counts),
+                'presence': dict(self._presence_state),
                 'frames': self._frames,
                 'fps': round(self._fps, 1),
                 'infer_ms': round(self._infer_ms, 2),
@@ -582,6 +689,15 @@ class LiveEngine:
             }
 
     def _state_locked(self):
+        # Presence outranks risk, and a fault outranks both. A risk score computed
+        # while nobody is there is stale by definition, and reporting it as 'ok' would
+        # be the device saying the driver looks fine when it cannot see one.
+        health = self._presence_state.get('health', 'ok')
+        if health != 'ok':
+            return 'fault'
+        state = self._presence_state.get('state')
+        if state == PresenceState.NO_DRIVER.value:
+            return 'no-driver'
         if self.filter.cooldown_left > 0:
             return 'cooldown'
         if self._p >= self.filter.trigger:

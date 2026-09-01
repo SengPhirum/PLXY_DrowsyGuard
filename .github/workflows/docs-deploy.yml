@@ -6,6 +6,16 @@
 # separated from the application pipeline in the first place - a typo fix should
 # not queue behind a 16 MB firmware build.
 #
+# One exception, and it is a download rather than a build: the firmware assets from
+# the most recent release are copied into `site/firmware/` so the browser installer
+# on getting-started/install-esp32.md fetches its manifest from the same origin it
+# was served from. Cross-origin would work only for as long as whatever CDN serves
+# release assets keeps sending a permissive CORS header - not something this
+# repository controls, tests, or would find out about until a visitor's install
+# silently failed. The step is best-effort: with no release published the page says
+# so and points at the manual route, which is strictly better than failing the
+# documentation deployment over it.
+#
 # The build and deploy steps are separate jobs on purpose: `deploy` only runs if
 # `build` succeeded, so a documentation build that fails validation leaves the
 # previously published site untouched rather than replacing it with a broken one.
@@ -22,6 +32,14 @@ on:
       - "requirements-docs.txt"
       - "plxy.sh"
       - ".github/workflows/docs-deploy.yml"
+  # A new firmware release changes what the browser installer should serve, and
+  # nothing under docs/ has to change for that to be true - so the deployment is
+  # re-run when the firmware workflow finishes. Without this the installer would
+  # keep offering the previous release until somebody happened to edit a page.
+  workflow_run:
+    workflows: ["Build and publish firmware"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
 
 # Minimum required to publish Pages. Notably absent: `contents: write` - this
@@ -76,6 +94,45 @@ jobs:
       # care about the bit.
       - name: Build documentation (docs-only)
         run: bash ./plxy.sh docs-build
+
+      # After the site is built, so it lands in the output tree, and before the
+      # upload. `|| true` on the download: a repository with no release yet is a
+      # normal state, not a documentation failure.
+      - name: Attach the published firmware to the site
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          mkdir -p site/firmware
+          if gh release download --repo "$GITHUB_REPOSITORY" \
+               --pattern 'manifest.json' \
+               --pattern 'flash-offsets.json' \
+               --pattern '*-merged.bin' \
+               --dir site/firmware --clobber; then
+            echo "firmware assets published alongside the docs:"
+            ls -l site/firmware
+          else
+            echo "no firmware release to attach; the install page will say so"
+            rmdir site/firmware 2>/dev/null || true
+          fi
+
+      - name: Report the installer state
+        run: |
+          {
+            echo "## Browser installer"
+            echo
+            if [ -f site/firmware/manifest.json ]; then
+              echo "| | |"
+              echo "| --- | --- |"
+              echo "| Manifest | :white_check_mark: published |"
+              echo "| Version | \`$(python -c "import json;print(json.load(open('site/firmware/manifest.json'))['version'])")\` |"
+              echo "| Images | $(ls site/firmware | tr '\n' ' ') |"
+            else
+              echo "No firmware release found, so the install page will explain that"
+              echo "and point at the manual flashing route. Publish one by pushing a"
+              echo "\`v*\` tag, which runs the firmware-release workflow."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

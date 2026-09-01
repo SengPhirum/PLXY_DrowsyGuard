@@ -1,0 +1,309 @@
+# Build the ESP32-S3 firmware, verify it, and publish something a browser can flash.
+#
+# Separate from the documentation workflows on purpose. A typo fix should not queue
+# behind a 16 MB firmware build, and a firmware build should not be able to publish
+# the documentation site - so neither workflow has the other's permissions.
+#
+# What "verified" means here, concretely. Every one of these has a specific failure
+# it exists to catch, and none of them is a formality:
+#
+#   * the firmware compiles in Espressif's own container, at a pinned IDF release,
+#     with no local toolchain state - which is the difference between "it builds on
+#     the maintainer's laptop" and "it builds";
+#   * the host-compiled logic tests run, so the gate, the presence monitor and the
+#     firmware/Python parity are checked against the same sources that were built;
+#   * the application fits its partition with room to spare, because an app that
+#     overflows links fine and fails at `esp_ota_get_running_partition`;
+#   * every image named in the build's own flasher_args.json exists and is non-empty;
+#   * the merged image is byte-checked against the parts it was made from, so a
+#     truncated or mis-offset merge cannot be published;
+#   * the manifest is validated against what ESP Web Tools actually requires.
+#
+# The offsets are never typed. They come from flasher_args.json, which ESP-IDF writes
+# next to the binaries. A hand-copied offset produces a board that flashes
+# successfully and boots into nothing, and the person holding it cannot tell that
+# from a hardware fault.
+
+name: Build and publish firmware
+
+on:
+  push:
+    tags:
+      - "v*"
+  pull_request:
+    paths:
+      - "firmware/**"
+      - "scripts/make_manifest.py"
+      - ".github/workflows/firmware-release.yml"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Create a GitHub release from this build"
+        type: boolean
+        default: false
+
+# Read-only by default. The publish job asks for `contents: write` on its own, so a
+# pull-request run physically cannot create a release even if the logic were wrong.
+permissions:
+  contents: read
+
+concurrency:
+  group: firmware-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned, not floating. A drowsiness alarm whose binary changes because a base
+  # image moved is not reproducible, and the measured flash and RAM figures in
+  # docs/DEPLOYMENT.md are only meaningful against a known IDF.
+  IDF_VERSION: v5.5.5
+
+jobs:
+  build:
+    name: Build and verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        # Tags and full history, so `git describe` can produce a real version string
+        # rather than a bare hash.
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The logic these tests cover is compiled from the same files the firmware
+      # build uses, so running them here - rather than trusting a separate run -
+      # means a published binary has had its decision layer checked.
+      - name: Install test dependencies
+        run: |
+          python -m pip install --disable-pip-version-check --quiet pytest ziglang
+
+      - name: Test the host-compilable firmware logic
+        run: |
+          python -m pytest tests/test_face_gate.py tests/test_presence.py \
+                           tests/test_firmware_parity.py -q
+
+      - name: Build firmware
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: ${{ env.IDF_VERSION }}
+          target: esp32s3
+          path: firmware/esp32s3
+
+      - name: Record the build's own flash layout
+        id: layout
+        run: |
+          set -euo pipefail
+          cd firmware/esp32s3/build
+          echo "### Flash layout" >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat flasher_args.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      # Fails the build rather than warning. An app that does not fit produces a
+      # linker success and a boot failure, which is the worst possible pairing: the
+      # pipeline goes green and the board goes dark.
+      - name: Check the application fits its partition
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, pathlib, sys, csv, io
+
+          build = pathlib.Path('firmware/esp32s3/build')
+          fa = json.loads((build / 'flasher_args.json').read_text())
+          app = build / fa['app']['file']
+          size = app.stat().st_size
+
+          # The partition table is the authority on how much room there is, and it is
+          # parsed rather than assumed: partitions.csv is edited far more often than
+          # this workflow, and a shrunk app partition would otherwise be discovered by
+          # a board that will not boot.
+          rows = csv.reader(io.StringIO(
+              pathlib.Path('firmware/esp32s3/partitions.csv').read_text()))
+          limit = None
+          for row in rows:
+              row = [c.strip() for c in row if c.strip()]
+              if len(row) >= 5 and row[1] == 'app':
+                  raw = row[4]
+                  limit = (int(raw[:-1]) * 1024 * 1024 if raw.upper().endswith('M')
+                           else int(raw[:-1]) * 1024 if raw.upper().endswith('K')
+                           else int(raw, 0))
+                  break
+          if limit is None:
+              sys.exit('no app partition found in partitions.csv')
+
+          free = limit - size
+          print(f'{app.name}: {size} B of {limit} B ({100 * size / limit:.1f}% used, '
+                f'{free} B free)')
+          with open('firmware-size.txt', 'w') as f:
+              f.write(f'{size} {limit}\n')
+          if free <= 0:
+              sys.exit(f'the application overflows its partition by {-free} B')
+          # 5% is not arbitrary: one more embedded voice clip is about 80 kB, so a
+          # margin thinner than this means the next routine change breaks the build
+          # at link time with no warning beforehand.
+          if free < limit * 0.05:
+              sys.exit(f'only {free} B free ({100 * free / limit:.1f}%); '
+                       f'raise the app partition before adding more')
+          PY
+
+      - name: Verify every image the build named actually exists
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, pathlib, sys
+
+          build = pathlib.Path('firmware/esp32s3/build')
+          fa = json.loads((build / 'flasher_args.json').read_text())
+          bad = []
+          for offset, rel in sorted(fa['flash_files'].items(), key=lambda kv: int(kv[0], 16)):
+              path = build / rel
+              if not path.is_file():
+                  bad.append(f'{rel} (named at {offset}) is missing')
+              elif path.stat().st_size == 0:
+                  bad.append(f'{rel} is empty')
+              else:
+                  print(f'{offset:>10}  {rel}  {path.stat().st_size} B')
+          if bad:
+              sys.exit('\n'.join(bad))
+          PY
+
+      - name: Build the web-installer manifest and merged image
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --quiet esptool
+          VERSION="${GITHUB_REF_NAME}"
+          case "$GITHUB_REF" in
+            refs/tags/*) ;;
+            *) VERSION="$(git describe --tags --always)" ;;
+          esac
+          python scripts/make_manifest.py \
+            --build firmware/esp32s3/build \
+            --out dist/firmware \
+            --version "$VERSION"
+
+      # The check that makes the merge trustworthy rather than merely successful.
+      # esptool exits 0 for a merge that produced a file; this asserts the file
+      # actually contains each source image at the offset the build said it belongs
+      # at, which is the only thing that matters to a board reading it back.
+      - name: Verify the merged image byte-for-byte against its parts
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, pathlib, sys
+
+          build = pathlib.Path('firmware/esp32s3/build')
+          dist = pathlib.Path('dist/firmware')
+          fa = json.loads((build / 'flasher_args.json').read_text())
+          offsets = json.loads((dist / 'flash-offsets.json').read_text())
+
+          merged_name = offsets['artifacts'][0]['file']
+          merged = (dist / merged_name).read_bytes()
+          print(f'{merged_name}: {len(merged)} B')
+
+          problems = []
+          for offset_hex, rel in fa['flash_files'].items():
+              offset = int(offset_hex, 16)
+              part = (build / rel).read_bytes()
+              window = merged[offset:offset + len(part)]
+              if window != part:
+                  problems.append(f'{rel} does not appear at {offset_hex} in the merge')
+              else:
+                  print(f'  {offset_hex:>10}  {rel}  {len(part)} B  verified in place')
+          # And nothing before the first image, which is what a merged image written
+          # at offset 0 promises: the bootloader starts at byte 0 of the file.
+          lowest = min(int(o, 16) for o in fa['flash_files'])
+          if lowest != 0:
+              problems.append(f'lowest image is at {hex(lowest)}, not 0; a merged '
+                              f'image at offset 0 would be written to the wrong place')
+          if problems:
+              sys.exit('\n'.join(problems))
+          PY
+
+      - name: Validate the manifest against what ESP Web Tools requires
+        run: python -m pytest tests/test_web_installer.py -q
+        env:
+          DROWSYGUARD_MANIFEST_DIR: dist/firmware
+
+      - name: Summarise
+        run: |
+          set -euo pipefail
+          {
+            echo "### Published artifacts"
+            echo
+            echo "| File | Offset | Size | SHA-256 |"
+            echo "| --- | --- | --- | --- |"
+            python - <<'PY'
+          import json, pathlib
+          o = json.loads(pathlib.Path('dist/firmware/flash-offsets.json').read_text())
+          for a in o['artifacts']:
+              print(f"| `{a['file']}` | `{a['offset']}` | {a['bytes'] / 1024:.0f} kB "
+                    f"| `{a['sha256'][:32]}…` |")
+          PY
+            echo
+            echo "IDF \`${{ env.IDF_VERSION }}\`, commit \`${GITHUB_SHA::7}\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload firmware bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-web-installer
+          path: dist/firmware
+          retention-days: 30
+
+      # The individual images too, for anyone who wants to write them separately or
+      # inspect one. Kept out of the release assets to keep that list short.
+      - name: Upload the unmerged images
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-images
+          path: |
+            firmware/esp32s3/build/bootloader/bootloader.bin
+            firmware/esp32s3/build/partition_table/partition-table.bin
+            firmware/esp32s3/build/drowsyguard_esp32s3.bin
+            firmware/esp32s3/build/flasher_args.json
+            firmware/esp32s3/build/*.map
+          retention-days: 30
+
+  publish:
+    name: Publish release
+    needs: build
+    # Only for a tag, or an explicit dispatch that asked for it. Never on a pull
+    # request - and the permission block below means never *possible* on one either.
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download the firmware bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: firmware-web-installer
+          path: dist/firmware
+
+      - name: Create or update the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/firmware/*
+          generate_release_notes: true
+          body: |
+            ## Flash it from your browser
+
+            Chrome or Edge, an ESP32-S3 and a data USB cable:
+            **<https://sengphirum.github.io/PLXY_DrowsyGuard/getting-started/install-esp32/>**
+
+            ## Or flash it yourself
+
+            ```
+            python -m esptool --chip esp32s3 write_flash 0x0 drowsyguard-esp32s3-merged.bin
+            ```
+
+            `flash-offsets.json` in the assets records every image, its offset and its
+            SHA-256, so a download can be checked against what this workflow built.
+
+            > Research prototype. Not a certified automotive safety device.

@@ -4,10 +4,18 @@ title: Getting started
 
 # Getting started
 
-There are three ways into this project, and they do not depend on each other.
+There are four ways into this project, and they do not depend on each other.
 Pick the one that matches what you have in front of you.
 
 <div class="grid cards" markdown>
+
+-   :material-usb-flash-drive: **A board and a browser**
+
+    Chrome or Edge writes the firmware over USB in about a minute. No toolchain,
+    no Python, no ESP-IDF. The fastest route from a bare board to a running
+    device.
+
+    [:octicons-arrow-right-24: Install to ESP32 (browser)](install-esp32.md)
 
 -   :material-laptop: **Only a laptop**
 
@@ -37,6 +45,7 @@ Pick the one that matches what you have in front of you.
 
 | For | You need |
 | --- | --- |
+| Flashing from the browser | Chrome or Edge 89+, an ESP32-S3 and a data USB cable — nothing else |
 | Desktop toolkit, live dashboard | Python 3.10+ and a webcam |
 | Training and export | the above, plus a dataset (see [Datasets](../guide/datasets.md)) |
 | `.espdl` quantization | the above, plus `esp-ppq` |

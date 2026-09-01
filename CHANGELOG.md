@@ -1,5 +1,251 @@
 # Changelog
 
+## 2026-09-01 - what counts as a driver, saying so when there is none, and a browser installer
+
+Four things, and the first three are one argument: the pipeline could not tell the
+difference between *seeing nothing*, *seeing something that is not a person*, and
+*not being able to see*. All three produced the same output, and all three have
+different correct responses.
+
+### The detection gate now has to be convinced
+
+`face_gate.cpp` took the highest-scoring plausible box and believed it. That is fine
+when the only thing in frame is a face and wrong in every other case: a hand, a
+headrest, a phone or a patch of low-light noise all produce boxes, and **one** believed
+frame is enough to push a measurement of a non-person into a ten-second rolling
+baseline and a PERCLOS window.
+
+Static checks added, each aimed at a specific object rather than at "robustness":
+
+| Check | What it actually rejects |
+| --- | --- |
+| `FACE_MIN_SCORE` 0.55 | Low light. It collapses the detector's confidence rather than distorting its geometry, so the score is the only thing separating a dark face from a dark wall. The coarse stage runs at 0.10 on this camera and has to, so weak candidates genuinely arrive. |
+| `FACE_MIN_SIDE_FRAC` / `FACE_MAX_SIDE_FRAC` | A face too small for the eye crop to contain an eye - at 240 px the floor is a 24 px box, whose patch is already at `eyestate.py`'s 8 px minimum - and anything up against the lens. |
+| `FACE_ASPECT_MIN` / `FACE_ASPECT_MAX` | A raised hand, whose box is roughly 1:3. This is the check that fires even when the keypoints happen to land plausibly, which the landmark checks cannot see. |
+| `FACE_YAW_MAX` | A nose outside the eye pair horizontally. No head pose does that; a landmark set fitted to a hand does it readily. |
+| `FACE_MOUTH_MIN` / `FACE_MOUTH_MAX` | A collapsed mouth (a headrest - nothing in the image separates the corners) and a mouth wider than the head (a bright rectangle). |
+
+And a temporal layer, `FaceTrack`, which is the more important half. A single frame is
+not evidence: one implausibly-lucky detection on a headrest passes every static check
+often enough to matter at five detections a second. So presence now requires
+`FACE_CONFIRM_DETECTIONS` consecutive detections that agree **with each other
+spatially**, a candidate that has moved further than a head can move between
+detections is refused, and - the part that took two attempts to get right - a new
+track never inherits the old one's confirmation.
+
+That last property is what stops a track sliding off the driver and onto a passenger.
+The first version conflated "is this candidate continuous" with "is continuity
+required", which meant a driver reappearing in exactly the place they had left - the
+ordinary end of an occlusion - was treated as a brand new track and lost presence for
+a detection interval every time the detector blinked. Continuity is now always
+computed; the reacquisition window only decides whether a *discontinuous* candidate is
+allowed in at all.
+
+`FACE_GATE_ENFORCE=0` still makes all of it advisory, and that escape hatch is built
+and tested rather than a branch nobody has run. It was needed once.
+
+### "No driver detected"
+
+New `presence.{h,cpp}` / `presence.py`, and the reason it is a module rather than a
+timer is the health argument. A camera that has stopped delivering frames and a cabin
+with nobody in it are the same observation and opposite conclusions, and announcing
+the wrong one is worse than saying nothing: "no driver detected" aimed at a driver
+sitting right there teaches them the device is broken, and it is - just not about
+them.
+
+- Absence, measured from **after** the tracking hold has already expired, produces
+  exactly one announcement per episode at `PRESENCE_ALERT_S` (3.0 s, configurable).
+- `PipelineHealth::CameraFault` (ten consecutive failed grabs) and `ModelFault` (the
+  detector never loaded) suppress it entirely and *discard* the absence episode rather
+  than freezing it - when the camera comes back the cabin may hold something else.
+- Two debounces, in opposite directions. Absence must persist before it is announced,
+  so a mirror check is not an alarm. Presence must persist for `PRESENCE_CLEAR_S`
+  before the alert re-arms, so a single flickering detection on an empty seat cannot
+  cancel a real absence and restart the countdown from zero forever. That second
+  failure mode is silent, which is what makes it the dangerous one.
+- A five-second warm-up after boot and after any fault clears, because the camera, the
+  models and the auto-exposure are all still settling and a face found - or missed - in
+  that window is luck.
+
+The capture loop keeps publishing status while the camera is down, so the page reads
+`camera fault` instead of freezing on the last good frame.
+
+### Sneezes are announced, and no longer confusable with a yawn
+
+The suppression is unchanged and is still the point: a sneeze slams the eyes shut for
+about a second, which an eye-closure detector records as a microsleep.
+
+What was wrong is that `SNEEZE_JAW_DELTA` alone cannot separate a sneeze from a yawn
+that also closes the eyes - a yawn opens the mouth wide, so it clears the threshold
+comfortably. A yawn misread as a sneeze is worse than a missed sneeze, because the
+suppression window then silences a genuine drowsiness cue for `SNEEZE_MAX_S`. The
+discriminator added is `SNEEZE_MOUTH_LEAD_S`: how long the mouth had **already** been
+open when the eyes closed. In a sneeze they go together; in a yawn the mouth has been
+wide for a second by then.
+
+The obvious alternative was tried first and is wrong, which is worth recording.
+Requiring the opening index to *rise during* the closure fails because `EyeGate`'s
+median-of-3 delays the closure decision by two frames, so a mouth that opened
+simultaneously with the eyes has already finished opening by the time the closure is
+declared and the measured rise is zero. It would have rejected precisely the sneezes it
+was meant to find.
+
+A confirmed sneeze now also gets one short announcement of its own. The driver has
+just closed their eyes for a second and heard nothing; without a word from the device,
+a system that decided correctly is indistinguishable from one that missed it.
+Detection stays per closure - `sneeze_count` is honest - and the announcement is
+edge-triggered with `SNEEZE_ALERT_COOLDOWN_S`, so a fit of three sneezes a second
+apart is counted three times and announced once. `sneeze_alerts` is reported
+separately.
+
+### Alerts have channels now
+
+`AlertReason::Sneeze` and `AlertReason::NoDriver` (4 and 5; the numbering is API and
+is appended to, never renumbered), with English and Khmer clips embedded for both -
+twelve clips total, all generated by `scripts/make_voice_clips.py` and all validating
+as 16 kHz mono 16-bit.
+
+Rate limiting moved from one global cooldown to one per channel. With a single shared
+cooldown a sneeze acknowledgement or a no-driver warning could be swallowed by a
+drowsiness cooldown that had nothing to do with it, and the symptom of that is
+silence - the hardest failure to notice on a device whose only output is a speaker.
+`voice_alert_count_for()` and `alert.counts` report per reason, because forty
+microsleep announcements and forty no-driver announcements describe completely
+different drives and one of them is not about the driver at all.
+
+### Install to ESP32 from a browser
+
+`docs/getting-started/install-esp32.md` runs ESP Web Tools over Web Serial: Chrome or
+Edge, a data cable, one click. The alternative it replaces - clone the repository,
+install a 2 GB toolchain, resolve managed components - is a reasonable ask of somebody
+developing the firmware and an unreasonable one of somebody who wants to try the
+device.
+
+`.github/workflows/firmware-release.yml` builds in Espressif's container at a pinned
+IDF, runs the host-compilable logic tests against the same sources, checks the app
+fits its partition with 5% to spare, verifies every image named in the build's own
+`flasher_args.json` exists, merges them, and then **checks the merged image
+byte-for-byte against the parts it was made from** - esptool exits 0 for any merge
+that produced a file, and a mis-offset merge is indistinguishable from a good one
+until a board will not boot.
+
+No offset is ever typed. `scripts/make_manifest.py` reads them from
+`flasher_args.json`, and asserts the lowest image is at 0 before emitting a merged
+manifest - on an original ESP32 the bootloader is at `0x1000` and a merged image
+written at 0 would put every byte 4 kB early. `flash-offsets.json` publishes the
+offsets and a SHA-256 per image so a download can be checked.
+
+`docs-deploy.yml` copies the release assets into `site/firmware/` so the installer
+fetches its manifest same-origin. Cross-origin would work only for as long as whatever
+CDN serves release assets keeps sending a permissive CORS header, which is not
+something this repository controls or would find out about until a visitor's install
+silently failed.
+
+### Parity is now behavioural, not just numeric
+
+`tests/test_firmware_parity.py` compared constants, which is necessary and nowhere
+near sufficient: the gate and the presence monitor are ordered (which check is
+reported first), stateful, and full of boundary cases, and every one of those is
+somewhere a transcription can drift without a single number changing.
+
+`tests/test_facegate_parity.py` and `tests/test_presence.py` compile the C++ on the
+host and drive **both** implementations through identical inputs - a 400-candidate
+randomised sweep, eleven named detection sequences, a 120-step random walk, eight
+presence timelines - requiring the same verdict, the same reject reason, the same
+state and the same alert edges at every step. The parity test also asserts the sweep
+reaches at least ten distinct reject reasons, because a parity test over inputs that
+all take the same branch proves nothing.
+
+The presence timelines use a 1/16 s step rather than the device's nominal 1/15.
+Both are ~15 fps, but 0.0625 is exactly representable in binary and 1/15 is not - and
+the firmware accumulates in float32 while Python accumulates in double, so with an
+inexact step the two cross a threshold on different frames. That is a floating-point
+artefact, and letting it into every assertion would mean every assertion needed slack,
+which would also hide a real one-frame disagreement. The inexact case gets one test of
+its own with the slack it actually needs.
+
+`test_firmware_parity.py` also gained a test that fails when a constant is added to
+both headers and to neither comparison list, which is exactly how the hand-maintained
+`PAIRS` table would have rotted.
+
+### Measured
+
+Host suite: **353 passed, 2 skipped** (the two skips need `data/processed/`, which
+this repository does not ship). Documentation: strict build clean, 33 pages.
+
+Firmware, ESP-IDF v5.5.5, against a build of the same tree with these changes
+reverted:
+
+| | before | after | delta |
+| --- | --- | --- | --- |
+| App binary | 3,128,864 B (50% of the 6 MB partition free) | 3,404,992 B (46% free) | +276,128 B |
+| Flash `.text` | 1,797,232 B | 1,802,632 B | +5,400 B |
+| Flash `.rodata` | 1,197,236 B | 1,466,884 B | +269,648 B |
+| DIRAM used | 217,283 B (63.58%) | 218,403 B (63.91%) | +1,120 B |
+| DIRAM free | 124,477 B | 123,357 B | -1,120 B |
+
+Almost all of the flash growth is the four new voice clips (259 kB); the logic itself
+is 5.4 kB of code. The internal-RAM cost is 1,120 B, of which 1,024 B is the status
+JSON buffer growing from 3584 to 4608 bytes to fit the new `presence` and
+`alert.counts` objects. Nothing new is allocated from PSRAM.
+
+On hardware - N16R8, OV5640, 240x240 RGB565, flashed with exactly the binary above:
+
+| | measured |
+| --- | --- |
+| Frame rate, nobody in frame | 19.7 fps |
+| Frame rate, tracking, one browser attached | 11.5-17.2 fps |
+| `detect`, 0-1 candidates | 39.2-39.6 ms |
+| `detect`, a full multi-candidate frame | up to 70.3 ms |
+| `eye` | 17.8-18.5 ms per eye |
+| Detection hit rate with someone in frame | 20/20 at score 1.00 |
+| Gate rejections on real candidates | **0**, every logged interval |
+| Internal heap free | 17,475-21,807 B (lower with a viewer attached) |
+| PSRAM free | 7.01-7.03 MB |
+
+`detect` is the whole of `model_detect_face()`, gate included. At 0-1 candidates it
+matches the 39.6 ms recorded before any of these checks existed; the 70 ms figure is
+the pre-existing behaviour noted in `main.cpp` - the refinement stage runs once per
+candidate, so a busy frame has always cost more. The gate adds a few float comparisons
+per candidate on top of that, at most eight candidates, every third frame.
+
+`gate would drop 0 ok` across every interval is the regression that mattered: an
+earlier version of this gate rejected **100%** of real candidates on hardware, and
+reported it as a bare count that was indistinguishable from an empty frame.
+
+Every alert path was observed firing on the board, in Khmer, from embedded clips:
+
+```
+W voice_alert: ALERT (NO DRIVER DETECTED)
+W drowsyguard: no driver for 3.0 s (announcement 1)
+...
+W voice_alert: ALERT (DROWSY)                       risk 0.69  perclos 0.55
+...
+W voice_alert: ALERT (NO DRIVER DETECTED)
+W drowsyguard: no driver for 3.0 s (announcement 2)
+I voice_alert: spoke km_no_driver from embedded
+I sdcard: stored event 0000439 (5128 B, risk 0.23, no_driver)
+```
+
+The numbered announcements are the re-arm path working: the alert fires at exactly the
+configured 3.0 s, once, and only announces again after a driver has been confirmed in
+between. Over a ~50 s stretch of continuous `face 0/20` in an earlier run it fired
+**once**, not once per frame. Sneeze announcements were observed 5.3 s apart -
+therefore past the 2.5 s cooldown, so counted as separate episodes - each stored to the
+card with `reason: sneeze`. All twelve clips resolve to `embedded` at boot, so a board
+with no SD card speaks every reason in either language.
+
+### Not fixed, and visible in that same run
+
+The sneeze detections in the hardware run above were **not** staged sneezes - the
+camera was pointed at a moving, poorly-lit scene, PERCLOS read 0.63, and the closure
+detector was firing on noise. That is the known eye-model limitation (IR-trained,
+AUC 0.62 on visible light, gap 6 in `PROJECT_STATE.md`) reaching a new cue rather than
+a fault in the sneeze logic, and it is worth stating plainly: better closure timing
+does not make a bad closure signal good. The sneeze thresholds remain
+literature-informed defaults, untuned against labelled sneeze video, which this
+project still does not have.
+
 ## 2026-08-26 (later) - the docs build, and the page that was silently overwriting another
 
 `Deploy documentation` went red on `main` at `e5effdb`. The message named one

@@ -71,11 +71,56 @@ instead of a face in a room. (OpenCV 5 removed `CascadeClassifier` and ships no
 bundled cascades, so Haar is not an option; YuNet is downloaded by
 `fetch-models`.)
 
-Tracking is not bare per-frame detection: the box is EMA-smoothed and **held for
-15 frames** when detection drops. That hold matters here, because detectors tend
-to lose the face at exactly the moment of interest — eyes closing, head nodding —
-and without it the crop would jump back to the whole frame right then. The status
-pill reads `face 0.94`, `face held`, or `no face`.
+Detection alone is not enough, and that is not a theoretical point: a hand, a
+headrest, a phone or a patch of low-light noise all produce boxes, and one believed
+frame is enough to start feeding a rolling baseline and a PERCLOS window with
+measurements of something that is not a person. Every candidate therefore goes
+through `drowsyguard.facegate`, which is a transcription of the firmware's own gate —
+confidence, box size and shape, the five landmarks' geometry, then agreement across
+consecutive detections. The dashboard is where thresholds get tuned, so it has to
+apply the ones the device will.
+
+What that means in practice:
+
+- **A driver is not present until two consecutive detections agree.** At 30 fps that
+  is about 70 ms at acquisition. One frame is not evidence.
+- **The box is EMA-smoothed and held** for `FACE_HOLD_DETECTIONS` attempts when
+  detection drops, because detectors lose the face at exactly the moment of interest —
+  eyes closing, head nodding — and without the hold the crop would jump back to the
+  whole frame right then.
+- **A candidate that has teleported is refused** while the track is warm. That is
+  what stops the crop stepping off the driver onto a passenger who leaned in.
+- **After a longer gap the requirement is dropped** so a driver who genuinely moved can
+  be found again — but the new track is *pending* and has to earn confirmation from
+  scratch. Presence is re-earned across a discontinuity, never inherited.
+
+The status pill reads `face 0.94`, `face held`, or — when something was in frame and
+the gate refused it — the reason: `score-too-low`, `box-not-head-shaped`,
+`nose-outside-eye-pair`, `moved-too-far`. Each names a different fix, and none of them
+is the same problem as an empty room.
+
+### The driver readout
+
+Next to the counters, `driver` shows either `present`, how long the seat has looked
+empty against the threshold, or `camera fault` / `model fault`. When the absence
+crosses the threshold, the state pill reads **NO DRIVER** and an alert is logged with
+that reason — once per absence episode, not once per frame.
+
+This is the same `PresenceMonitor` the firmware runs, parity-tested against it, so
+what you see here is what the board will do. Turn it off, or change the threshold,
+without restarting:
+
+```bash
+curl -X POST http://127.0.0.1:8000/config \
+     -H 'Content-Type: application/json' \
+     -d '{"no_driver_after": 8.0}'
+curl -X POST http://127.0.0.1:8000/config \
+     -H 'Content-Type: application/json' \
+     -d '{"no_driver_alert": false}'
+```
+
+The second is worth knowing about for bench work, where an empty seat is the normal
+state and the announcement is only noise.
 
 Measured over 400 DDD images the detected face box is ~1.02× the image side,
 i.e. DDD crops are extremely tight, so `--face-margin` defaults to `0`: the
@@ -88,6 +133,23 @@ applies:
 ```bash
 python -m drowsyguard.cli live --no-face-detect --zoom 0.45
 ```
+
+## Sneezes
+
+The **sneezes** readout shows two numbers — detected, and announced. They are
+deliberately different: one sneeze is often two or three closures a second apart, each
+a real detection, and announcing every one of them is noise. Detection is per closure;
+the announcement is edge-triggered with a 2.5 s cooldown, so a fit becomes one alert.
+
+Each detection also suppresses the drowsiness score for `SNEEZE_MAX_S`, which is the
+original reason the cue exists — a sneeze slams the eyes shut for about a second, and
+an eye-closure detector would otherwise record a microsleep. Watch the **sneeze filter
+active** pill during one: a suppressed false alarm is visible rather than silent.
+
+To see the discrimination working, try a deliberate yawn with the eyes closed. It must
+*not* register as a sneeze, and the microsleep must still fire — a yawn misread as a
+sneeze would silence a genuine drowsiness cue. What separates them is when the mouth
+opened relative to the eyes closing, not how wide.
 
 ## Replaying a recording
 

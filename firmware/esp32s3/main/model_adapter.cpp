@@ -129,7 +129,16 @@ bool model_eye_ready() {
 // translated back into frame coordinates. Pass an invalid FaceBox for a full-frame
 // run - face_gate_map_out() is then a no-op, which is the case that runs whenever
 // the track is cold.
-static bool run_and_pick(dl::image::img_t &img, const FaceBox &roi, FaceDetection *out) {
+//
+// `frame_w`/`frame_h` are the *frame's* dimensions, not the crop's, and that is
+// deliberate: the gate's size checks ask how big the face is in the scene, which does
+// not change because the detector happened to be handed a smaller window. Passing the
+// crop size instead would make the same face pass or fail depending on whether the
+// track was warm, which is the kind of inconsistency that is almost impossible to
+// diagnose from a log line. Box sizes are identical in both coordinate systems - only
+// the origin differs - so no conversion is needed to compare them.
+static bool run_and_pick(dl::image::img_t &img, const FaceBox &roi, int frame_w,
+                         int frame_h, FaceDetection *out) {
     auto &results = s_face->run(img);
     if (results.empty()) return false;
 
@@ -190,7 +199,8 @@ static bool run_and_pick(dl::image::img_t &img, const FaceBox &roi, FaceDetectio
     FaceGeometry first_bad_g{};
     for (int i = 0; i < n; ++i) {
         FaceGeometry g{};
-        const FaceReject why = face_gate_check(lms[i], boxes[i], &g);
+        const FaceReject why = face_gate_check(lms[i], boxes[i], scores[i],
+                                              frame_w, frame_h, &g);
         if (why == FaceReject::None) {
             ++good;
         } else if (first_bad_i < 0) {
@@ -222,7 +232,7 @@ static bool run_and_pick(dl::image::img_t &img, const FaceBox &roi, FaceDetectio
         }
     }
 
-    const int pick = face_gate_pick(boxes, lms, n, track_local);
+    const int pick = face_gate_pick(boxes, lms, scores, n, track_local, frame_w, frame_h);
     if (pick < 0) return false;
 
     out->x = boxes[pick].x;
@@ -285,7 +295,7 @@ bool model_detect_face(const uint8_t *rgb565, int width, int height, bool full_f
     s_stats.roi_w = roi.valid ? roi.w : width;
     s_stats.roi_h = roi.valid ? roi.h : height;
 
-    const bool hit = run_and_pick(img, roi, out);
+    const bool hit = run_and_pick(img, roi, width, height, out);
     s_stats.us = esp_timer_get_time() - t0;
 
     if (hit) {

@@ -11,8 +11,17 @@ tree holds a tunable number.
 | --- | --- | --- |
 | [Training](#training-configuration) | `configs/*.yaml` | at `train` / `evaluate` / `export-onnx` |
 | [Firmware pins](#firmware-pins) | `firmware/esp32s3/main/board_*.h` | at compile time |
-| [Firmware behaviour](#firmware-behaviour) | `main.cpp`, `risk_filter.h` | at compile time |
+| [Firmware behaviour](#firmware-behaviour) | `main.cpp`, `risk_filter.h`, `face_gate.h`, `presence.h`, `behavior.h` | at compile time |
 | [Build](#build-configuration) | `sdkconfig.defaults` | at `idf.py set-target` |
+
+!!! warning "Several of these are mirrored, and the mirrors are tested"
+    `behavior.h`, `face_gate.h`, `presence.h` and `risk_filter.h` each have a Python
+    counterpart in `src/drowsyguard/`, because the dashboard is where thresholds get
+    tuned and a threshold tuned against different logic is worse than no tuning at
+    all. `tests/test_firmware_parity.py` compares the constants;
+    `tests/test_facegate_parity.py` and `tests/test_presence.py` go further and drive
+    both implementations through identical sequences, requiring identical answers.
+    Change one side only and `./plxy.sh test` fails.
 
 Plus the [environment variables](#environment-variables) `plxy.sh` reads, and the
 handful of [runtime settings](#runtime-settings) the device accepts over HTTP.
@@ -131,6 +140,67 @@ frames in `test_frames.h` at boot, which separates "the ESP-DL binding is wrong"
 from "nobody was in front of the camera". Leave it off: `/api/snapshot` returns
 the actual frame the detector was handed, which is strictly better.
 
+### The detection gate — `main/face_gate.h`
+
+What counts as a face, and when a sequence of detections counts as a driver. Every
+constant is mirrored in `src/drowsyguard/facegate.py`, and
+`tests/test_facegate_parity.py` drives both implementations through the same
+sequences and requires the same answers — so these cannot be changed on one side
+alone.
+
+| Constant | Default | What it rejects |
+| --- | --- | --- |
+| `FACE_MIN_SCORE` | `0.55` | Weak candidates. The coarse detector stage runs at 0.10 on this camera (it has to — see `model_adapter.cpp`), so genuinely weak boxes arrive; a real face on this board scores 1.00. This is also what rejects most low-light false positives, because low light collapses confidence rather than distorting geometry. |
+| `FACE_MIN_SIDE_FRAC` / `FACE_MAX_SIDE_FRAC` | `0.10` / `0.95` | Faces too small for the eye crop to contain an eye, and things up against the lens. At 240 px the floor is a 24 px box, whose eye patch is already at `eyestate.py`'s 8 px minimum. |
+| `FACE_ASPECT_MIN` / `FACE_ASPECT_MAX` | `0.55` / `1.80` | Boxes that are not head-shaped. This is what catches a raised hand even when its keypoints happen to land plausibly. |
+| `FACE_YAW_MAX` | `0.75` | A nose outside the eye pair horizontally. No head pose does this; a landmark set fitted to a hand does it readily. |
+| `FACE_MOUTH_MIN` / `FACE_MOUTH_MAX` | `0.25` / `1.60` | A collapsed mouth (a headrest — nothing in the image separates the corners) and a mouth wider than the head (a bright rectangle). |
+| `FACE_EYE_DIST_*`, `FACE_MAX_ROLL_DEG`, `FACE_JAW_*`, `FACE_NOSE_FRAC_*` | see header | The original checks: interocular distance, tilt, and the mouth-below-eyes / nose-between ordering. |
+
+Temporal, and these are the ones that decide *presence*:
+
+| Constant | Default | Effect |
+| --- | --- | --- |
+| `FACE_CONFIRM_DETECTIONS` | `2` | Consecutive accepted detections before a driver counts as present. One frame is not evidence: the static checks are geometric and a single frame of landmark noise on a non-face can satisfy all of them. At `DETECT_EVERY = 3` and 15 fps this costs about 0.4 s at acquisition. |
+| `FACE_HOLD_DETECTIONS` | `5` | Detection attempts a confirmed track survives with nothing accepted — about a second. This is what covers the moment the eyes close, which is when detectors drop faces and is exactly the moment of interest. |
+| `FACE_JUMP_MAX_FRAC` | `1.20` | Centre movement between detections, as a fraction of box size. Refuses a candidate that has teleported: that is a different object, and accepting it is how a track steps off the driver onto a passenger. |
+| `FACE_SCALE_MAX_RATIO` | `1.80` | Same idea for size. A face does not double in 200 ms. |
+| `FACE_REACQUIRE_AFTER` | `2` | Misses after which a *discontinuous* candidate is allowed in — the driver may genuinely have moved. It starts a new, pending track: presence is re-earned, never inherited. |
+
+`FACE_GATE_ENFORCE` (default `1`) makes the checks advisory when set to `0`: they
+still run and still log, they just stop excluding. That is the first thing to try if
+detection ever dies after a change here — it happened once, and the cause was a
+mirrored frame rather than a bad limit. The escape hatch is built and tested, not a
+branch nobody has run.
+
+### The no-driver alert — `main/presence.h` { #the-no-driver-alert }
+
+| Constant | Default | Meaning |
+| --- | --- | --- |
+| `PRESENCE_ALERT_S` | `3.0` | Continuous absence, **after** the tracking hold has already expired, before the alert fires. The wall-clock delay from a driver leaving is therefore the hold (~1 s) plus this. |
+| `PRESENCE_CLEAR_S` | `0.5` | Continuous presence before the alert re-arms. Much shorter than the above, and it only has to outlast a single flickering detection — without it, one spurious detection every couple of seconds resets the countdown forever and the alert never fires, silently. |
+| `PRESENCE_REPEAT_S` | `0.0` | Seconds between repeat announcements while the seat stays empty. Zero means exactly one per absence episode, which is the documented behaviour. Set it non-zero only where a continuously unattended camera is itself a fault condition. |
+| `PRESENCE_WARMUP_S` | `5.0` | Healthy seconds required before any absence is believed. Covers boot, where the camera, the models and the auto-exposure are all still settling, and covers recovery from a fault for the same reason. |
+
+The monitor takes a **health** argument as well as a presence boolean, and that is
+the point of the module: a camera that has stopped and a cabin with nobody in it are
+the same observation and opposite conclusions. In `camera-fault` or `model-fault` the
+absence episode is discarded rather than frozen, so a countdown that started before
+the fault cannot be resumed against a cabin that may now hold something else.
+
+On the desktop these are runtime-settable — `no_driver_after` and `no_driver_alert`
+on the dashboard's `POST /config`, which is how you turn the alert off for a bench
+session where an empty seat is the normal state.
+
+### Sneeze detection — `main/behavior.h`
+
+| Constant | Default | Meaning |
+| --- | --- | --- |
+| `SNEEZE_JAW_DELTA` | `0.13` | How far the opening index must exceed this driver's baseline. |
+| `SNEEZE_MOUTH_LEAD_S` | `0.50` | How long the mouth may **already** have been open when the eyes closed. This is what separates a sneeze from a yawn that also shuts the eyes — in a yawn the mouth has been wide for a second by then. Getting it wrong is worse than missing a sneeze, because the suppression window would silence a genuine drowsiness cue for `SNEEZE_MAX_S`. |
+| `SNEEZE_MAX_S` | `1.20` | Longest closure that can still be a sneeze. Past this it is a microsleep whatever the mouth is doing. |
+| `SNEEZE_ALERT_COOLDOWN_S` | `2.50` | Minimum spacing between sneeze *announcements*. Detection stays per-closure, so a fit of three sneezes a second apart is counted three times and announced once. |
+
 ### Wi-Fi — `main/board_wifi.h` { #wi-fi }
 
 | Define | Default | Meaning |
@@ -191,3 +261,8 @@ The only things settable on a running device, over HTTP:
 Risk thresholds are **not** runtime-settable — they are compiled in, by design:
 a threshold that can drift at runtime cannot be reported in a thesis. Full
 parameter detail in the [Device HTTP API](../reference/device-api.md#post-apisettings).
+
+The desktop dashboard, which is a development tool rather than a device, is more
+permissive: `POST /config` accepts every threshold plus `no_driver_after` and
+`no_driver_alert`. See the
+[Dashboard HTTP API](../reference/dashboard-api.md#post-config).

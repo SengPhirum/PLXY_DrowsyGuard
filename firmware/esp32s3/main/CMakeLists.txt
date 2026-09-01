@@ -4,6 +4,7 @@ idf_component_register(SRCS "main.cpp" "risk_filter.cpp" "model_adapter.cpp"
                             "voice_alert.cpp" "voice_clips.cpp" "behavior.cpp"
                             "board_audio.cpp" "board_wifi.cpp" "board_sdcard.cpp"
                             "web_server.cpp" "eye_model.cpp" "face_gate.cpp"
+                            "presence.cpp"
                        INCLUDE_DIRS "."
                        REQUIRES esp_http_server esp_wifi esp_netif nvs_flash
                                 esp_timer driver fatfs
@@ -24,7 +25,11 @@ idf_component_register(SRCS "main.cpp" "risk_filter.cpp" "model_adapter.cpp"
                                    "../assets/audio/en_microsleep.wav"
                                    "../assets/audio/en_yawning.wav"
                                    "../assets/audio/en_head_nod.wav"
+                                   "../assets/audio/en_sneeze.wav"
+                                   "../assets/audio/en_no_driver.wav"
                                    "../assets/audio/km_drowsy.wav"
                                    "../assets/audio/km_microsleep.wav"
                                    "../assets/audio/km_yawning.wav"
-                                   "../assets/audio/km_head_nod.wav")
+                                   "../assets/audio/km_head_nod.wav"
+                                   "../assets/audio/km_sneeze.wav"
+                                   "../assets/audio/km_no_driver.wav")

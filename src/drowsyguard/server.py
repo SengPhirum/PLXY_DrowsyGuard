@@ -91,6 +91,11 @@ def create_app(engine: LiveEngine) -> FastAPI:
             face_detect=payload.get('face_detect'),
             perclos_window=payload.get('perclos_window'),
             eye_closed_threshold=payload.get('eye_closed_threshold'),
+            # The no-driver alert is configurable from here so it can be tuned the
+            # same way every other threshold is - and turned off for a bench session
+            # where an empty seat is the normal state.
+            no_driver_after=payload.get('no_driver_after'),
+            no_driver_alert=payload.get('no_driver_alert'),
         ))
 
     @app.post('/reset')

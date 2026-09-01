@@ -98,6 +98,15 @@ theme:
 extra_css:
   - stylesheets/extra.css
 
+# Loaded on every page, and that is the cheapest correct option rather than a
+# compromise. The alternative - a <script src> in the installer page's body - does
+# not work: python-markdown stashes raw HTML blocks before MkDocs' relative-path
+# treeprocessor runs, so the src is emitted exactly as written and 404s at any URL
+# depth but one. The script itself returns immediately when the installer elements
+# are absent, which is every page but one.
+extra_javascript:
+  - assets/js/installer.js
+
 plugins:
   - search
 
@@ -163,6 +172,7 @@ nav:
       - Thesis plan: THESIS_PLAN.md
   - Getting started:
       - getting-started/index.md
+      - Install to ESP32 (browser): getting-started/install-esp32.md
       - Install the toolkit: getting-started/installation.md
       - Quickstart: getting-started/quickstart.md
   - User manual:

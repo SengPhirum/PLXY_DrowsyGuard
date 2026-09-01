@@ -85,7 +85,100 @@ looks like a dead sensor.
 After a `fullclean`, also check the three `CONFIG_OV*_SUPPORT` entries: a
 sensor-support regression reads exactly like a bad ribbon.
 
+## Flashing from the browser
+
+### The board does not appear in the browser's port picker
+
+In order of how often it is the cause:
+
+1. **A charge-only USB cable.** No data pins, so nothing enumerates anywhere — check
+   whether the board shows up in Device Manager or `ls /dev/tty*` at all before
+   blaming the page.
+2. **The wrong USB socket.** These boards have two. Use the one wired to the
+   ESP32-S3's native USB, not the UART bridge, if the picker stays empty.
+3. **Not in download mode.** Hold **BOOT**, tap **RESET**, release **BOOT**, then click
+   Install again. On this board a normal reset can leave the chip in the ROM loader
+   anyway, which is harmless here — the loader is what the installer wants.
+4. **Linux permissions.** `sudo usermod -aG dialout $USER`, then log out and back in.
+
+### The Install button never appears
+
+The page fetched no manifest. Two possibilities, and the status line above the button
+says which:
+
+- *No published build* — the release workflow has not produced one yet. Use
+  [flash it yourself](getting-started/install-esp32.md#flash-it-yourself-instead).
+- *Web Serial unsupported* — you are on Firefox or Safari. There is no extension or
+  flag that adds it; use Chrome or Edge, or flash manually.
+
+### The install fails part way through
+
+Try a shorter or better-quality cable first, then a different USB port, and prefer a
+port on the machine over one on a hub. The merged image is 3.4 MB and a marginal
+cable that survives enumeration can still drop a bulk transfer.
+
+If it consistently fails at the same point, the board's flash may be smaller than the
+16 MB the partition table assumes. `python -m esptool --chip esp32s3 flash_id` prints
+the real size.
+
+### It flashed, but the board does nothing
+
+Expect a three-note rising chime within a couple of seconds of the reboot. If there
+is no chime and no `DrowsyGuard-` SSID, connect a serial monitor and read the boot
+log — `./plxy.sh monitor`, or any terminal at 115200 baud. A board that flashed
+successfully and boots into nothing usually means the image landed at the wrong
+offset, which the browser installer cannot do (it writes one merged image at 0) but a
+hand-typed `esptool` command can.
+
 ## The device
+
+### The page says "no driver" while somebody is sitting there
+
+The gate refused every candidate. The **driver** pill and the `face.reject` field name
+which check failed, and each one has a different fix:
+
+| Reject | What it means | What to do |
+| --- | --- | --- |
+| `score-too-low` | The detector's own confidence is under 0.55. | Almost always light. Check the `light` pill: below about 40 the frame is too dark for the detector, whatever the geometry looks like. |
+| `face-too-small` | The face box is under 10% of the frame's short side. | The driver is too far from the camera for the eye crop to contain an eye. Move the board closer or reduce the field of view. |
+| `face-too-large` | Over 95%. | Something is up against the lens. |
+| `box-not-head-shaped` | The box aspect ratio is outside 0.55–1.80. | Usually a hand or a forearm. If it happens to a real face, it is at the frame edge and half cropped. |
+| `nose-outside-eye-pair`, `mouth-too-narrow`, `mouth-too-wide` | The five landmarks do not describe a face. | Expected on hands, headrests and phones. On a real face it means the landmarks are badly fitted — check the overlay on the preview. |
+| `roll-too-steep` | Head tilt past 45°. | A genuinely extreme pose, or the mirror bug returning; see `behavior_orient_landmarks()`. |
+| `moved-too-far` | Plausible, but not where the tracked face was. | Correct behaviour when a passenger leans in. If it fires on the driver, the frame rate has collapsed far enough that a head moves more than a box width between detections. |
+
+If every candidate reads `ok` and the driver still is not present, the track has not
+confirmed yet — presence needs two consecutive agreeing detections, which is about
+0.4 s at 15 fps.
+
+### "No driver detected" fires while someone is driving
+
+The driver is present but not *confirmed* for at least three seconds at a stretch.
+Check the **driver** pill: if it flickers between `driver present` and `empty Ns`, the
+detector is dropping the face repeatedly rather than the gate rejecting it. Raise the
+threshold, or turn the alert off, from the dashboard's `/config` endpoint
+(`no_driver_after`, `no_driver_alert`) — see
+[Configuration](configuration/index.md#the-no-driver-alert).
+
+### "No driver detected" never fires on an empty seat
+
+Three things suppress it deliberately, and the status page says which:
+
+- `presence.health` is not `ok` — the camera or the models are down, and a fault is
+  never reported as an absence.
+- `presence.state` is `warmup` — the first five healthy seconds after boot or after a
+  fault clears are not trusted.
+- Something in the frame is being confirmed as a driver. Check `face.reject`; a
+  headrest that passes the gate is a real bug and worth reporting with a snapshot.
+
+### The sneeze filter fires on a yawn (or never fires)
+
+A sneeze is distinguished from a yawn by *when* the mouth opened relative to the eyes
+closing, not by how wide it opened. If a yawn is being reclassified, the mouth is
+opening within `SNEEZE_MOUTH_LEAD_S` (0.5 s) of the closure, which means the eye model
+is late — check `eyes.closed` against the preview. If real sneezes are missed, the
+opening index is not reaching `SNEEZE_JAW_DELTA`; watch **opening index** on the page
+during one and compare.
 
 ### No `DrowsyGuard-` SSID anywhere
 
@@ -163,6 +256,16 @@ adjacent frames of one video — in both train and test. Use `import-ddd`, then
 ### `esp_ppq: OPTIONAL/MISSING`
 
 Expected until you need `.espdl` quantization. Nothing else requires it.
+
+### `./plxy.sh test` skips the firmware tests
+
+`no host C++ compiler`. Several tests compile `firmware/esp32s3/main/*.cpp` on the
+host and drive it against the Python implementations; without a compiler they skip,
+which for a parity check is the same as not having one. `pip install -e ".[dev]"`
+installs `ziglang`, a C++ compiler shipped as a wheel, which is enough.
+
+`esptool is not installed` skips the web-installer merge tests for the same reason and
+the same fix.
 
 ### `./plxy.sh test` fails in `test_firmware_parity.py`
 

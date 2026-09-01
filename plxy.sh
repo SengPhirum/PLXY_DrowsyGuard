@@ -487,7 +487,9 @@ cmd_alert() {
         microsleep)  reason=1 ;;
         yawn|yawning) reason=2 ;;
         nod|head_nod|headnod) reason=3 ;;
-        *) die "reason must be one of: drowsy microsleep yawn nod" ;;
+        sneeze) reason=4 ;;
+        none|no_driver|nodriver) reason=5 ;;
+        *) die "reason must be one of: drowsy microsleep yawn nod sneeze no_driver" ;;
     esac
     api POST "/api/alert-test?reason=$reason" && echo
 }

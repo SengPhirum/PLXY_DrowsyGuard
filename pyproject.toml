@@ -25,6 +25,21 @@ live = [
   "fastapi>=0.110",
   "uvicorn>=0.29",
 ]
+# Everything the test suite needs beyond the runtime dependencies.
+#
+# ziglang is a C++ compiler as a wheel. That is the whole point: several tests
+# compile firmware/esp32s3/main/*.cpp on the host and drive it against the Python
+# implementations, and requiring a system toolchain would mean those tests were
+# skipped on most machines - which for a parity check is the same as not having one.
+#
+# esptool is what merges the flash images for the browser installer. It ships with
+# ESP-IDF, so a firmware developer already has it; listed here so the installer tests
+# run on a checkout that has never seen ESP-IDF.
+dev = [
+  "pytest>=8.0",
+  "ziglang>=0.13",
+  "esptool>=4.7",
+]
 
 [project.scripts]
 drowsyguard = "drowsyguard.cli:main"
