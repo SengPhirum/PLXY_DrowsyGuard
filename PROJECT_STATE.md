@@ -1,6 +1,6 @@
 # Project State
 
-Last updated: 2026-08-23
+Last updated: 2026-09-01
 Status: Scaffold and live dashboard complete. Detection reworked from whole-face
 classification to multi-cue behaviour analysis (PERCLOS + long blinks + yawn + nod,
 with sneeze suppression) after the face CNN was found to key on driver identity. The
@@ -13,7 +13,51 @@ I2S chime, `SoftAP "DrowsyGuard-C5E019"` on 192.168.4.1, face detector loaded, a
 **19.7 fps** with no viewer attached. The browser preview itself, the alert path and
 everything downstream of the (still unbound) eye model remain unverified.
 
+**MQTT alerting added 2026-09-01.** Every confirmed alert is also published to a
+broker as one versioned JSON document, configured from a modal on the device page and
+persisted in NVS; the documentation site carries a live fleet dashboard that
+subscribes to it. Off by default. Builds clean against ESP-IDF v5.5.1 (2.3 MB app,
+64 % of the 6 MB partition free) and passes 155 host-compiled tests, but **no part of
+it has touched a broker on hardware** - see gap 13.
+
 ## Locked design decisions
+- **MQTT publishing may never stall the capture loop, and the shape of the code is the
+  guarantee rather than a comment.** `mqtt_publish_alert()` takes a mutex with a zero
+  tick timeout, copies 96 bytes into a fixed 16-deep ring and returns; it cannot
+  allocate, cannot block and cannot fail in a way the caller has to handle. Every
+  socket, handshake, retry and JSON render happens on the publisher task on core 1.
+  A broker that has been unreachable for a week costs the detector one memcpy per
+  alert. `tests/test_mqtt_config.py` proves the bound with 10 000 pushes and nothing
+  draining; `docs/DEPLOYMENT.md` test M3 measures `fps` with the broker dead.
+- **The MQTT logic lives in two files with no ESP-IDF headers**, deliberately, so that
+  validation, topic generation, the payload schema, the NVS blob format, the backoff
+  schedule, de-duplication and the outbox are all host-testable. `mqtt_publisher.cpp`
+  and `settings_nvs.cpp` are the halves that cannot be, and they were written to own
+  no logic of their own. Anything new that could go in either pair belongs in the
+  first.
+- **Publishing is off by default and there is no way to make it otherwise.** Turning
+  it on sends a named driver's alertness state to a third party; that has to be an act
+  rather than an inherited setting.
+- **The driver remark is never part of a topic.** A driver's name in a broker's
+  subscription tree is visible to every wildcard subscriber, retained in broker state,
+  and impossible to change without orphaning the topic. It travels in the payload.
+  `device_id` and `fleet_id` are the public halves and are constrained to characters
+  that cannot restructure the tree.
+- **The MQTT payloads are versioned; the HTTP APIs are not.** An HTTP client polls a
+  device it can see; a subscriber is somebody else's software reading messages
+  published while nobody was watching. Hence `schema` on every document.
+- **No image ever leaves the device over MQTT.** The captures stay on the card. There
+  is no code path that would publish a frame, and there should not be one.
+- **The device does not subscribe.** It publishes and takes no commands. A drowsiness
+  alarm a broker can mute would put the existing unauthenticated mute on the whole
+  internet.
+- **The fleet page in the documentation has no third-party script.** It speaks MQTT
+  over WebSocket itself. The page's only job is to display a driver's alertness state,
+  and a CDN dependency on it means a third party can change what it does for every
+  reader. It also has no `innerHTML`, and a test fails the build if one appears.
+- **The access point never comes down for MQTT.** Station mode is additive. A wrong
+  hotspot password, a dead uplink or a refused broker all degrade to "no telemetry",
+  never to "no dashboard" and never to "no alarm".
 - Target platform: ESP32-S3 with PSRAM and camera. **ESP32-S2 is ruled out**: it has no
   AI vector instructions and ESP-DL's face detection models do not support it, so the
   detector + two eye inferences per frame is not achievable. See
@@ -182,6 +226,22 @@ everything downstream of the (still unbound) eye model remain unverified.
    behaviour cues against an actual yawn or nod (the logic is now correct and the signs
    are now right, but no one has yawned in front of it), and heap over hours.
 
+13. **MQTT alerting has never met a broker on hardware.** As of 2026-09-01 it
+   compiles and links against ESP-IDF v5.5.1 with the real xtensa toolchain, and every
+   decision in it is covered by `tests/test_mqtt_config.py` (155 cases) and
+   `tests/test_fleet_page.py` + `fleet_page_harness.mjs` (83 checks). What that does
+   **not** establish is anything about a real connection: the TLS handshake against
+   `broker.emqx.io`, whether the certificate bundle verifies it, WSS from the fleet
+   page, the reconnect after a real disconnection, the Last Will actually firing, the
+   flush after an outage, and the one number that matters - `fps` with the broker dead
+   versus alive. `docs/DEPLOYMENT.md` has these as tests M1-M8 with pass criteria that
+   do not depend on anybody's judgement. Run M3 first and record it.
+
+   Two further things are untested by construction rather than by omission: the
+   station-mode reconnect path (`board_wifi_apply_station()` returns false on an
+   AP-only radio and the settings are then applied at the next boot), and NVS
+   behaviour on a partition that is genuinely full.
+
 ## Next best action
 Model: get eye-state labels in the target (visible-light) domain and fine-tune the
 11.3k-parameter base model on them, splitting by subject. MRL Eye ships subject IDs in
@@ -189,6 +249,11 @@ its filenames but is infrared and needs Kaggle credentials, which are not config
 here. Confirm any result per-driver on held-out subjects, and note for the write-up
 that the highest-accuracy public drowsiness models (70-343 MB, 224x224) cannot run on
 an ESP32-S3, which is why the eye-closure route was chosen.
+MQTT: run `docs/DEPLOYMENT.md` tests M1-M8 against a broker, in that order, and
+record M3 - `fps`, `ms_detect` and `ms_eye` with the broker dead against the same
+three with it live. That measurement is the entire safety argument for the feature and
+it is the one thing a host test cannot produce. `./plxy.sh mqtt` prints the state and
+the counters; `./plxy.sh mqtt test` publishes one alert through the real path.
 Hardware: the board is flashed and running; `./plxy.sh` drives the loop. What is
 left is to point it at a face - join `DrowsyGuard-C5E019`, open 192.168.4.1, and
 check that the face box tracks and that `fps` holds up with the stream open. Then

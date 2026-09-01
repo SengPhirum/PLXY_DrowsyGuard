@@ -76,6 +76,7 @@
   .pill.w-state{min-width:104px}
   .pill.w-card{min-width:112px}
   .pill.w-hold{min-width:124px}
+  .pill.w-mqtt{min-width:112px}
   /* The tag row is a fixed two lines high, so a pill wrapping onto a second line
      cannot shove the preview around. */
   .tags{min-height:46px;align-content:flex-start}
@@ -163,6 +164,53 @@
   .empty{color:var(--muted);font-size:12px;padding:4px 0}
   footer{color:var(--muted);font-size:11px;padding:4px 16px;text-align:center}
   code{background:var(--ink);padding:1px 5px;border-radius:4px;font-size:11px}
+  /* MQTT settings modal.
+     Reuses .lightbox's fixed overlay rather than inventing a second one, but has to
+     scroll: the form is twenty fields plus a certificate box, and on a phone in
+     landscape that is taller than the viewport. overscroll-behavior:contain stops a
+     flick at the bottom of the form from scrolling the dashboard behind it. */
+  .modal{position:fixed;inset:0;z-index:30;background:rgba(6,8,11,.93);display:none;
+         padding:12px;overflow-y:auto;overscroll-behavior:contain}
+  .modal.show{display:block}
+  .sheet{max-width:640px;margin:0 auto;background:var(--panel);
+         border:1px solid var(--line);border-radius:14px;padding:14px}
+  .sheet h3{margin:0 0 4px;font-size:14px}
+  .sheet .sub{color:var(--muted);font-size:11px;margin:0 0 12px}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  @media(max-width:520px){.row{grid-template-columns:1fr}}
+  .fld{display:block;margin-bottom:10px;min-width:0}
+  .fld>span{display:block;font-size:11px;color:var(--muted);margin-bottom:4px}
+  .fld input,.fld select,.fld textarea{width:100%;background:var(--ink);
+        color:var(--text);border:1px solid var(--line);border-radius:8px;
+        padding:8px 10px;font:13px/1.4 inherit;font-family:inherit}
+  .fld textarea{font-family:ui-monospace,"JetBrains Mono",monospace;font-size:11px;
+                min-height:88px;resize:vertical}
+  .fld input:focus,.fld select:focus,.fld textarea:focus{outline:none;
+        border-color:var(--accent)}
+  /* Set by the save handler from the field name the API returns, so a rejected
+     value is pointed at rather than described. */
+  .fld.bad input,.fld.bad select,.fld.bad textarea{border-color:var(--bad)}
+  .fld .hint{display:block;font-size:10px;color:var(--muted);margin-top:3px}
+  .chk{display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:10px}
+  .chk input{width:16px;height:16px;accent-color:var(--accent);flex:none}
+  .note{border-radius:8px;padding:9px 11px;font-size:11px;line-height:1.5;
+        margin:0 0 12px}
+  .note.warn{background:rgba(210,153,34,.12);border:1px solid rgba(210,153,34,.4);
+             color:#e5c07b}
+  .note.bad{background:rgba(248,81,73,.12);border:1px solid rgba(248,81,73,.4);
+            color:#ff9d97}
+  .note.info{background:rgba(88,166,255,.1);border:1px solid rgba(88,166,255,.3);
+             color:#9ecbff}
+  /* A topic is 60-odd characters of slashes and hyphens: it has to wrap, stay
+     monospaced so the levels line up, and be copyable in one tap. */
+  .topic{display:flex;gap:6px;align-items:flex-start;margin-bottom:8px}
+  .topic code{flex:1;min-width:0;overflow-wrap:anywhere;font-size:10px;padding:6px 8px;
+              line-height:1.5}
+  .topic button{padding:5px 9px;font-size:11px;flex:none}
+  .sheet .acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px;
+                padding-top:12px;border-top:1px solid var(--line)}
+  .sheet .acts .grow{margin-left:auto}
+
 </style>
 </head>
 <body>
@@ -287,6 +335,26 @@
     </div>
 
     <div class="card">
+      <h2>Fleet alerting (MQTT)
+        <span class="right pill w-mqtt" id="mqttPill">mqtt &mdash;</span></h2>
+      <div class="meta" style="grid-template-columns:1fr">
+        <div><span>broker</span><span id="mqttUri">&mdash;</span></div>
+        <div><span>alert topic</span><span id="mqttTopic">&mdash;</span></div>
+        <div title="Handed to the broker, and of those how many it acknowledged. A gap that does not close means QoS 1 messages are not being acked."><span>published / acked</span><span id="mqttPub">&mdash;</span></div>
+        <div title="Alerts held because the broker is unreachable. Bounded: past the limit the oldest is discarded, because after a long outage the useful record is the last few minutes."><span>buffered</span><span id="mqttQueue">&mdash;</span></div>
+        <div title="Discarded to make room, plus duplicates suppressed by event id, plus alerts the capture loop could not hand over. All three are normally zero."><span>dropped / dup</span><span id="mqttDrop">&mdash;</span></div>
+      </div>
+      <div class="empty" id="mqttNote">
+        Off. Alerts are announced and stored locally either way &mdash; this publishes
+        them to a broker as well.
+      </div>
+      <div class="btns" style="margin-top:10px">
+        <button class="pri" id="mqttBtn">Configure MQTT</button>
+        <button id="mqttTestBtn">Test publish</button>
+      </div>
+    </div>
+
+    <div class="card">
       <h2>Event log <span class="right pill" id="alertCount">0 alerts</span></h2>
       <ul class="log" id="log"></ul>
       <div class="empty" id="logEmpty">nothing yet &mdash; events appear here as they fire</div>
@@ -327,6 +395,188 @@
         <div><span>captures stored</span><span id="stored">&mdash;</span></div>
         <div title="How long the seat has looked empty, and the threshold at which the device says so. Blank while the pipeline is faulty, because an absence it cannot verify is not an absence."><span>no driver for</span><span id="absentFor">&mdash;</span></div>
       </div>
+    </div>
+  </div>
+</div>
+
+<!--
+  MQTT configuration. A modal rather than another card, because it is twenty fields
+  that are looked at once and then never again, and putting them on the dashboard
+  would push the risk score and the preview below the fold on a phone - which are the
+  two things this page exists to show.
+
+  The password inputs are write-only by design: the device returns password_set, never
+  a value, so the boxes render empty with a placeholder saying whether one is stored.
+  Leaving one blank keeps the stored secret; the Clear button beside it erases it.
+  Nothing in this page ever holds a credential it did not just receive from the
+  operator's own keyboard.
+-->
+<div class="modal" id="mqttModal">
+  <div class="sheet">
+    <h3>Fleet alerting over MQTT</h3>
+    <p class="sub">Every confirmed alert is published as one JSON message. The
+      speaker, the event log and the SD-card captures are unaffected by anything on
+      this screen &mdash; if the broker is unreachable, alerts still sound.</p>
+
+    <div class="note warn" id="mqttDemoNote">
+      <b>broker.emqx.io is a public test broker.</b> It is preconfigured here so a
+      demonstration works in a room with no broker in it, and it is
+      <b>demonstration and testing only</b>: there is no authentication and no
+      isolation, so anyone who subscribes to the topic &mdash; which they can guess
+      &mdash; reads every alert this device publishes, including the driver remark.
+      Point it at your own broker before any real vehicle.
+    </div>
+
+    <label class="chk"><input type="checkbox" id="mqEnabled">
+      <span>Publish alerts to a broker</span></label>
+
+    <div class="row">
+      <label class="fld" id="f_transport"><span>Transport</span>
+        <select id="mqTransport">
+          <option value="tls">TLS &mdash; mqtts://host:8883</option>
+          <option value="tcp">TCP &mdash; mqtt://host:1883 (plaintext)</option>
+          <option value="wss">WSS &mdash; wss://host:8084/mqtt</option>
+          <option value="ws">WS &mdash; ws://host:8083/mqtt (plaintext)</option>
+        </select>
+        <span class="hint">The port follows this unless you changed it.</span>
+      </label>
+      <label class="fld" id="f_protocol"><span>Protocol version</span>
+        <select id="mqProtocol">
+          <option value="3.1.1">MQTT 3.1.1</option>
+          <option value="5">MQTT 5</option>
+        </select>
+        <span class="hint">3.1.1 unless your broker needs 5.</span>
+      </label>
+    </div>
+
+    <div class="row">
+      <label class="fld" id="f_host"><span>Broker host</span>
+        <input id="mqHost" placeholder="broker.emqx.io" autocomplete="off"
+               spellcheck="false"></label>
+      <label class="fld" id="f_port"><span>Port</span>
+        <input id="mqPort" type="number" min="1" max="65535" inputmode="numeric"></label>
+    </div>
+
+    <label class="fld" id="f_ws_path"><span>WebSocket path</span>
+      <input id="mqWsPath" placeholder="/mqtt" autocomplete="off" spellcheck="false">
+      <span class="hint">Used by WS and WSS only. EMQX serves <code>/mqtt</code>.</span>
+    </label>
+
+    <label class="fld" id="f_client_id"><span>Client ID</span>
+      <input id="mqClientId" placeholder="drowsyguard-&lt;device-id&gt;"
+             autocomplete="off" spellcheck="false">
+      <span class="hint">Leave blank to derive it from the device ID. Two devices
+        sharing one client ID knock each other off the broker in turn.</span>
+    </label>
+
+    <div class="row">
+      <label class="fld" id="f_username"><span>Username</span>
+        <input id="mqUser" autocomplete="off" spellcheck="false"></label>
+      <label class="fld" id="f_password"><span>Password</span>
+        <input id="mqPass" type="password" autocomplete="new-password"></label>
+    </div>
+    <div class="btns" style="margin:-2px 0 12px">
+      <button id="mqClearCreds">Clear stored credentials</button>
+    </div>
+
+    <div class="row">
+      <label class="fld" id="f_qos"><span>QoS</span>
+        <select id="mqQos">
+          <option value="1">1 &mdash; at least once</option>
+          <option value="0">0 &mdash; fire and forget</option>
+        </select>
+        <span class="hint">QoS 2 is not offered: alerts are de-duplicated by event
+          ID at both ends, which is what QoS 2 would be paying for.</span>
+      </label>
+      <label class="fld" id="f_keepalive"><span>Keepalive (s)</span>
+        <input id="mqKeepalive" type="number" min="5" max="300" inputmode="numeric">
+      </label>
+    </div>
+
+    <label class="chk"><input type="checkbox" id="mqLwt">
+      <span>Publish a retained online/offline status (Last Will)</span></label>
+    <label class="chk" id="row_tls_insecure"><input type="checkbox" id="mqTlsInsecure">
+      <span>Skip TLS certificate verification &mdash; testing only</span></label>
+    <div class="note bad" id="mqInsecureNote" hidden>
+      With verification off the connection is encrypted but unauthenticated: anything
+      on the path can present itself as your broker. Use it to get a self-signed
+      broker working, then paste that broker's CA below and turn it back on.
+    </div>
+
+    <label class="fld" id="f_ca_cert"><span>CA certificate (PEM)</span>
+      <textarea id="mqCa" spellcheck="false"
+                placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"></textarea>
+      <span class="hint" id="mqCaState">Leave blank to verify against the root
+        certificate bundle in flash, which is what the public broker needs. Paste one
+        root certificate for a private broker &mdash; not a chain, and never a
+        private key.</span>
+    </label>
+    <div class="btns" style="margin:-2px 0 12px">
+      <button id="mqClearCa">Remove stored certificate</button>
+    </div>
+
+    <h3 style="margin-top:14px">Driver and device</h3>
+    <p class="sub">The remark is the only field that says who is being monitored. It
+      is deliberately not part of any topic: a driver&rsquo;s name has no business in
+      a broker&rsquo;s subscription tree.</p>
+    <div class="row">
+      <label class="fld" id="f_device_id"><span>Device ID</span>
+        <input id="mqDeviceId" autocomplete="off" spellcheck="false">
+        <span class="hint">Lowercase letters, digits, <code>-</code>, <code>_</code>,
+          <code>.</code></span></label>
+      <label class="fld" id="f_fleet_id"><span>Fleet ID</span>
+        <input id="mqFleetId" autocomplete="off" spellcheck="false"></label>
+    </div>
+    <label class="fld" id="f_remark"><span>Driver / device remark</span>
+      <input id="mqRemark" placeholder="Driver A" autocomplete="off">
+      <span class="hint">Free text, up to 47 characters. Shown on the fleet
+        dashboard.</span></label>
+
+    <h3 style="margin-top:14px">Topics</h3>
+    <label class="fld" id="f_topic_mode"><span>Topic</span>
+      <select id="mqTopicMode">
+        <option value="auto">Generated from the fleet and device IDs</option>
+        <option value="manual">Set it myself</option>
+      </select>
+    </label>
+    <label class="fld" id="f_topic"><span>Alert topic</span>
+      <input id="mqTopic" autocomplete="off" spellcheck="false">
+      <span class="hint">No <code>+</code> or <code>#</code> wildcards: those are
+        subscription syntax, and a publish containing one goes somewhere nobody is
+        listening. The status topic is derived by replacing a trailing
+        <code>/alerts</code> with <code>/status</code>.</span>
+    </label>
+
+    <div class="topic"><code id="topicDevice">&mdash;</code>
+      <button data-copy="topicDevice">Copy</button></div>
+    <div class="topic"><code id="topicFleet">&mdash;</code>
+      <button data-copy="topicFleet">Copy</button></div>
+    <div class="topic"><code id="topicStatus">&mdash;</code>
+      <button data-copy="topicStatus">Copy</button></div>
+    <p class="sub" style="margin:-4px 0 10px">Device alert topic, the fleet-wide
+      subscription that covers every device, and the status topic. Paste the middle
+      one into the documentation&rsquo;s fleet monitor.</p>
+
+    <h3 style="margin-top:14px">Wi-Fi station</h3>
+    <p class="sub">The access point stays up whatever happens here, so a wrong
+      password costs you the broker and never the dashboard. A broker on the internet
+      needs this: the device&rsquo;s own access point has no route off itself.</p>
+    <label class="chk"><input type="checkbox" id="mqStaEnabled">
+      <span>Also join an existing network</span></label>
+    <div class="row">
+      <label class="fld" id="f_sta_ssid"><span>Network name (SSID)</span>
+        <input id="mqStaSsid" autocomplete="off" spellcheck="false"></label>
+      <label class="fld" id="f_sta_password"><span>Network password</span>
+        <input id="mqStaPass" type="password" autocomplete="new-password"></label>
+    </div>
+
+    <div class="note info" id="mqttResult" hidden></div>
+
+    <div class="acts">
+      <button class="pri" id="mqSave">Save and connect</button>
+      <button id="mqPreset">Load EMQX demo broker</button>
+      <button id="mqTest">Test publish</button>
+      <button class="grow" id="mqClose">Close</button>
     </div>
   </div>
 </div>
@@ -736,7 +986,10 @@ function openShot(ev) {
 $('lbClose').onclick = () => $('lightbox').classList.remove('show');
 $('lightbox').onclick = e => { if (e.target === $('lightbox')) $('lbClose').onclick(); };
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') $('lightbox').classList.remove('show');
+  if (e.key === 'Escape') {
+    $('lightbox').classList.remove('show');
+    $('mqttModal').classList.remove('show');
+  }
 });
 $('prevBtn').onclick = () => { histSkip = Math.max(0, histSkip - PAGE); loadHistory(); };
 $('nextBtn').onclick = () => {
@@ -748,6 +1001,388 @@ $('clearBtn').onclick = async () => {
   histSkip = 0;
   loadHistory();
 };
+
+// --- MQTT settings ---------------------------------------------------------
+// One fetch of GET /api/mqtt fills the modal; one POST of a form-encoded body saves
+// it. The device is the authority on every value here, so the modal is populated from
+// its answer rather than from anything this page remembers.
+//
+// The password rule, which is the part worth reading: the device returns
+// `password_set` and never a password. So the boxes open EMPTY, with a placeholder
+// saying whether one is stored, and an empty box submits nothing - which the firmware
+// reads as "keep what you have". Erasing takes the Clear button, which sends an
+// explicit flag. The consequence is that this page never holds a secret it did not
+// just receive from the operator's own keyboard, and a screenshot of it discloses
+// nothing.
+let mqttCfg = null;
+
+const mqField = id => $(id);
+const mqSet = (id, v) => { const e = $(id); if (e) e.value = v === undefined || v === null ? '' : String(v); };
+const mqCheck = (id, v) => { const e = $(id); if (e) e.checked = !!v; };
+
+// The three topics the modal shows, recomputed locally as the operator types so the
+// preview matches what Save would produce. The firmware is still the authority - it
+// rebuilds them from the values it validated - but a preview that only updated after
+// a round trip is a preview nobody trusts.
+function mqttTopics() {
+  const slug = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+  if ($('mqTopicMode').value === 'manual') {
+    const base = $('mqTopic').value.trim();
+    if (!base) return {device: '', fleet: '', status: ''};
+    const status = base.endsWith('/alerts')
+        ? base.slice(0, -7) + '/status' : base + '/status';
+    const wild = s => {
+      const i = s.lastIndexOf('/');
+      if (i < 0) return s;
+      const j = s.lastIndexOf('/', i - 1);
+      return (j < 0 ? '' : s.slice(0, j + 1)) + '+' + s.slice(i);
+    };
+    return {device: base, fleet: wild(base), status: status};
+  }
+  const fleet = slug($('mqFleetId').value);
+  const dev = slug($('mqDeviceId').value);
+  if (!fleet || !dev) return {device: '', fleet: '', status: ''};
+  const root = 'plxy/drowsyguard';
+  return {
+    device: `${root}/${fleet}/${dev}/alerts`,
+    fleet: `${root}/${fleet}/+/alerts`,
+    status: `${root}/${fleet}/${dev}/status`,
+  };
+}
+
+function mqttRefreshTopics() {
+  const tp = mqttTopics();
+  setText('topicDevice', tp.device || 'fill in the fleet and device IDs');
+  setText('topicFleet', tp.fleet || '—');
+  setText('topicStatus', tp.status || '—');
+  const manual = $('mqTopicMode').value === 'manual';
+  $('f_topic').style.display = manual ? '' : 'none';
+  const ws = $('mqTransport').value === 'ws' || $('mqTransport').value === 'wss';
+  $('f_ws_path').style.display = ws ? '' : 'none';
+  const tls = $('mqTransport').value === 'tls' || $('mqTransport').value === 'wss';
+  $('f_ca_cert').style.display = tls ? '' : 'none';
+  // By id rather than .closest('.chk'): a selector that walks the DOM is a selector
+  // that silently stops matching when the markup is rearranged, and this row is the
+  // one that must never be visible for a transport it does not apply to.
+  $('row_tls_insecure').style.display = tls ? '' : 'none';
+  $('mqInsecureNote').hidden = !(tls && $('mqTlsInsecure').checked);
+  // The demo-broker warning follows the host rather than the preset button: someone
+  // who typed it in by hand needs it just as much as someone who clicked.
+  $('mqttDemoNote').hidden = $('mqHost').value.trim() !== 'broker.emqx.io';
+}
+
+function mqttFill(j) {
+  mqttCfg = j;
+  const c = j.config || {};
+  mqCheck('mqEnabled', c.enabled);
+  mqSet('mqTransport', c.transport || 'tls');
+  mqSet('mqProtocol', c.protocol || '3.1.1');
+  mqSet('mqHost', c.host);
+  mqSet('mqPort', c.port);
+  mqSet('mqWsPath', c.ws_path);
+  // client_id_auto means the device derived it, so showing the derived value would
+  // make the next Save pin it - which is not what the operator asked for.
+  mqSet('mqClientId', c.client_id_auto ? '' : c.client_id);
+  mqSet('mqDeviceId', c.device_id);
+  mqSet('mqFleetId', c.fleet_id);
+  mqSet('mqRemark', c.remark);
+  mqSet('mqQos', c.qos === undefined ? 1 : c.qos);
+  mqSet('mqKeepalive', c.keepalive);
+  mqCheck('mqLwt', c.lwt);
+  mqCheck('mqTlsInsecure', c.tls_insecure);
+  mqSet('mqTopicMode', c.topic_mode || 'auto');
+  mqSet('mqTopic', c.topic || (c.topics && c.topics.alerts) || '');
+  // Write-only: never populated, only described.
+  mqSet('mqUser', '');
+  mqSet('mqPass', '');
+  $('mqUser').placeholder = c.username_set ? (c.username_masked || 'stored') : 'none';
+  $('mqPass').placeholder = c.password_set ? 'stored — leave blank to keep' : 'none';
+  mqSet('mqCa', '');
+  setText('mqCaState', c.ca_present
+      ? `${c.ca_bytes} bytes stored. Paste a new certificate to replace it, or leave `
+        + `blank to keep it.`
+      : 'Leave blank to verify against the root certificate bundle in flash, which is '
+        + 'what the public broker needs. Paste one root certificate for a private '
+        + 'broker — not a chain, and never a private key.');
+  const sta = c.sta || {};
+  mqCheck('mqStaEnabled', sta.enabled);
+  mqSet('mqStaSsid', sta.ssid);
+  mqSet('mqStaPass', '');
+  $('mqStaPass').placeholder = sta.password_set ? 'stored — leave blank to keep' : 'none';
+  mqttRefreshTopics();
+}
+
+async function mqttLoad() {
+  try {
+    const res = await fetch('/api/mqtt', {cache: 'no-store'});
+    if (!res.ok) throw new Error(res.status);
+    mqttFill(await res.json());
+    return true;
+  } catch (e) {
+    mqttResult('The device did not answer the settings request.', 'bad');
+    return false;
+  }
+}
+
+function mqttResult(text, kind) {
+  const n = $('mqttResult');
+  n.textContent = text;
+  n.className = 'note ' + (kind || 'info');
+  n.hidden = !text;
+}
+
+// Clears the previous rejection's highlight before a new save, so a fixed field stops
+// looking broken.
+function mqttClearMarks() {
+  ['transport', 'protocol', 'host', 'port', 'ws_path', 'client_id', 'username',
+   'password', 'qos', 'keepalive', 'topic_mode', 'topic', 'device_id', 'fleet_id',
+   'remark', 'ca_cert', 'sta_ssid', 'sta_password'].forEach(f => {
+    const e = $('f_' + f);
+    if (e) e.classList.remove('bad');
+  });
+}
+
+// application/x-www-form-urlencoded, not JSON: a CA certificate is a couple of
+// kilobytes and the device parses form fields with its own HTTP server's helper
+// rather than carrying a JSON parser. encodeURIComponent handles the newlines.
+function mqttBody(extra) {
+  const f = {
+    enabled: $('mqEnabled').checked ? 1 : 0,
+    transport: $('mqTransport').value,
+    protocol: $('mqProtocol').value,
+    host: $('mqHost').value.trim(),
+    port: $('mqPort').value,
+    ws_path: $('mqWsPath').value.trim(),
+    client_id: $('mqClientId').value.trim(),
+    qos: $('mqQos').value,
+    keepalive: $('mqKeepalive').value,
+    lwt: $('mqLwt').checked ? 1 : 0,
+    tls_insecure: $('mqTlsInsecure').checked ? 1 : 0,
+    topic_mode: $('mqTopicMode').value,
+    device_id: $('mqDeviceId').value.trim(),
+    fleet_id: $('mqFleetId').value.trim(),
+    remark: $('mqRemark').value,
+    sta_enabled: $('mqStaEnabled').checked ? 1 : 0,
+    sta_ssid: $('mqStaSsid').value,
+  };
+  if ($('mqTopicMode').value === 'manual') f.topic = $('mqTopic').value.trim();
+  // Only sent when non-empty, which is what makes "leave blank to keep" work.
+  if ($('mqUser').value) f.username = $('mqUser').value;
+  if ($('mqPass').value) f.password = $('mqPass').value;
+  if ($('mqStaPass').value) f.sta_password = $('mqStaPass').value;
+  if ($('mqCa').value.trim()) f.ca_cert = $('mqCa').value;
+  Object.assign(f, extra || {});
+  return Object.entries(f)
+      .map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
+}
+
+async function mqttSave(extra) {
+  mqttClearMarks();
+  mqttResult('Saving…', 'info');
+  let res, j;
+  try {
+    res = await fetch('/api/mqtt', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: mqttBody(extra),
+    });
+    j = await res.json();
+  } catch (e) {
+    mqttResult('The device did not answer. It may be rebooting — try again.', 'bad');
+    return false;
+  }
+  if (!res.ok) {
+    // The field name comes back with the error, so the input can be pointed at
+    // rather than the operator having to map a sentence onto a form.
+    if (j && j.field) {
+      const e = $('f_' + j.field);
+      if (e) e.classList.add('bad');
+    }
+    mqttResult((j && j.error) || 'Rejected.', 'bad');
+    return false;
+  }
+  mqttFill(j);
+  const st = j.status || {};
+  mqttResult($('mqEnabled').checked
+      ? `Saved. Connection state: ${st.state}.`
+      : 'Saved. Publishing is off; alerts are still announced and stored locally.',
+      'info');
+  // Blank the credential boxes again: they were only ever holding what was typed.
+  mqSet('mqPass', '');
+  mqSet('mqStaPass', '');
+  mqSet('mqCa', '');
+  logLine('mqtt settings saved', '');
+  poll();
+  return true;
+}
+
+async function openMqtt() {
+  $('mqttModal').classList.add('show');
+  mqttResult('', 'info');
+  return mqttLoad();
+}
+$('mqttBtn').onclick = openMqtt;
+$('mqClose').onclick = () => $('mqttModal').classList.remove('show');
+$('mqttModal').onclick = e => {
+  if (e.target === $('mqttModal')) $('mqttModal').classList.remove('show');
+};
+$('mqSave').onclick = () => mqttSave();
+$('mqPreset').onclick = () => {
+  // Fills the fields locally rather than posting preset=emqx on its own: the
+  // operator gets to see what changed before it is saved, which for a broker that
+  // publishes to the whole internet is the difference between a choice and an
+  // accident.
+  mqSet('mqHost', 'broker.emqx.io');
+  mqSet('mqWsPath', '/mqtt');
+  const ports = {tcp: 1883, tls: 8883, ws: 8083, wss: 8084};
+  mqSet('mqPort', ports[$('mqTransport').value] || 8883);
+  mqSet('mqUser', '');
+  mqSet('mqPass', '');
+  mqttRefreshTopics();
+  mqttResult('EMQX public broker loaded. Review it, then Save. Remember it is '
+             + 'readable by anyone.', 'warn');
+};
+$('mqClearCreds').onclick = async () => {
+  if (!confirm('Erase the stored broker username and password?')) return;
+  await mqttSave({clear_username: 1, clear_password: 1});
+};
+$('mqClearCa').onclick = async () => {
+  if (!confirm('Remove the stored CA certificate? TLS will fall back to the root '
+               + 'bundle in flash.')) return;
+  await mqttSave({clear_ca: 1});
+};
+const mqttTest = async () => {
+  mqttResult('Publishing a test alert…', 'info');
+  try {
+    const res = await fetch('/api/mqtt/test', {method: 'POST'});
+    const j = await res.json();
+    if (j.queued) {
+      mqttResult(`Queued. State ${j.state}, ${j.published} published / ${j.acked} `
+                 + `acknowledged. Watch your subscriber.`, 'info');
+      logLine('mqtt test alert queued', '');
+    } else {
+      mqttResult(j.error ? `Not queued: ${j.error}`
+                         : 'Not queued — publishing is off.', 'warn');
+    }
+  } catch (e) {
+    mqttResult('The device did not answer the test request.', 'bad');
+  }
+  poll();
+};
+$('mqTest').onclick = mqttTest;
+// The card's button opens the modal too, so the result of the test lands where the
+// explanation of it is rather than only in the event log.
+$('mqttTestBtn').onclick = async () => { await openMqtt(); await mqttTest(); };
+
+['mqTransport', 'mqTopicMode', 'mqTlsInsecure'].forEach(id => {
+  const e = $(id);
+  if (e) e.addEventListener('change', () => {
+    // Move the port with the transport, but only from one default to another: an
+    // operator who typed 8884 should keep it.
+    if (id === 'mqTransport') {
+      const ports = {tcp: 1883, tls: 8883, ws: 8083, wss: 8084};
+      const now = Number($('mqPort').value);
+      if (Object.values(ports).includes(now)) mqSet('mqPort', ports[e.value]);
+      if ((e.value === 'ws' || e.value === 'wss') && !$('mqWsPath').value) {
+        mqSet('mqWsPath', '/mqtt');
+      }
+    }
+    mqttRefreshTopics();
+  });
+});
+['mqDeviceId', 'mqFleetId', 'mqTopic', 'mqHost'].forEach(id => {
+  const e = $(id);
+  if (e) e.addEventListener('input', mqttRefreshTopics);
+});
+
+// Copy buttons. navigator.clipboard needs a secure context, and the device is served
+// over plain HTTP on 192.168.4.1 - which is NOT one in most browsers - so the
+// execCommand fallback is the path that actually runs here rather than a legacy
+// afterthought.
+async function copyText(text, btn) {
+  let ok = false;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    }
+  } catch (e) { ok = false; }
+  if (!ok) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      ta.setSelectionRange(0, text.length);
+      ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+    } catch (e) { ok = false; }
+  }
+  if (btn) {
+    const was = btn.textContent;
+    // Says which way it went. A button that says "Copied" when it did not is worse
+    // than one that says nothing: the operator pastes an empty clipboard into their
+    // broker and blames the broker.
+    btn.textContent = ok ? 'Copied' : 'Select it';
+    setTimeout(() => { btn.textContent = was; }, 1400);
+  }
+  return ok;
+}
+document.querySelectorAll('button[data-copy]').forEach(btn => {
+  btn.onclick = () => {
+    const src = $(btn.dataset.copy);
+    const text = src ? src.textContent.trim() : '';
+    if (text && text !== '—') copyText(text, btn);
+  };
+});
+
+// Rendered on every status poll from the compact object in /api/status, so the pill
+// is honest between visits to the modal.
+function renderMqtt(s) {
+  const m = s.mqtt;
+  if (!m) return;                      // older firmware
+  const state = m.state || 'unknown';
+  const cls = !m.enabled ? ''
+      : state === 'online' ? 'ok'
+      : state === 'connecting' ? 'info'
+      : state === 'disabled' ? '' : 'warn';
+  setPill('mqttPill', m.enabled ? `mqtt ${state}` : 'mqtt off', cls);
+  setText('mqttPub', `${m.published} / ${m.acked}`);
+  setText('mqttQueue', m.queued ? `${m.queued} waiting` : 'none');
+  setText('mqttDrop', `${m.dropped} / ${m.suppressed}`
+      + (m.rejected ? ` (+${m.rejected} rejected)` : ''));
+  const note = $('mqttNote');
+  if (!m.enabled) {
+    note.textContent = 'Off. Alerts are announced and stored locally either way — '
+        + 'this publishes them to a broker as well.';
+    note.style.color = 'var(--muted)';
+  } else if (m.error) {
+    note.textContent = m.error
+        + (m.retry_ms ? ` — next attempt in ${(m.retry_ms / 1000).toFixed(0)} s` : '');
+    note.style.color = 'var(--bad)';
+  } else if (state === 'online') {
+    note.textContent = m.queued
+        ? `Connected, flushing ${m.queued} buffered alert(s).`
+        : 'Connected. Every confirmed alert is published as it fires.';
+    note.style.color = 'var(--ok)';
+  } else {
+    note.textContent = `Not connected (${state})`
+        + (m.retry_ms ? `, next attempt in ${(m.retry_ms / 1000).toFixed(0)} s` : '')
+        + '. Alerts are being buffered — the speaker is unaffected.';
+    note.style.color = 'var(--warn)';
+  }
+  // Filled from the settings document rather than the poll, because the poll
+  // deliberately does not carry a host or a topic: /api/status is what a screenshot
+  // of this page shows, and 40 fields of it are already on screen.
+  if (mqttCfg && mqttCfg.config) {
+    setText('mqttUri', mqttCfg.config.uri || '—');
+    setText('mqttTopic', (mqttCfg.config.topics && mqttCfg.config.topics.alerts) || '—');
+  }
+}
 
 // --- status polling --------------------------------------------------------
 // Keeps whatever width class the markup gave the pill: dropping it would let the
@@ -993,6 +1628,8 @@ function render(s) {
   });
   lastEvents = s.cues.events;
 
+  renderMqtt(s);
+
   drawOverlay(s);
 }
 
@@ -1082,6 +1719,10 @@ window.addEventListener('resize', () => drawOverlay(null));
 startLive();
 poll();
 loadHistory();
+// Once, at startup: the broker address and the alert topic are on the card, and they
+// come from the settings document rather than the 2 Hz poll. Re-fetched whenever the
+// modal opens or a save lands.
+mqttLoad();
 // 500 ms, not 300. The sparkline spans two minutes either way, nothing on the
 // page is actionable at a third of a second, and each poll is a JSON build on a
 // device that would rather be running inference.

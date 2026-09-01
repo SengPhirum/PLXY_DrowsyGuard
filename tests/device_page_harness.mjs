@@ -26,7 +26,15 @@ const mkEl = (id) => ({
   id, textContent: '', innerHTML: '', className: '', value: '', disabled: false,
   style: new Proxy({}, {set: () => true, get: () => ''}),
   classList: {add() {}, remove() {}, toggle() {}, contains: () => false},
-  addEventListener() {}, prepend() {}, append() {}, remove() {},
+  addEventListener(ev, fn) { (this._ev ??= {})[ev] = fn; },
+  prepend() {}, append() {}, remove() {},
+  // The MQTT modal hides whole rows by id, so the stub has to carry a `hidden`
+  // property and a closest() - a missing one would throw on a path a browser renders
+  // fine, which is exactly the class of bug this harness exists for.
+  hidden: false,
+  closest() { return mkEl('closest'); },
+  select() {}, setSelectionRange() {}, focus() {}, blur() {},
+  placeholder: '', checked: false, type: '',
   children: {length: 0}, lastChild: null,
   clientWidth: 320, clientHeight: 320, width: 320, height: 320,
   // A 2D context stub. Every method the page calls has to be here or the page throws
@@ -42,16 +50,36 @@ const mkEl = (id) => ({
   removeAttribute() {}, setAttribute() {}, dataset: {},
 });
 const store = new Map(ids.map(i => [i, mkEl(i)]));
+// Selector-aware, unlike the first version of this stub: the page now wires two
+// different sets of buttons by attribute (`button.say` and `button[data-copy]`), and
+// returning the speak buttons for both would have wired the copy handlers onto the
+// wrong elements and tested nothing.
+const copyButtons = ['topicDevice', 'topicFleet', 'topicStatus'].map(id => {
+  const b = mkEl('copy-' + id);
+  b.dataset = {copy: id};
+  return b;
+});
 globalThis.document = {
   getElementById: (i) => store.get(i) ?? null,
   createElement: () => mkEl('created'),
-  // The per-reason speak buttons are wired by class, not by id.
-  querySelectorAll: () => [mkEl('say0'), mkEl('say1'), mkEl('say2'), mkEl('say3')],
+  querySelectorAll: (sel) => {
+    if (String(sel).includes('data-copy')) return copyButtons;
+    // The per-reason speak buttons are wired by class, not by id.
+    return [mkEl('say0'), mkEl('say1'), mkEl('say2'), mkEl('say3')];
+  },
   addEventListener() {},
+  body: {appendChild() {}, removeChild() {}},
+  execCommand: () => true,
   hidden: false,
   activeElement: null,
 };
-globalThis.window = {addEventListener() {}};
+globalThis.window = {addEventListener() {}, isSecureContext: false};
+// Node defines globalThis.navigator itself, and it is getter-only - so the copy
+// helper's `navigator.clipboard` check has to be satisfied by defining the property
+// rather than assigning it. Left without a clipboard on purpose: the device is served
+// over plain HTTP, so the execCommand fallback is the path that actually runs on a
+// real phone and therefore the one worth exercising.
+Object.defineProperty(globalThis, 'navigator', {value: {}, configurable: true});
 globalThis.location = {hostname: '192.168.4.1', protocol: 'http:'};
 globalThis.fetch = () => Promise.resolve({ok: true, json: () => ({})});
 globalThis.setInterval = () => 0;
@@ -70,7 +98,10 @@ globalThis.Image = class {
 const js = HTML.slice(HTML.indexOf('<script>') + 8, HTML.indexOf('</script>'));
 // render() and the handlers are function-scoped in the module; expose render.
 const factory = new Function(
-  js + '\nreturn {render, drawOverlay, drawTrend, logLine, openShot, loadHistory, drawFrame, startLive, startPhotos, stopVideo};');
+  js + '\nreturn {render, drawOverlay, drawTrend, logLine, openShot, loadHistory, '
+     + 'drawFrame, startLive, startPhotos, stopVideo, renderMqtt, mqttFill, '
+     + 'mqttTopics, mqttBody, mqttSave, mqttLoad, mqttRefreshTopics, copyText, '
+     + 'openMqtt, mqttTest};');
 const page = factory();
 
 // --- a payload shaped exactly like web_server.cpp emits ------------------- //
@@ -109,6 +140,8 @@ const status = {
   mem: {heap: 187392, psram: 7654321},
   image: {luma: 132, min: 6, max: 251},
   card: {mounted: true, events: 7, free_mb: 14812, stored: 7},
+  mqtt: {enabled: true, state: 'online', published: 12, acked: 12, queued: 0,
+         dropped: 0, suppressed: 0, rejected: 0, retry_ms: 0, error: ''},
 };
 
 let failures = 0;
@@ -350,6 +383,243 @@ console.log('\nreadout damping:');
   const ok2 = fpsSeen.size <= 2;
   if (!ok2) failures++;
   console.log(`  ${ok2 ? 'ok   ' : 'FAIL '} fps settles (${fpsSeen.size} distinct values over 40 polls)`);
+}
+
+// --- the MQTT settings modal --------------------------------------------- //
+// The modal is twenty fields and the only place on this device where a credential is
+// ever typed, so what is checked here is not "does it render" but the three
+// properties that matter:
+//
+//   1. it survives every shape /api/mqtt can return, including an older firmware
+//      that omits the object entirely;
+//   2. a blank password box submits NOTHING for that field, which is what makes
+//      "leave blank to keep the stored one" true rather than aspirational;
+//   3. the topic preview matches what the firmware builds, including the wildcard
+//      form a manual topic produces.
+console.log('\nMQTT status pill:');
+const mqttStates = [
+  ['online, idle', {state: 'online'}],
+  ['online, flushing a backlog', {state: 'online', queued: 5}],
+  ['connecting', {state: 'connecting', published: 0, acked: 0}],
+  ['backing off after a refusal', {state: 'backoff', retry_ms: 8000,
+    error: 'broker refused the connection (return code 5)'}],
+  ['transport error', {state: 'backoff', retry_ms: 32000,
+    error: 'transport error (esp-tls 0x8006, socket errno 113)'}],
+  ['fault - unusable configuration', {state: 'fault', error: 'invalid broker address'}],
+  ['disabled', {enabled: false, state: 'disabled'}],
+  ['dropping from a full outbox', {state: 'backoff', queued: 16, dropped: 9,
+    suppressed: 2, rejected: 1, retry_ms: 60000, error: ''}],
+];
+for (const [label, over] of mqttStates) {
+  run(label, () => page.render({...status, mqtt: {...status.mqtt, ...over}}));
+}
+run('mqtt object absent (older firmware)', () => {
+  const o = {...status};
+  delete o.mqtt;
+  page.render(o);
+});
+
+// A settings document shaped exactly like mqtt_config_json() emits.
+const mqttCfg = (over) => ({
+  config: {
+    enabled: true, transport: 'tls', protocol: '3.1.1', host: 'broker.emqx.io',
+    port: 8883, ws_path: '/mqtt', client_id: 'drowsyguard-drowsyguard-c5e019',
+    client_id_auto: true, username_masked: 'fl****er', username_set: true,
+    password_set: true, qos: 1, keepalive: 30, lwt: true, retain_status: true,
+    tls_insecure: false, ca_present: false, ca_bytes: 0,
+    topic_mode: 'auto', topic: '', uri: 'mqtts://broker.emqx.io:8883',
+    device_id: 'drowsyguard-c5e019', fleet_id: 'demo-fleet', remark: 'Driver A',
+    topics: {
+      alerts: 'plxy/drowsyguard/demo-fleet/drowsyguard-c5e019/alerts',
+      status: 'plxy/drowsyguard/demo-fleet/drowsyguard-c5e019/status',
+      fleet_alerts: 'plxy/drowsyguard/demo-fleet/+/alerts',
+      fleet_status: 'plxy/drowsyguard/demo-fleet/+/status',
+    },
+    sta: {enabled: false, ssid: '', password_set: false},
+    demo_broker: {host: 'broker.emqx.io', tcp: 1883, tls: 8883, ws: 8083, wss: 8084,
+                  path: '/mqtt', public: true},
+    ...(over || {}),
+  },
+  status: {
+    state: 'online', client_up: true, connects: 1, disconnects: 0, attempt: 0,
+    retry_ms: 0, published: 12, acked: 12, queued: 0, capacity: 16, dropped: 0,
+    suppressed: 0, rejected: 0, boot_id: '9f1c2ab3', seq: 13,
+    last_publish_ms: 3720000, error: '',
+  },
+  nvs: true,
+});
+
+console.log('\nMQTT modal against /api/mqtt:');
+run('nominal', () => page.mqttFill(mqttCfg()));
+run('websocket secure', () => page.mqttFill(mqttCfg({
+  transport: 'wss', port: 8084, uri: 'wss://broker.emqx.io:8084/mqtt'})));
+run('plain tcp - no CA field, no insecure row', () => page.mqttFill(mqttCfg({
+  transport: 'tcp', port: 1883, uri: 'mqtt://broker.emqx.io:1883'})));
+run('verification disabled', () => page.mqttFill(mqttCfg({tls_insecure: true})));
+run('private broker with a stored CA', () => page.mqttFill(mqttCfg({
+  host: 'mqtt.example.internal', ca_present: true, ca_bytes: 2114,
+  uri: 'mqtts://mqtt.example.internal:8883'})));
+run('manual topic', () => page.mqttFill(mqttCfg({
+  topic_mode: 'manual', topic: 'fleet/lorries/lorry-7/drowsiness'})));
+run('mqtt 5, qos 0, no will', () => page.mqttFill(mqttCfg({
+  protocol: '5', qos: 0, lwt: false})));
+run('pinned client id', () => page.mqttFill(mqttCfg({
+  client_id: 'lorry-7', client_id_auto: false})));
+run('station mode joined', () => page.mqttFill(mqttCfg({
+  sta: {enabled: true, ssid: 'Pixel_Hotspot', password_set: true}})));
+run('no credentials stored', () => page.mqttFill(mqttCfg({
+  username_masked: '', username_set: false, password_set: false})));
+run('a completely empty document', () => page.mqttFill({}));
+run('topics object missing', () => {
+  const j = mqttCfg();
+  delete j.config.topics;
+  page.mqttFill(j);
+});
+
+// The password boxes must open empty whatever the device said about them, and the
+// placeholder is the only thing that may mention a stored secret.
+{
+  page.mqttFill(mqttCfg());
+  const pass = store.get('mqPass');
+  const staPass = store.get('mqStaPass');
+  const user = store.get('mqUser');
+  const ok = pass.value === '' && staPass.value === '' && user.value === ''
+      && /leave blank/.test(pass.placeholder);
+  if (!ok) failures++;
+  console.log(`  ${ok ? 'ok   ' : 'FAIL '} credential boxes open empty `
+      + `(pass "${pass.value}", placeholder "${pass.placeholder}")`);
+}
+
+console.log('\ntopic preview:');
+const topicCase = (label, fields, want) => {
+  Object.entries(fields).forEach(([k, v]) => { store.get(k).value = v; });
+  const got = page.mqttTopics();
+  const ok = got.device === want.device && got.fleet === want.fleet
+      && got.status === want.status;
+  if (!ok) failures++;
+  console.log(`  ${ok ? 'ok   ' : 'FAIL '} ${label}`
+      + (ok ? '' : `\n         got ${JSON.stringify(got)}\n        want ${JSON.stringify(want)}`));
+};
+topicCase('auto', {mqTopicMode: 'auto', mqFleetId: 'demo-fleet',
+                   mqDeviceId: 'drowsyguard-c5e019'}, {
+  device: 'plxy/drowsyguard/demo-fleet/drowsyguard-c5e019/alerts',
+  fleet: 'plxy/drowsyguard/demo-fleet/+/alerts',
+  status: 'plxy/drowsyguard/demo-fleet/drowsyguard-c5e019/status',
+});
+// Typed as a human would type it. The preview slugs it the same way the firmware
+// does, so what is shown is what will be published to - not what was typed.
+topicCase('auto, ids need slugging', {mqTopicMode: 'auto', mqFleetId: 'KDSB Fleet 1',
+                                      mqDeviceId: 'Van 3'}, {
+  device: 'plxy/drowsyguard/kdsb-fleet-1/van-3/alerts',
+  fleet: 'plxy/drowsyguard/kdsb-fleet-1/+/alerts',
+  status: 'plxy/drowsyguard/kdsb-fleet-1/van-3/status',
+});
+topicCase('auto, ids empty', {mqTopicMode: 'auto', mqFleetId: '', mqDeviceId: ''},
+          {device: '', fleet: '', status: ''});
+topicCase('manual ending in /alerts', {mqTopicMode: 'manual',
+                                       mqTopic: 'fleet/lorries/lorry-7/alerts'}, {
+  device: 'fleet/lorries/lorry-7/alerts',
+  fleet: 'fleet/lorries/+/alerts',
+  status: 'fleet/lorries/lorry-7/status',
+});
+topicCase('manual not ending in /alerts', {mqTopicMode: 'manual',
+                                           mqTopic: 'sites/depot/drowsiness'}, {
+  device: 'sites/depot/drowsiness',
+  fleet: 'sites/+/drowsiness',
+  status: 'sites/depot/drowsiness/status',
+});
+topicCase('manual, single level', {mqTopicMode: 'manual', mqTopic: 'drowsiness'},
+          {device: 'drowsiness', fleet: 'drowsiness', status: 'drowsiness/status'});
+
+console.log('\nsubmitted body:');
+{
+  page.mqttFill(mqttCfg());
+  store.get('mqTopicMode').value = 'auto';
+  store.get('mqHost').value = 'broker.emqx.io';
+  store.get('mqPort').value = '8883';
+  store.get('mqDeviceId').value = 'drowsyguard-c5e019';
+  store.get('mqFleetId').value = 'demo-fleet';
+  store.get('mqRemark').value = 'Driver A';
+  store.get('mqPass').value = '';
+  store.get('mqStaPass').value = '';
+  store.get('mqUser').value = '';
+  store.get('mqCa').value = '';
+
+  const body = page.mqttBody();
+  const noCreds = !/(^|&)password=/.test(body) && !/(^|&)sta_password=/.test(body)
+      && !/(^|&)username=/.test(body) && !/(^|&)ca_cert=/.test(body);
+  if (!noCreds) failures++;
+  console.log(`  ${noCreds ? 'ok   ' : 'FAIL '} blank boxes submit no credential fields`);
+
+  const hasCore = /(^|&)host=broker\.emqx\.io(&|$)/.test(body)
+      && /(^|&)remark=Driver%20A(&|$)/.test(body)
+      && /(^|&)topic_mode=auto(&|$)/.test(body);
+  if (!hasCore) failures++;
+  console.log(`  ${hasCore ? 'ok   ' : 'FAIL '} the other fields are present and encoded`);
+
+  // A typed password IS sent, and percent-encoded rather than left to break the
+  // body at the first '&'.
+  store.get('mqPass').value = 'p&ss=w/rd +1';
+  const body2 = page.mqttBody();
+  const enc = body2.includes('password=' + encodeURIComponent('p&ss=w/rd +1'));
+  if (!enc) failures++;
+  console.log(`  ${enc ? 'ok   ' : 'FAIL '} a typed password is percent-encoded`);
+  store.get('mqPass').value = '';
+
+  // A manual topic with a wildcard in it: the page sends it and the firmware
+  // rejects it. What is checked here is that the page renders that rejection against
+  // the right field rather than as an unattributed sentence.
+  const bodyExtra = page.mqttBody({clear_password: 1});
+  const cleared = /(^|&)clear_password=1(&|$)/.test(bodyExtra);
+  if (!cleared) failures++;
+  console.log(`  ${cleared ? 'ok   ' : 'FAIL '} an explicit clear flag is carried`);
+}
+
+console.log('\nsave and test:');
+const saveCase = async (label, response, ok) => {
+  globalThis.fetch = () => Promise.resolve({ok: ok, json: () => response});
+  try {
+    const r = await page.mqttSave();
+    const good = r === ok;
+    if (!good) failures++;
+    console.log(`  ${good ? 'ok   ' : 'FAIL '} ${label}`);
+  } catch (e) {
+    failures++;
+    console.log('  FAIL ', label, '->', e.message);
+  }
+};
+await saveCase('accepted', mqttCfg(), true);
+await saveCase('rejected - a field the page knows',
+               {error: 'no \'+\' or \'#\' wildcards', field: 'topic'}, false);
+await saveCase('rejected - a field the page does not know',
+               {error: 'something new', field: 'not_a_field_here'}, false);
+await saveCase('rejected - no field named', {error: 'nope'}, false);
+globalThis.fetch = () => Promise.reject(new Error('offline'));
+await saveCase('device unreachable', {}, false);
+
+globalThis.fetch = () => Promise.resolve({ok: true, json: () => ({
+  queued: true, state: 'online', queued_depth: 1, published: 13, acked: 12, error: ''})});
+run('test publish queued', () => page.mqttTest());
+globalThis.fetch = () => Promise.resolve({ok: false, json: () => ({
+  queued: false, state: 'disabled', queued_depth: 0, published: 0, acked: 0,
+  error: ''})});
+run('test publish refused - publishing is off', () => page.mqttTest());
+globalThis.fetch = () => Promise.reject(new Error('offline'));
+run('test publish, device unreachable', () => page.mqttTest());
+globalThis.fetch = () => Promise.resolve({ok: true, json: () => mqttCfg()});
+run('open the modal', () => page.openMqtt());
+
+// The copy helper, on the path a phone on 192.168.4.1 actually takes: plain HTTP is
+// not a secure context, so navigator.clipboard is unavailable and the execCommand
+// fallback is what runs.
+console.log('\ncopy to clipboard:');
+{
+  const btn = {textContent: 'Copy'};
+  const done = await page.copyText('plxy/drowsyguard/demo-fleet/+/alerts', btn);
+  if (!done) failures++;
+  console.log(`  ${done ? 'ok   ' : 'FAIL '} execCommand fallback on plain HTTP`);
+  const empty = await page.copyText('', null);
+  console.log(`  ok    empty text is harmless (${empty})`);
 }
 
 console.log(failures ? `\n${failures} failure(s)` : '\nall paths clean');

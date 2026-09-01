@@ -43,6 +43,56 @@ drowsiness measurement:
 This replaced the earlier whole-face 64x64 grayscale classifier, which learned driver
 identity rather than eyelid state; see `PROJECT_STATE.md`.
 
+## MQTT alerting
+
+Publishing is a runtime setting in NVS, not part of the image, so a flashed board
+publishes nothing until somebody configures it. What the *build* has to carry is the
+four transports and the root bundle, and all four are `sdkconfig.defaults` entries
+rather than menuconfig choices someone has to remember:
+
+| Setting | Why it is not optional |
+| --- | --- |
+| `CONFIG_MQTT_TRANSPORT_SSL` | TLS, the default transport |
+| `CONFIG_MQTT_TRANSPORT_WEBSOCKET` / `_SECURE` | a browser cannot open a raw MQTT socket, so the documentation's fleet monitor needs WSS |
+| `CONFIG_MQTT_PROTOCOL_5` | MQTT 5 is offered in the settings modal |
+| `CONFIG_MBEDTLS_CERTIFICATE_BUNDLE` | verifies the public broker with nothing pasted in. Without it the shipped default would only work with verification switched off |
+
+A transport that is compiled out does not fail at build time — it fails at connect
+time, with a generic transport error rather than "not built". Check them after any
+`fullclean`.
+
+### Broker checklist before a demonstration
+
+1. Set the **fleet ID**, **device ID** and **remark** before anything else: the topics
+   are built from the first two, and the third is what a dashboard shows.
+2. Point it at **your own broker** if the remark is a real person's name. The
+   preconfigured `broker.emqx.io` is public — see
+   [Security](security.md#mqtt-alerting-leaves-the-vehicle).
+3. Give the board **station credentials**. Its own access point has no route to a
+   broker on the internet.
+4. Press **Test publish** and confirm the message arrives at a subscriber. Do this
+   before the demonstration, not during it.
+5. Note `mqtt.published` and `mqtt.acked` from `/api/status` at the start, so the
+   delta afterwards is the evidence rather than an impression.
+
+### Acceptance tests for the MQTT path
+
+Each of these has a pass criterion that does not depend on anybody's judgement:
+
+| # | Test | Pass |
+| --- | --- | --- |
+| M1 | Configure the broker, save, poll `/api/status` | `mqtt.state` reaches `online` within 15 s; `mqtt.error` is empty |
+| M2 | `POST /api/mqtt/test`, watch a subscriber | one `drowsyguard.alert.v1` document with `alert: "test"` arrives; `published` and `acked` both increase by one |
+| M3 | Kill the broker (or pull the uplink), fire three alerts | `mqtt.queued` reaches 3, `dropped` stays 0, and **`fps` in the log line does not change** — that last part is the isolation claim |
+| M4 | Restore the broker | the three buffered alerts arrive; the retained `status` document flips to `online` with `reason: "connected"` |
+| M5 | Power-cycle the board | it reconnects with no reconfiguration: the settings survived NVS. `boot_id` in the event ids changes, so nothing is de-duplicated against the previous boot |
+| M6 | Pull power without a clean shutdown | the broker publishes the will: `online: false`, `reason: "last-will"` |
+| M7 | Reconfigure while connected | the client is torn down and rebuilt on the publisher task; no alert is lost from the outbox |
+| M8 | `GET /api/mqtt` and search the response | no password anywhere in it, and the username is masked |
+
+M3 is the one to run first and the one to record. It is the whole safety argument:
+`fps`, `ms_detect` and `ms_eye` must be the same with a dead broker as with a live one.
+
 ## Hardware acceptance tests
 - Camera initializes 100 consecutive boots.
 - No heap exhaustion after 1 hour.

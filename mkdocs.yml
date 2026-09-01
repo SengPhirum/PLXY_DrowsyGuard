@@ -95,8 +95,13 @@ theme:
         name: Switch to light mode
 
 # Defines the dodgerblue primary that `primary: custom` above refers to.
+#
+# fleet.css is loaded site-wide for the same reason installer.js is (see below), and
+# every selector in it is prefixed .fleet- so that being loaded on pages that do not
+# use it costs nothing but a few hundred bytes.
 extra_css:
   - stylesheets/extra.css
+  - stylesheets/fleet.css
 
 # Loaded on every page, and that is the cheapest correct option rather than a
 # compromise. The alternative - a <script src> in the installer page's body - does
@@ -106,6 +111,9 @@ extra_css:
 # are absent, which is every page but one.
 extra_javascript:
   - assets/js/installer.js
+  # The fleet monitor, on the same terms and for the same reason: both scripts return
+  # immediately when their page's elements are absent, which is every page but one.
+  - assets/js/fleet.js
 
 plugins:
   - search
@@ -175,6 +183,7 @@ nav:
       - Install to ESP32 (browser): getting-started/install-esp32.md
       - Install the toolkit: getting-started/installation.md
       - Quickstart: getting-started/quickstart.md
+  - Fleet monitor: fleet-monitoring.md
   - User manual:
       - guide/index.md
       - Hardware build:
@@ -184,6 +193,7 @@ nav:
       - Working with the device:
           - Firmware dev loop: guide/dev-loop.md
           - Using the device: guide/device.md
+          - Fleet alerting over MQTT: guide/mqtt.md
       - Desktop toolkit:
           - Live dashboard: guide/live-dashboard.md
           - Datasets: guide/datasets.md

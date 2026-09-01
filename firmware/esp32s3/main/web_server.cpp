@@ -9,6 +9,10 @@
 #include "board_camera.h"
 #include "board_sdcard.h"
 #include "board_wifi.h"
+#include "device_config.h"
+#include "mqtt_config.h"
+#include "mqtt_publisher.h"
+#include "settings_nvs.h"
 #include "esp_camera.h"
 #include "esp_heap_caps.h"
 #include "esp_http_server.h"
@@ -358,6 +362,8 @@ static esp_err_t status_handler(httpd_req_t *req) {
     board_wifi_status(&net);
     SdCardInfo card{};
     board_sdcard_info(&card);
+    MqttStatus mq{};
+    mqtt_publisher_status(&mq);
 
     // Hand-rolled rather than cJSON: one allocation-free snprintf is easier to
     // reason about in a 5 Hz polling path than a tree of nodes, and the shape of
@@ -369,7 +375,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
     // letting the page parse half an object, which is how it was caught last time
     // this grew past its buffer. Sized with roughly 40% headroom over the widest
     // case for exactly that reason: this object has now outgrown its buffer twice.
-    static char buf[4608];
+    static char buf[5376];
     const int n = snprintf(buf, sizeof(buf),
         "{"
         "\"uptime_ms\":%llu,"
@@ -410,7 +416,14 @@ static esp_err_t status_handler(httpd_req_t *req) {
                  "\"sta_ip\":\"%s\",\"rssi\":%d},"
         "\"image\":{\"luma\":%.0f,\"min\":%d,\"max\":%d,\"peak\":%d},"
         "\"mem\":{\"heap\":%u,\"psram\":%u},"
-        "\"card\":{\"mounted\":%s,\"events\":%d,\"free_mb\":%llu,\"stored\":%lu}"
+        "\"card\":{\"mounted\":%s,\"events\":%d,\"free_mb\":%llu,\"stored\":%lu},"
+        // A summary, not the settings. The page needs the connection state on every
+        // poll to keep its pill honest, and it needs the counters to notice a
+        // publish that never left; the configuration is a separate, larger document
+        // that only the modal asks for. Nothing here can carry a credential.
+        "\"mqtt\":{\"enabled\":%s,\"state\":\"%s\",\"published\":%lu,\"acked\":%lu,"
+                  "\"queued\":%d,\"dropped\":%lu,\"suppressed\":%lu,\"rejected\":%lu,"
+                  "\"retry_ms\":%lu,\"error\":\"%s\"}"
         "}",
         static_cast<unsigned long long>(esp_timer_get_time() / 1000),
         static_cast<unsigned long>(st.frames), json_float(st.fps),
@@ -479,7 +492,13 @@ static esp_err_t status_handler(httpd_req_t *req) {
         static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
         card.mounted ? "true" : "false", card.events,
         static_cast<unsigned long long>(card.free_bytes >> 20),
-        static_cast<unsigned long>(s_events_stored.load()));
+        static_cast<unsigned long>(s_events_stored.load()),
+        mq.enabled ? "true" : "false", mqtt_state_name(mq.state),
+        static_cast<unsigned long>(mq.published), static_cast<unsigned long>(mq.acked),
+        mq.depth, static_cast<unsigned long>(mq.dropped),
+        static_cast<unsigned long>(mq.suppressed),
+        static_cast<unsigned long>(mq.rejected),
+        static_cast<unsigned long>(mq.next_retry_ms), mq.last_error);
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -686,6 +705,406 @@ static esp_err_t events_clear_handler(httpd_req_t *req) {
     return httpd_resp_sendstr(req, ok ? "{\"cleared\":true}" : "{\"cleared\":false}");
 }
 
+// ---------------------------------------------------------------------------
+// MQTT settings
+// ---------------------------------------------------------------------------
+// GET returns a redacted configuration plus the live connection state; POST takes an
+// application/x-www-form-urlencoded body and applies whatever fields it contains.
+//
+// Form-encoded rather than a query string because a CA certificate is 1-2 kB and a
+// query string is not - CONFIG_HTTPD_MAX_URI_LEN is 512 here. Form-encoded rather
+// than JSON because the alternative is a JSON parser on the control task, and every
+// field this endpoint takes is a scalar: ESP-IDF's own httpd_query_key_value() finds
+// the pairs and settings_form_field() percent-decodes them, which is testable on a
+// host in a way a hand-rolled parser on a device is not.
+//
+// PARTIAL UPDATES, and this is the rule that makes the credential handling work: the
+// handler starts from the configuration currently in force and overlays only the
+// fields the body actually carries. An absent field is unchanged. An empty
+// `password` is therefore "keep the stored one", which is what lets the page render
+// a masked placeholder and submit the form without ever holding the secret; erasing
+// one needs an explicit clear_password=1.
+
+// The body cap. 6 kB holds a 4 kB certificate plus every other field with room to
+// spare; anything larger is rejected outright rather than truncated, because a
+// truncated PEM would be stored, would look present in the UI, and would fail inside
+// a TLS handshake three days later.
+#define MQTT_BODY_MAX 6144
+// The redacted settings document. ~1.3 kB in practice with the auto topics; sized
+// with headroom because every previous JSON buffer in this file has outgrown its
+// first estimate, and truncation here returns a 500 rather than half an object.
+#define MQTT_JSON_MAX 3072
+
+static char *s_mqtt_body = nullptr;      // MQTT_BODY_MAX + 1, in PSRAM
+// Where a submitted certificate is percent-decoded to. Its own buffer rather than a
+// slice of the body: settings_form_field() reads from the body and writes to this,
+// and overlapping the two would corrupt both.
+static char *s_mqtt_ca = nullptr;        // MQTT_CA_MAX + 1, in PSRAM
+
+// The whole GET document: the redacted settings from mqtt_config_json() plus the
+// runtime state. Split in two because the first half is pure and host-tested - it is
+// the function that has to be right for "no secrets through the API" to hold - and
+// the second half can only come from a running client.
+static esp_err_t mqtt_respond(httpd_req_t *req) {
+    MqttConfig cfg{};
+    DeviceIdentity id{};
+    mqtt_publisher_config(&cfg, &id);
+    WifiStaConfig sta{};
+    settings_load_wifi(&sta);
+    MqttStatus st{};
+    mqtt_publisher_status(&st);
+
+    static char cfg_json[MQTT_JSON_MAX];
+    const size_t n = mqtt_config_json(cfg, id, sta, settings_ca_bytes(), cfg_json,
+                                      sizeof(cfg_json));
+    if (n == 0) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_sendstr(req, "{\"error\":\"settings document too large\"}");
+    }
+
+    char tail[560];
+    const int m = snprintf(tail, sizeof(tail),
+        ",\"status\":{\"state\":\"%s\",\"client_up\":%s,\"connects\":%lu,"
+                    "\"disconnects\":%lu,\"attempt\":%lu,\"retry_ms\":%lu,"
+                    "\"published\":%lu,\"acked\":%lu,\"queued\":%d,\"capacity\":%d,"
+                    "\"dropped\":%lu,\"suppressed\":%lu,\"rejected\":%lu,"
+                    "\"boot_id\":\"%08lx\",\"seq\":%lu,\"last_publish_ms\":%lu,"
+                    "\"error\":\"%s\"},"
+        // Whether the settings partition is usable at all. Worth reporting: a device
+        // whose NVS is unavailable publishes perfectly well until it is power-cycled
+        // and then silently reverts to defaults, which is exactly the failure someone
+        // would spend an evening on.
+        "\"nvs\":%s}",
+        mqtt_state_name(st.state), st.client_up ? "true" : "false",
+        static_cast<unsigned long>(st.connects),
+        static_cast<unsigned long>(st.disconnects),
+        static_cast<unsigned long>(st.attempt),
+        static_cast<unsigned long>(st.next_retry_ms),
+        static_cast<unsigned long>(st.published), static_cast<unsigned long>(st.acked),
+        st.depth, st.capacity, static_cast<unsigned long>(st.dropped),
+        static_cast<unsigned long>(st.suppressed),
+        static_cast<unsigned long>(st.rejected),
+        static_cast<unsigned long>(st.boot_id), static_cast<unsigned long>(st.seq),
+        // last_error is built by mqtt_publisher.cpp's set_error() from literals and
+        // numbers only - no host, no topic, no credential, and no quote or backslash -
+        // which is why it can go into JSON without escaping.
+        static_cast<unsigned long>(st.last_publish_ms), st.last_error,
+        settings_store_ready() ? "true" : "false");
+    if (m <= 0 || static_cast<size_t>(m) >= sizeof(tail)) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req, "{\"error\":\"status document too large\"}");
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    // Chunked, because the two halves together are up to ~3.5 kB and the control
+    // task has a 6 kB stack. `{"config":` + document + `,"status":...}`.
+    esp_err_t err = httpd_resp_send_chunk(req, "{\"config\":", 10);
+    if (err == ESP_OK) err = httpd_resp_send_chunk(req, cfg_json, n);
+    if (err == ESP_OK) err = httpd_resp_send_chunk(req, tail, m);
+    if (err == ESP_OK) err = httpd_resp_send_chunk(req, nullptr, 0);
+    return err;
+}
+
+// A 400 that names the field, so the page can highlight the input rather than
+// showing a sentence nobody can act on.
+static esp_err_t mqtt_bad_request(httpd_req_t *req, const char *field,
+                                  const char *reason) {
+    char buf[256];
+    // The reason strings come from mqtt_config.cpp and device_config.cpp, which are
+    // ours and contain no quotes; the field names are literals. Nothing here is
+    // user-supplied, which is why it can go into JSON unescaped.
+    const int n = snprintf(buf, sizeof(buf), "{\"error\":\"%s\",\"field\":\"%s\"}",
+                           reason != nullptr ? reason : "invalid",
+                           field != nullptr ? field : "");
+    httpd_resp_set_status(req, "400 Bad Request");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, buf, n);
+}
+
+static bool form_flag(const char *body, const char *key, bool *out) {
+    char v[8];
+    if (!settings_form_field(body, key, v, sizeof(v))) return false;
+    *out = (v[0] == '1' || v[0] == 't' || v[0] == 'y' || v[0] == 'o');
+    return true;
+}
+
+static bool form_uint(const char *body, const char *key, long *out) {
+    char v[16];
+    if (!settings_form_field(body, key, v, sizeof(v))) return false;
+    if (v[0] == '\0') return false;
+    char *end = nullptr;
+    const long n = strtol(v, &end, 10);
+    if (end == v || (end != nullptr && *end != '\0')) return false;
+    *out = n;
+    return true;
+}
+
+// Copies a text field only when it is present, and rejects a value that would have
+// to be truncated to fit. Truncation is the failure worth refusing: a hostname
+// silently cut to 95 characters resolves to nothing, and the operator sees a
+// connection error rather than the field they got wrong.
+static bool form_text(const char *body, const char *key, char *out, size_t cap) {
+    // 256, not MQTT_CA_MAX: the control task has a 6 kB stack and a 4 kB local would
+    // overflow it. The longest field routed through here is the manual topic at 160
+    // bytes, and the certificate has its own path and its own PSRAM buffer.
+    char tmp[256];
+    if (cap > sizeof(tmp)) return false;
+    if (!settings_form_field(body, key, tmp, sizeof(tmp))) return true;   // absent
+    // A value that has to be truncated is refused rather than stored short: a
+    // hostname silently cut at 95 characters resolves to nothing, and the operator
+    // then sees a connection error instead of the field they got wrong.
+    return settings_copy(out, cap, tmp);
+}
+
+static esp_err_t mqtt_settings_handler(httpd_req_t *req) {
+    if (req->method == HTTP_GET) return mqtt_respond(req);
+
+    if (s_mqtt_body == nullptr) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_sendstr(req, "{\"error\":\"settings buffer unavailable\"}");
+    }
+    if (req->content_len == 0 || req->content_len > MQTT_BODY_MAX) {
+        return mqtt_bad_request(req, "body",
+                                req->content_len == 0 ? "empty request"
+                                                      : "too large - the CA certificate limit is 4 kB");
+    }
+
+    // httpd_req_recv can return short, and routinely does for a body that spans TCP
+    // segments - which a 2 kB certificate always will.
+    size_t got = 0;
+    while (got < req->content_len) {
+        const int r = httpd_req_recv(req, s_mqtt_body + got, req->content_len - got);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;
+        if (r <= 0) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_set_type(req, "application/json");
+            return httpd_resp_sendstr(req, "{\"error\":\"could not read the body\"}");
+        }
+        got += static_cast<size_t>(r);
+    }
+    s_mqtt_body[got] = '\0';
+
+    // Start from what is in force, so an absent field is an unchanged field.
+    MqttConfig cfg{};
+    DeviceIdentity id{};
+    mqtt_publisher_config(&cfg, &id);
+    WifiStaConfig sta{};
+    settings_load_wifi(&sta);
+
+    const char *body = s_mqtt_body;
+    char v[32];
+
+    // The one-click preset. Applied before the individual fields so an operator can
+    // load the demo broker and still override the port in the same submit.
+    if (settings_form_field(body, "preset", v, sizeof(v)) && strcmp(v, "emqx") == 0) {
+        settings_copy(cfg.host, sizeof(cfg.host), MQTT_DEMO_HOST);
+        settings_copy(cfg.ws_path, sizeof(cfg.ws_path), MQTT_DEMO_WS_PATH);
+        cfg.port = mqtt_default_port(cfg.transport);
+        cfg.username[0] = '\0';
+        cfg.password[0] = '\0';
+    }
+
+    if (settings_form_field(body, "transport", v, sizeof(v))) {
+        MqttTransport tr;
+        if (!mqtt_transport_from_name(v, &tr)) {
+            return mqtt_bad_request(req, "transport", "one of tcp, tls, ws, wss");
+        }
+        // Move the port with the transport, but only when it was still the default
+        // for the old one. Otherwise switching TCP -> TLS silently keeps 1883, the
+        // handshake fails, and the error names TLS rather than the port.
+        const bool port_was_default = cfg.port == mqtt_default_port(cfg.transport);
+        cfg.transport = tr;
+        if (port_was_default) cfg.port = mqtt_default_port(tr);
+        if (mqtt_transport_is_ws(tr) && cfg.ws_path[0] == '\0') {
+            settings_copy(cfg.ws_path, sizeof(cfg.ws_path), MQTT_DEMO_WS_PATH);
+        }
+    }
+    if (settings_form_field(body, "protocol", v, sizeof(v))) {
+        MqttProtocol pr;
+        if (!mqtt_protocol_from_name(v, &pr)) {
+            return mqtt_bad_request(req, "protocol", "3.1.1 or 5");
+        }
+        cfg.protocol = pr;
+    }
+
+    if (!form_text(body, "host", cfg.host, sizeof(cfg.host))) {
+        return mqtt_bad_request(req, "host", "at most 95 characters");
+    }
+    if (!form_text(body, "ws_path", cfg.ws_path, sizeof(cfg.ws_path))) {
+        return mqtt_bad_request(req, "ws_path", "at most 63 characters");
+    }
+    if (!form_text(body, "client_id", cfg.client_id, sizeof(cfg.client_id))) {
+        return mqtt_bad_request(req, "client_id", "at most 63 characters");
+    }
+    if (!form_text(body, "topic", cfg.topic, sizeof(cfg.topic))) {
+        return mqtt_bad_request(req, "topic", "at most 159 characters");
+    }
+    if (!form_text(body, "device_id", id.device_id, sizeof(id.device_id))) {
+        return mqtt_bad_request(req, "device_id", "at most 31 characters");
+    }
+    if (!form_text(body, "fleet_id", id.fleet_id, sizeof(id.fleet_id))) {
+        return mqtt_bad_request(req, "fleet_id", "at most 31 characters");
+    }
+    if (!form_text(body, "remark", id.remark, sizeof(id.remark))) {
+        return mqtt_bad_request(req, "remark", "at most 47 characters");
+    }
+
+    // Credentials. An empty value is "keep what is stored", which is what lets the
+    // page submit the form without ever having held the password; erasing one takes
+    // an explicit clear flag.
+    char cred[MQTT_PASS_MAX];
+    if (settings_form_field(body, "username", cred, sizeof(cred)) && cred[0] != '\0') {
+        if (!settings_copy(cfg.username, sizeof(cfg.username), cred)) {
+            return mqtt_bad_request(req, "username", "at most 63 characters");
+        }
+    }
+    if (settings_form_field(body, "password", cred, sizeof(cred)) && cred[0] != '\0') {
+        if (!settings_copy(cfg.password, sizeof(cfg.password), cred)) {
+            return mqtt_bad_request(req, "password", "at most 95 characters");
+        }
+    }
+    bool flag = false;
+    if (form_flag(body, "clear_username", &flag) && flag) cfg.username[0] = '\0';
+    if (form_flag(body, "clear_password", &flag) && flag) cfg.password[0] = '\0';
+
+    long n = 0;
+    if (form_uint(body, "port", &n)) {
+        if (n < 1 || n > 65535) return mqtt_bad_request(req, "port", "1-65535");
+        cfg.port = static_cast<uint16_t>(n);
+    }
+    if (form_uint(body, "qos", &n)) {
+        if (n < 0 || n > 1) {
+            return mqtt_bad_request(req, "qos",
+                                    "0 or 1 - QoS 2 is not offered: the alert path is "
+                                    "at-least-once with event-id de-duplication");
+        }
+        cfg.qos = static_cast<uint8_t>(n);
+    }
+    if (form_uint(body, "keepalive", &n)) {
+        if (n < 5 || n > 300) return mqtt_bad_request(req, "keepalive", "5-300 seconds");
+        cfg.keepalive_s = static_cast<uint16_t>(n);
+    }
+    form_flag(body, "enabled", &cfg.enabled);
+    form_flag(body, "lwt", &cfg.lwt);
+    form_flag(body, "retain_status", &cfg.retain_status);
+    form_flag(body, "tls_insecure", &cfg.tls_insecure);
+
+    if (settings_form_field(body, "topic_mode", v, sizeof(v))) {
+        if (strcmp(v, "manual") == 0) {
+            cfg.topic_mode = MqttTopicMode::Manual;
+        } else if (strcmp(v, "auto") == 0) {
+            cfg.topic_mode = MqttTopicMode::Auto;
+        } else {
+            return mqtt_bad_request(req, "topic_mode", "auto or manual");
+        }
+    }
+
+    // The certificate. Shape-checked before it is stored, because the alternative is
+    // a PEM that looks present in the UI and fails inside a TLS handshake days later.
+    if (form_flag(body, "clear_ca", &flag) && flag) {
+        settings_clear_ca();
+        cfg.ca_present = false;
+    } else if (s_mqtt_ca != nullptr &&
+               settings_form_field(body, "ca_cert", s_mqtt_ca, MQTT_CA_MAX + 1) &&
+               s_mqtt_ca[0] != '\0') {
+        SettingsError err{};
+        if (!mqtt_ca_pem_valid(s_mqtt_ca, strlen(s_mqtt_ca), &err)) {
+            return mqtt_bad_request(req, err.field, err.reason);
+        }
+        if (!settings_save_ca(s_mqtt_ca)) {
+            return mqtt_bad_request(req, "ca_cert", "could not be stored");
+        }
+        cfg.ca_present = true;
+    }
+
+    // Station credentials, same partial-update rule.
+    bool sta_changed = false;
+    if (form_flag(body, "sta_enabled", &sta.enabled)) sta_changed = true;
+    // Decoded into the larger buffer on purpose: reading straight into a 33-byte one
+    // would truncate a 40-character SSID to 32 and then store it happily, which is
+    // the one thing every other field here refuses to do.
+    if (settings_form_field(body, "sta_ssid", cred, sizeof(cred))) {
+        if (!settings_copy(sta.ssid, sizeof(sta.ssid), cred)) {
+            return mqtt_bad_request(req, "sta_ssid", "at most 32 characters");
+        }
+        sta_changed = true;
+    }
+    if (settings_form_field(body, "sta_password", cred, sizeof(cred)) && cred[0] != '\0') {
+        if (!settings_copy(sta.password, sizeof(sta.password), cred)) {
+            return mqtt_bad_request(req, "sta_password", "at most 63 characters");
+        }
+        sta_changed = true;
+    }
+    if (form_flag(body, "clear_sta_password", &flag) && flag) {
+        sta.password[0] = '\0';
+        sta_changed = true;
+    }
+
+    // Everything validated together, before anything is applied. A configuration
+    // that is half-stored is worse than one that was rejected: the operator sees a
+    // success and the device publishes to a topic built from an identity that never
+    // passed a check.
+    SettingsError err{};
+    if (!mqtt_config_validate(cfg, id, &err)) {
+        return mqtt_bad_request(req, err.field, err.reason);
+    }
+    if (!wifi_sta_validate(sta, &err)) {
+        return mqtt_bad_request(req, err.field, err.reason);
+    }
+
+    bool sta_needs_reboot = false;
+    if (sta_changed) {
+        if (!settings_save_wifi(sta)) {
+            return mqtt_bad_request(req, "sta_ssid", "could not be stored");
+        }
+        WifiStaOverride over{};
+        over.enabled = sta.enabled;
+        over.ssid = sta.ssid;
+        over.password = sta.password;
+        sta_needs_reboot = !board_wifi_apply_station(over);
+    }
+
+    if (!mqtt_publisher_apply(cfg, id)) {
+        // Applied but not persisted is the one outcome worth distinguishing: the
+        // broker connection will work until the next power cycle and then quietly
+        // revert, which is precisely the failure someone would spend an evening on.
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_sendstr(req,
+            "{\"error\":\"settings applied but could not be saved to NVS\"}");
+    }
+    // The credentials are never logged, and the fields that changed are not listed
+    // either - "username changed" is itself a small disclosure in a shared room.
+    ESP_LOGI(TAG, "mqtt settings applied (%s, %s)",
+             cfg.enabled ? "enabled" : "disabled", mqtt_transport_name(cfg.transport));
+    if (sta_needs_reboot) {
+        ESP_LOGW(TAG, "station credentials stored; a reboot is needed to join");
+    }
+    return mqtt_respond(req);
+}
+
+// Publishes one synthetic alert through the real path, so an operator can prove
+// credentials, TLS, topic and subscriber in one click. Without it the only way to
+// test a broker is to make somebody fall asleep.
+static esp_err_t mqtt_test_handler(httpd_req_t *req) {
+    const bool queued = mqtt_publisher_test();
+    MqttStatus st{};
+    mqtt_publisher_status(&st);
+    char buf[224];
+    const int n = snprintf(buf, sizeof(buf),
+                           "{\"queued\":%s,\"state\":\"%s\",\"queued_depth\":%d,"
+                           "\"published\":%lu,\"acked\":%lu,\"error\":\"%s\"}",
+                           queued ? "true" : "false", mqtt_state_name(st.state),
+                           st.depth, static_cast<unsigned long>(st.published),
+                           static_cast<unsigned long>(st.acked), st.last_error);
+    httpd_resp_set_type(req, "application/json");
+    if (!queued) httpd_resp_set_status(req, "409 Conflict");
+    return httpd_resp_send(req, buf, n);
+}
+
 // One JPEG per request. Lives on the stream port rather than the control port so
 // that a burst of these cannot delay /api/status - encoding is the most expensive
 // thing on the board after inference.
@@ -799,6 +1218,18 @@ static bool alloc_buffers() {
         return false;
     }
 
+    // The MQTT settings buffers. In PSRAM and allocated once, because a 6 kB request
+    // body and a 3 kB response document have no business on the control task's 6 kB
+    // stack - and because a handler that allocates per request is a handler that can
+    // fail under fragmentation at the moment someone is trying to fix their broker.
+    // A failure here disables only the settings endpoint; publishing, if it was
+    // already configured, is unaffected.
+    s_mqtt_body = static_cast<char *>(heap_caps_malloc(MQTT_BODY_MAX + 1, MALLOC_CAP_SPIRAM));
+    s_mqtt_ca = static_cast<char *>(heap_caps_malloc(MQTT_CA_MAX + 1, MALLOC_CAP_SPIRAM));
+    if (s_mqtt_body == nullptr || s_mqtt_ca == nullptr) {
+        ESP_LOGW(TAG, "mqtt settings buffers unavailable; /api/mqtt POST is disabled");
+    }
+
     // Event capture buffers are only worth their PSRAM if there is somewhere to
     // put the result, so they follow the card.
     if (board_sdcard_mounted()) {
@@ -830,7 +1261,7 @@ bool web_server_start() {
     httpd_config_t control = HTTPD_DEFAULT_CONFIG();
     control.server_port = WEB_PORT_CONTROL;
     control.ctrl_port = 32768;
-    control.max_uri_handlers = 12;
+    control.max_uri_handlers = 16;
     control.lru_purge_enable = true;
     control.max_open_sockets = 5;
     // Formatting the status object costs a few hundred bytes of stack on its own
@@ -856,6 +1287,9 @@ bool web_server_start() {
         {.uri = "/api/events",    .method = HTTP_GET,  .handler = events_handler,     .user_ctx = nullptr},
         {.uri = "/api/event",     .method = HTTP_GET,  .handler = event_image_handler,.user_ctx = nullptr},
         {.uri = "/api/events/clear", .method = HTTP_POST, .handler = events_clear_handler, .user_ctx = nullptr},
+        {.uri = "/api/mqtt",      .method = HTTP_GET,  .handler = mqtt_settings_handler, .user_ctx = nullptr},
+        {.uri = "/api/mqtt",      .method = HTTP_POST, .handler = mqtt_settings_handler, .user_ctx = nullptr},
+        {.uri = "/api/mqtt/test", .method = HTTP_POST, .handler = mqtt_test_handler,   .user_ctx = nullptr},
     };
     for (const httpd_uri_t &r : routes) httpd_register_uri_handler(s_control, &r);
 

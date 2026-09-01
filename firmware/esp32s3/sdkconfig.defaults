@@ -90,3 +90,43 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 # detector mid-init. Lower the threshold rather than chasing phantom camera faults;
 # raise it back for the final power-supply validation.
 CONFIG_ESP_BROWNOUT_DET_LVL_SEL_4=y
+
+# --- MQTT alerting --------------------------------------------------------
+# esp-mqtt ships with ESP-IDF, but three of the four transports this feature
+# offers are behind Kconfig options that default to off, and a transport that is
+# compiled out fails at connect time with a generic transport error rather than
+# "not built" - which is a long afternoon.
+#
+# WebSocket is not a nicety here: the documentation's fleet page is a browser, and
+# a browser cannot open a raw MQTT socket at all. WSS is what a page served over
+# HTTPS is *required* to use, so both halves have to be in.
+CONFIG_MQTT_TRANSPORT_SSL=y
+CONFIG_MQTT_TRANSPORT_WEBSOCKET=y
+CONFIG_MQTT_TRANSPORT_WEBSOCKET_SECURE=y
+
+# MQTT 5 is offered as a choice in the settings modal, so it has to be compiled
+# in; the default protocol is still 3.1.1, which every broker speaks.
+CONFIG_MQTT_PROTOCOL_5=y
+
+# The outbox is esp-mqtt's own QoS 1 retransmission buffer, underneath our
+# 16-event MqttOutbox. 8 kB is roughly twenty alert payloads in flight, which is
+# more than the 16 our own buffer will ever hand over at once.
+CONFIG_MQTT_OUTBOX_EXPIRED_TIMEOUT_MS=30000
+CONFIG_MQTT_CUSTOM_OUTBOX=n
+
+# The Mozilla root bundle, in flash. This is what makes the preconfigured public
+# broker reachable over TLS *with* server verification and no certificate pasted
+# in - the alternative is shipping a default that only works with verification
+# switched off, which is how "TLS" quietly becomes "encrypted to somebody".
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+
+# One more socket than before: the MQTT client holds one whenever it is connected,
+# on top of the two HTTP servers and the DHCP server.
+CONFIG_LWIP_MAX_SOCKETS=20
+
+# SNTP is not enabled and the payload says so. There is no RTC on this board, so a
+# device that has never reached a time server publishes "ts":"" and
+# "ts_source":"uptime" rather than a timestamp in 1970 - see
+# mqtt_config.cpp:mqtt_iso8601(). uptime_ms is always present and is what the
+# fleet page orders events by.

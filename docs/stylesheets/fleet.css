@@ -1,0 +1,420 @@
+/* Fleet monitor, for docs/fleet-monitoring.md.
+ *
+ * Every colour is a Material for MkDocs variable rather than a literal, so the page
+ * follows the site's light/dark toggle instead of having a second opinion about it.
+ * The alert bands are the exception: red, amber and green have to mean the same thing
+ * here as they do on the device's own dashboard, so they are stated once and reused.
+ *
+ * Prefixed .fleet- throughout. This stylesheet is loaded on every page of the site
+ * (see the note in mkdocs.yml about why a per-page <link> cannot work), so a bare
+ * .card or .pill here would restyle the theme.
+ */
+
+:root {
+  --fleet-ok: #2e9e4f;
+  --fleet-warn: #c98a12;
+  --fleet-bad: #d93025;
+}
+
+[data-md-color-scheme="slate"] {
+  --fleet-ok: #4ec86f;
+  --fleet-warn: #e5c07b;
+  --fleet-bad: #ff8781;
+}
+
+#fleet-app {
+  display: grid;
+  gap: 1rem;
+}
+
+/* --- header ------------------------------------------------------------- */
+.fleet-bar-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.6rem;
+  background: var(--md-code-bg-color);
+}
+
+.fleet-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.65rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  background: var(--md-default-bg-color);
+  /* Sized by its widest possible label rather than its current one: the pill sits in
+     a flex row, so a text change would otherwise shuffle everything beside it. */
+  min-width: 8.5rem;
+  justify-content: center;
+}
+
+.fleet-pill.state-subscribed { color: var(--fleet-ok); border-color: var(--fleet-ok); }
+.fleet-pill.state-error,
+.fleet-pill.state-closed { color: var(--fleet-bad); border-color: var(--fleet-bad); }
+.fleet-pill.state-connecting,
+.fleet-pill.state-open,
+.fleet-pill.state-retrying { color: var(--fleet-warn); border-color: var(--fleet-warn); }
+
+.fleet-bar-top .fleet-spacer { margin-left: auto; }
+
+.fleet-btn,
+.fleet-mini {
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+  border-radius: 0.35rem;
+  border: 1px solid var(--md-default-fg-color--lighter);
+  background: var(--md-default-bg-color);
+  color: var(--md-default-fg-color);
+  padding: 0.35rem 0.7rem;
+}
+
+.fleet-btn.is-primary {
+  border-color: var(--md-primary-fg-color);
+  color: var(--md-primary-fg-color);
+  font-weight: 700;
+}
+
+.fleet-btn:hover,
+.fleet-mini:hover { border-color: var(--md-accent-fg-color); }
+.fleet-mini { font-size: 0.65rem; padding: 0.2rem 0.45rem; }
+
+.fleet-note {
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: var(--md-default-fg-color--light);
+  margin: 0;
+}
+
+/* --- filters ----------------------------------------------------------- */
+.fleet-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.fleet-filters input[type="search"],
+.fleet-filters select,
+.fleet-field input,
+.fleet-field select {
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 0.35rem;
+  border: 1px solid var(--md-default-fg-color--lighter);
+  background: var(--md-default-bg-color);
+  color: var(--md-default-fg-color);
+}
+
+.fleet-filters input[type="search"] { flex: 1 1 12rem; min-width: 0; }
+
+.fleet-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+}
+
+/* --- counters ---------------------------------------------------------- */
+.fleet-counters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(6.5rem, 1fr));
+  gap: 0.5rem;
+}
+
+.fleet-counter {
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.6rem;
+  background: var(--md-default-bg-color);
+}
+
+.fleet-counter b {
+  display: block;
+  font-size: 1.35rem;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.fleet-counter span {
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--md-default-fg-color--light);
+}
+
+/* --- device cards ------------------------------------------------------ */
+.fleet-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: 0.75rem;
+}
+
+.fleet-card {
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.6rem;
+  padding: 0.75rem;
+  background: var(--md-default-bg-color);
+  display: grid;
+  gap: 0.45rem;
+  align-content: start;
+}
+
+.fleet-card.is-offline { opacity: 0.62; }
+
+.fleet-card header {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.fleet-card h3 {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.fleet-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  flex: none;
+  background: var(--md-default-fg-color--lighter);
+}
+
+.fleet-dot.on { background: var(--fleet-ok); }
+.fleet-dot.off { background: var(--fleet-bad); }
+
+.fleet-id {
+  margin: 0;
+  font-size: 0.66rem;
+  font-family: var(--md-code-font-family, monospace);
+  color: var(--md-default-fg-color--light);
+  overflow-wrap: anywhere;
+}
+
+.fleet-risk { display: flex; align-items: baseline; gap: 0.4rem; }
+
+.fleet-risk-value {
+  font-size: 1.8rem;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  /* Fixed width for four glyphs, so 0.09 and 0.41 occupy the same box and the label
+     beside them never slides. */
+  min-width: 3.2rem;
+  display: inline-block;
+}
+
+.fleet-band-ok { color: var(--fleet-ok); }
+.fleet-band-warn { color: var(--fleet-warn); }
+.fleet-band-bad { color: var(--fleet-bad); }
+
+.fleet-risk-label {
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--md-default-fg-color--light);
+}
+
+.fleet-bar {
+  height: 0.4rem;
+  border-radius: 999px;
+  background: var(--md-code-bg-color);
+  overflow: hidden;
+}
+
+.fleet-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: currentColor;
+  transition: width 0.25s linear;
+}
+
+.fleet-meta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.1rem 0.6rem;
+  margin: 0;
+  font-size: 0.7rem;
+}
+
+.fleet-meta dt { color: var(--md-default-fg-color--light); }
+.fleet-meta dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.fleet-copy { display: flex; gap: 0.35rem; align-items: center; }
+
+.fleet-copy code {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.6rem;
+  overflow-wrap: anywhere;
+  padding: 0.2rem 0.35rem;
+}
+
+/* --- timeline ---------------------------------------------------------- */
+.fleet-timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  /* Fixed height rather than max-height: a list that grows from empty to full would
+     drag everything under it down the page as alerts arrive. */
+  height: 18rem;
+  overflow-y: auto;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.5rem;
+}
+
+.fleet-timeline li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: baseline;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--md-default-fg-color--lightest);
+  font-size: 0.72rem;
+}
+
+.fleet-timeline li:last-child { border-bottom: none; }
+.fleet-timeline time {
+  color: var(--md-default-fg-color--light);
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+
+.fleet-badge {
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  border: 1px solid currentColor;
+  flex: none;
+}
+
+.fleet-sev-critical { color: var(--fleet-bad); }
+.fleet-sev-high { color: var(--fleet-warn); }
+.fleet-sev-medium { color: var(--md-default-fg-color--light); }
+.fleet-sev-info { color: var(--md-default-fg-color--light); }
+
+.fleet-who { font-weight: 600; overflow-wrap: anywhere; }
+.fleet-num,
+.fleet-when {
+  color: var(--md-default-fg-color--light);
+  font-variant-numeric: tabular-nums;
+}
+.fleet-when { margin-left: auto; font-size: 0.65rem; }
+
+/* --- the settings modal ------------------------------------------------ */
+.fleet-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: none;
+  padding: 1rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: rgba(0, 0, 0, 0.62);
+}
+
+.fleet-modal.is-open { display: block; }
+
+.fleet-sheet {
+  max-width: 34rem;
+  margin: 0 auto;
+  background: var(--md-default-bg-color);
+  border: 1px solid var(--md-default-fg-color--lighter);
+  border-radius: 0.6rem;
+  padding: 1rem;
+}
+
+.fleet-sheet h2 { margin: 0 0 0.2rem; font-size: 1rem; }
+
+.fleet-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.6rem;
+}
+
+@media (max-width: 32rem) {
+  .fleet-row { grid-template-columns: 1fr; }
+}
+
+.fleet-field { display: block; margin-bottom: 0.6rem; min-width: 0; }
+
+.fleet-field > span {
+  display: block;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--md-default-fg-color--light);
+  margin-bottom: 0.2rem;
+}
+
+.fleet-field input,
+.fleet-field select { width: 100%; }
+
+.fleet-field .fleet-hint {
+  display: block;
+  font-size: 0.65rem;
+  text-transform: none;
+  letter-spacing: 0;
+  margin-top: 0.15rem;
+}
+
+.fleet-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding-top: 0.7rem;
+  margin-top: 0.3rem;
+  border-top: 1px solid var(--md-default-fg-color--lightest);
+}
+
+.fleet-actions .fleet-spacer { margin-left: auto; }
+
+.fleet-warn-box {
+  border-radius: 0.4rem;
+  padding: 0.55rem 0.7rem;
+  font-size: 0.7rem;
+  line-height: 1.55;
+  margin: 0 0 0.7rem;
+  border: 1px solid var(--fleet-warn);
+  color: var(--fleet-warn);
+}
+
+.fleet-bad-box {
+  border-radius: 0.4rem;
+  padding: 0.55rem 0.7rem;
+  font-size: 0.7rem;
+  line-height: 1.55;
+  margin: 0 0 0.7rem;
+  border: 1px solid var(--fleet-bad);
+  color: var(--fleet-bad);
+}
+
+.fleet-empty {
+  font-size: 0.75rem;
+  color: var(--md-default-fg-color--light);
+  padding: 0.6rem 0;
+  margin: 0;
+}
+
+[hidden] { display: none !important; }
