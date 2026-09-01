@@ -117,10 +117,6 @@ bool model_init() {
     return true;
 }
 
-bool model_ready() {
-    return s_ready;
-}
-
 bool model_eye_ready() {
     // The weights are linked in, so this is true whenever the detector is: the eye
     // model needs the face landmarks to know where to crop.
@@ -256,19 +252,6 @@ static bool stage_crop(const uint8_t *frame, int width, const FaceBox &roi) {
         memcpy(s_crop + static_cast<size_t>(y) * row_bytes, src, row_bytes);
     }
     return true;
-}
-
-// TEMP bring-up: same detector, RGB888 input, to isolate RGB565 handling.
-bool model_detect_face_rgb888(const uint8_t *rgb888, int width, int height, FaceDetection *out) {
-    if (out != nullptr) out->valid = false;
-    if (!s_ready || s_face == nullptr || rgb888 == nullptr || out == nullptr) return false;
-    dl::image::img_t img = {};
-    img.data = const_cast<uint8_t *>(rgb888);
-    img.width = static_cast<uint16_t>(width);
-    img.height = static_cast<uint16_t>(height);
-    img.pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB888;
-    const FaceBox no_roi;
-    return run_and_pick(img, no_roi, out);
 }
 
 bool model_detect_face(const uint8_t *rgb565, int width, int height, bool full_frame,

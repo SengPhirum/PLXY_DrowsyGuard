@@ -36,7 +36,6 @@ FIRMWARE = ROOT / 'firmware/esp32s3/main'
 ROI_PAD = 0.60
 ROI_MAX_FRAC = 0.85
 ROI_MIN_SIDE = 96
-TRACK_MIN_IOU = 0.15
 
 HARNESS = r'''
 #include <cstdio>

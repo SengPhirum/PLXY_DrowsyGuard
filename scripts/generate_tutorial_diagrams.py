@@ -247,10 +247,6 @@ HEADER_TOP = ('5V', '14', '13', '12', '11', '10', '9', '46', '3', '8',
 HEADER_BOTTOM = ('GND', '19', '20', '21', '47', '48', '45', '0', '35', '36',
                  '37', '38', '39', '40', '41', '42', '2', '1', 'RX', 'TX')
 
-# The microSD slot. Nothing to wire - it is on the board - but it owns three GPIOs
-# and that is the whole reason the amplifier is where it is.
-SDCARD_PINS = [('CLK', 39), ('CMD', 38), ('D0', 40)]
-
 # From firmware/esp32s3/main/board_camera.h - the DVP bus is on the board's FPC
 # connector, not on the header, so this is reference material rather than wiring.
 CAMERA_PINS = [

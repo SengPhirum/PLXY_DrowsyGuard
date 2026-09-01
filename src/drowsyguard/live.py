@@ -17,8 +17,6 @@ from PIL import Image
 from .data import preprocess_gray
 from .risk import DEFAULT_COOLDOWN, DEFAULT_REQUIRED, DEFAULT_TRIGGER, RiskFilter
 
-CLASS_NAMES = ('alert', 'drowsy')
-
 # A live webcam that delivers far below this is not merely a slow machine; on
 # Windows it usually means the capture stack is degraded by the launch context.
 SLOW_CAPTURE_FPS = 5.0

@@ -23,7 +23,6 @@ from pathlib import Path
 EYE_MODEL_FILENAME = 'open_closed_eye.onnx'
 EYE_MODEL_URL = ('https://storage.openvinotoolkit.org/repositories/open_model_zoo/'
                  'public/2022.1/open-closed-eye-0001/open_closed_eye.onnx')
-EYE_MODEL_SIZE = 46164
 
 # Index of the "closed" class in the model output. See module docstring.
 CLOSED_INDEX = 0

@@ -34,7 +34,6 @@ struct FaceDetection {
 // ESP-DL release yet; the firmware then runs preview-only instead of refusing to
 // boot, so the camera and panel can be validated on their own.
 bool model_init();
-bool model_ready();
 
 // The two models bind independently, so they are reported independently. The face
 // detector is bound (espressif/human_face_detect); the eye model runs in float from
@@ -84,9 +83,6 @@ struct ModelDetectStats {
     int64_t us = 0;       // wall time of the last call
 };
 void model_detect_stats(ModelDetectStats *out);
-
-// TEMP bring-up: same detector fed RGB888, to isolate RGB565 handling from content.
-bool model_detect_face_rgb888(const uint8_t *rgb888, int width, int height, FaceDetection *out);
 
 // Probability that one eye is closed. `eye`: 0 = right, 1 = left, in DrowsyGuard's
 // canonical landmark order. `face_side` is the detected face box's side in pixels.

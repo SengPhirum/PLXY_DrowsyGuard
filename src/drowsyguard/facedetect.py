@@ -18,9 +18,6 @@ MODEL_URL = ('https://github.com/opencv/opencv_zoo/raw/main/models/'
              'face_detection_yunet/face_detection_yunet_2023mar.onnx')
 DEFAULT_MODEL_DIR = Path('models/detectors')
 
-# Median face-box-to-image ratio across DDD; see module docstring.
-DDD_BOX_RATIO = 1.02
-
 
 @dataclass
 class FaceResult:

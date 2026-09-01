@@ -44,7 +44,6 @@ SCREEN = (12, 14, 18)
 
 BOARD_CREAM = (237, 233, 222)
 BOARD_EDGE = (208, 202, 188)
-HOLE = (108, 104, 96)
 HOLE_DARK = (72, 69, 63)
 
 # Resolved at import time rather than hard-coded to a Linux path, so the artwork
@@ -318,9 +317,6 @@ class Breadboard:
             return (base + off, self.field_y + along)
         return (self.field_x + along, base + off)
 
-    def col_x(self, col: str):
-        return self.hole(col, 1)[0]
-
     def row_y(self, row: int):
         return self.hole('A', row)[1]
 
@@ -428,22 +424,6 @@ class Breadboard:
                     c.rect(xx - p * 0.9, yy, p * 1.8, p * 0.5, fill=(232, 228, 216),
                            outline=BOARD_EDGE, width=1, radius=2)
         return self
-
-    def span_bracket(self, col: str, row_a: int, row_b: int, label: str,
-                     colour=BLUE, side='right'):
-        """Bracket beside the field marking the rows a module occupies."""
-        c, p = self.c, self.p
-        x = (self.field_x + self.field_w + p * 1.6) if side == 'right' else (
-            self.field_x - p * 1.6)
-        y0, y1 = self.row_y(row_a), self.row_y(row_b)
-        tick = p * 0.5 if side == 'right' else -p * 0.5
-        c.line([(x, y0), (x, y1)], fill=colour, width=3)
-        c.line([(x, y0), (x - tick, y0)], fill=colour, width=3)
-        c.line([(x, y1), (x - tick, y1)], fill=colour, width=3)
-        c.text(x + (10 if side == 'right' else -10), (y0 + y1) / 2, label,
-               size=int(p * 0.8), bold=True, fill=colour,
-               anchor='lm' if side == 'right' else 'rm')
-        return (x, (y0 + y1) / 2)
 
     def wire(self, a, b, colour, width=5, bow=0.0):
         """A jumper wire between two holes, drawn with a slight sag."""
