@@ -125,14 +125,12 @@
         <div><span class="muted">nods/min</span><span id="nodRate">-</span></div>
         <div><span class="muted">blinks/min</span><span id="blinkRate">-</span></div>
         <div><span class="muted">long blinks/min</span><span id="longBlinkRate">-</span></div>
-        <div><span class="muted">sneezes</span><span id="sneezeCount">-</span></div>
         <div><span class="muted">closure</span><span id="closureS">-</span></div>
       </div>
       <div class="muted" style="font-size:12px;margin-top:8px">
         Risk is a fusion of PERCLOS, long blinks, yawns and nods &mdash; so a blink
         cannot alert, sustained closure can, and yawning or nodding adds risk on its
-        own. A detected sneeze suppresses the behaviour contribution, because an
-        involuntary eye closure is not drowsiness.
+        own.
       </div>
       <div id="baselineNote" class="muted" style="font-size:12px;margin-top:6px;display:none">
         Calibrating per-driver baselines &mdash; yawn/nod detection starts once settled.
@@ -172,7 +170,6 @@
         <div><span class="muted">frames</span><span id="frames">0</span></div>
         <div><span class="muted">alerts</span><span id="alerts">0</span></div>
         <div title="How long the seat has looked empty, against the threshold at which the device announces it. Blank while the pipeline is faulty: an absence that cannot be verified is not an absence."><span class="muted">driver</span><span id="presence">&mdash;</span></div>
-        <div title="Sneezes detected, and of those how many were announced. A fit of sneezing is several detections and one announcement."><span class="muted">sneezes</span><span id="sneezes">&mdash;</span></div>
       </div>
     </div>
 
@@ -315,13 +312,12 @@
       $('nodRate').textContent = (e.nod_rate ?? 0).toFixed(1);
       $('blinkRate').textContent = (e.blink_rate ?? 0).toFixed(1);
       $('longBlinkRate').textContent = (e.long_blink_rate ?? 0).toFixed(1);
-      $('sneezeCount').textContent = (e.sneeze_count ?? 0) + (e.suppressed ? ' (suppressing)' : '');
       $('closureS').textContent = (e.closure_s ?? 0).toFixed(2) + ' s';
       $('baselineNote').style.display = (e.available && !e.baselines_ready) ? '' : 'none';
 
       const bl = s.behavior_events || [];
       const ICON = {blink:'blink', long_blink:'long blink', microsleep:'MICROSLEEP',
-                    yawn:'YAWN', nod:'NOD', sneeze:'SNEEZE (suppressed)'};
+                    yawn:'YAWN', nod:'NOD'};
       $('behaviorList').innerHTML = bl.map(b =>
         '<li><span>' + (ICON[b.kind] || b.kind) + '</span><span class="muted">' +
         b.time + '</span><span class="muted">f' + b.index + '</span></li>').join('');
@@ -381,11 +377,6 @@
         pr.health !== 'ok' ? pr.health.replace('-', ' ')
         : pr.state === 'present' || pr.state === 'warmup' ? 'present'
         : pr.absent_s.toFixed(1) + ' s / ' + pr.alert_after_s.toFixed(0) + ' s';
-    }
-    const ey = s.eyes || {};
-    if(ey.sneeze_count !== undefined){
-      $('sneezes').textContent = ey.sneeze_count + ' / ' +
-        (ey.sneeze_alerts !== undefined ? ey.sneeze_alerts : 0) + ' said';
     }
     $('inputDims').innerHTML = s.image_size + '&times;' + s.image_size + ' gray';
 

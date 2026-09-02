@@ -121,7 +121,7 @@ stream open must not block the 5 Hz status polling that the page depends on.
 | --- | --- |
 | **Live view** | the MJPEG feed with the face box and five landmarks drawn over it, plus pills for **driver presence**, face score, detection source and image luma |
 | **Fused drowsiness risk** | the fused score, the trigger, the current streak (`5 of 8 frames`) and a trend line |
-| **Eyes & cues** | P(closed) smoothed, PERCLOS, closure duration, the sneeze counters (detected / announced), and the mouth-open / head-down / suppressed / baselines-ready pills |
+| **Eyes & cues** | P(closed) smoothed, PERCLOS, closure duration, and the mouth-open / head-down / baselines-ready pills |
 | **Controls** | mute, speak a warning, JPEG quality, stream rate, still-photo mode, save frame |
 | **Event log** | recent alerts |
 | **Drowsiness history** | JPEG captures written to the SD card at alert time |
@@ -164,17 +164,16 @@ set sensibly for the frame rate you are actually getting.
 The board speaks its warnings; there is nothing to read while driving.
 
 ```bash
-./plxy.sh alert drowsy        # or: microsleep | yawn | nod | sneeze | no_driver
+./plxy.sh alert drowsy        # or: microsleep | yawn | nod | no_driver
 ./plxy.sh mute
 ./plxy.sh unmute
 ```
 
-Six reasons, and they do not all mean the same kind of thing:
+Five reasons, and they do not all mean the same kind of thing:
 
 | Reason | It is saying |
 | --- | --- |
 | `drowsy`, `microsleep`, `yawn`, `nod` | A drowsiness threshold was crossed. These share one rate limit — 30 s apart, three per episode, resetting after five quiet minutes — because they are one conversation. |
-| `sneeze` | *Not* a warning. The device saw a second-long eye closure, decided it was a sneeze, and suppressed the drowsiness alarm. Announcing it is what tells the driver the silence was a decision rather than a failure. Its own rate limit, so a drowsiness cooldown cannot swallow it. |
 | `no_driver` | The device has stopped monitoring anyone. Its own rate limit too, and no cap — "nobody is driving" must never be a message the device has used up its allowance of. |
 
 `./plxy.sh status` reports `alert.counts` per reason. That distinction matters: forty

@@ -2,8 +2,8 @@
 
 Last updated: 2026-09-02
 Status: Scaffold and live dashboard complete. Detection reworked from whole-face
-classification to multi-cue behaviour analysis (PERCLOS + long blinks + yawn + nod,
-with sneeze suppression) after the face CNN was found to key on driver identity. The
+classification to multi-cue behaviour analysis (PERCLOS + long blinks + yawn + nod)
+after the face CNN was found to key on driver identity. The
 eye-state base model is integrated but not yet accurate in visible light, and the
 behaviour thresholds are untuned. The SPI panel was removed on 2026-08-23: the
 firmware is headless and serves its preview and telemetry to a browser over its own
@@ -145,8 +145,10 @@ hardware** - see gap 14.
   classification. Whole-face classification on DDD learned driver identity. Risk fuses
   PERCLOS (0.55), long/slow blinks (0.20), yawning (0.15) and head nodding (0.10).
   Yawn/nod/roll are geometric from the five YuNet landmarks, so they cost no extra model.
-- Sneeze detection exists to SUPPRESS false alerts, not as a drowsiness cue: a sneeze
-  closes the eyes ~1 s with a head jerk and would otherwise read as a microsleep.
+- A closure that begins with the mouth flung wide must outlast REFLEX_MAX_S (1.2 s)
+  rather than MICROSLEEP_MIN_S before it is alarmed on: an involuntary reflex closes
+  the eyes ~1 s and would otherwise read as a microsleep. Guard only - nothing is
+  counted or reported. The sneeze feature this replaced was removed on 2026-09-02.
 - All geometric cues are measured against a rolling per-driver baseline, deliberately,
   so anatomy and camera angle cannot become signal the way driver appearance did.
 - Base eye model: `open-closed-eye-0001` (OpenVINO Model Zoo, Intel, Apache-2.0),
@@ -212,9 +214,9 @@ hardware** - see gap 14.
    Open task: fine-tune it on visible-light eye-state labels, or pair it with the
    planned IR illumination, which matches its training domain. Not yet validated on a
    live camera with a real person - no human was available in this environment.
-8. Behaviour event thresholds (yawn 1.2 s, microsleep 1.0 s, nod 1.5 s, sneeze 1.2 s +
+8. Behaviour event thresholds (yawn 1.2 s, microsleep 1.0 s, nod 1.5 s, reflex 1.2 s +
    jaw delta) are literature-informed defaults. Their logic is unit-tested on synthetic
-   traces but none are tuned or validated on labelled yawn/nod/sneeze video, which the
+   traces but none are tuned or validated on labelled yawn/nod video, which the
    project does not have. `yaw` is computed but unvalidated - needs a head-turn test.
 
    Reworked on 2026-08-23, and what changed is worth separating from what did not.

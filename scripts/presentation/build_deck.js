@@ -190,7 +190,7 @@ function slideTitle(slide, text, { color = NAVY, y = 0.44, sub = null, subColor 
   });
   s.addText([
     { text: 'One sign is never enough.  ', options: { bold: true, color: AMBER } },
-    { text: 'Risk fuses all four - PERCLOS 55%  ·  long blink 20%  ·  yawn 15%  ·  head nod 10% - and a sneeze suppresses the alert instead of firing it.',
+    { text: 'Risk fuses all four - PERCLOS 55%  ·  long blink 20%  ·  yawn 15%  ·  head nod 10% - so no single sign can fire the alert on its own.',
       options: { color: ICE } },
   ], { x: 0.95, y: 6.52, w: 11.5, h: 0.72, isTextBox: true, margin: 0, fontFace: BF, fontSize: 12.5, valign: 'middle' });
 
@@ -199,8 +199,8 @@ function slideTitle(slide, text, { color = NAVY, y = 0.44, sub = null, subColor 
     'Thresholds shown are the literature-informed defaults now in the firmware ' +
     '(MICROSLEEP_MIN_S 1.0, BLINK_MAX_S 0.4, YAWN_MIN_S 1.2, NOD 0.3-1.5 s). ' +
     'They are unit-tested on synthetic traces but not yet tuned on labelled video - say so if asked.\n' +
-    'Sneeze detection exists to SUPPRESS a false alert: a sneeze shuts the eyes for about a second ' +
-    'with a head jerk, and would otherwise read as a microsleep.');
+    'A closure that begins with the mouth flung wide must outlast REFLEX_MAX_S before it counts: ' +
+    'an involuntary reflex would otherwise read as a microsleep.');
 }
 
 /* ===================================================================== */

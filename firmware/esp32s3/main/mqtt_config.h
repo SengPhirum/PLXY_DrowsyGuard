@@ -31,10 +31,10 @@ go wrong:
     characters that cannot restructure the tree, and a manual topic is checked for
     the wildcards that would turn a publish into a broadcast.
 
-The alert path itself is unchanged. voice_alert_trigger() still runs first, the
-speaker still sounds whether or not there is a broker, and the sneeze suppression
-still happens in behavior.cpp where it always did - a suppressed sneeze produces no
-drowsiness alert here for the same reason it produces none on the speaker.
+The alert path itself is unchanged. voice_alert_trigger() still runs first and the
+speaker still sounds whether or not there is a broker; a closure that behavior.cpp
+declines to call a microsleep produces no drowsiness alert here for the same reason
+it produces none on the speaker.
 */
 
 #include <cstddef>
@@ -193,7 +193,7 @@ bool mqtt_client_id(const MqttConfig &cfg, const DeviceIdentity &id, char *out,
 struct MqttAlertEvent {
     char event_id[48] = {0};
     // The clip name from voice_alert_clip_name(): drowsy, microsleep, yawning,
-    // head_nod, sneeze, no_driver. Reused rather than re-encoded so the topic
+    // head_nod, no_driver. Reused rather than re-encoded so the topic
     // payload, the SD card filename and the spoken warning cannot drift apart.
     char alert[16] = {0};
     float risk = 0.0f;
@@ -212,10 +212,9 @@ struct MqttAlertEvent {
 
 // Coarse severity, derived rather than stored so it cannot disagree with the alert
 // type. microsleep and no_driver are critical (eyes shut for over a second; nobody
-// being monitored at all), drowsy and head_nod high, yawning medium, sneeze info -
-// a sneeze is announced to explain a silence, not to warn. A sustained `drowsy`
-// above 0.85 escalates to critical, because at that point the fusion is not
-// hedging.
+// being monitored at all), drowsy and head_nod high, yawning medium. A sustained
+// `drowsy` above 0.85 escalates to critical, because at that point the fusion is
+// not hedging.
 const char *mqtt_severity_for(const char *alert, float risk);
 
 // The versioned alert document. Returns the length written, or 0 if it did not fit

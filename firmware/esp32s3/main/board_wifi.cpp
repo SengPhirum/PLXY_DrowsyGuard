@@ -174,7 +174,16 @@ static void on_wifi_event(void *, esp_event_base_t base, int32_t id, void *data)
                 if (found > 0 && esp_wifi_scan_get_ap_records(&got, records) != ESP_OK) {
                     got = 0;
                 }
-                WifiScanEntry staged[WIFI_SCAN_MAX];
+                // static, for the same reason `records` above is, and this is the
+                // one that was actually fatal: 24 x 36 bytes is 864 on a task whose
+                // whole stack is CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE. Xtensa
+                // allocates a function's frame in its prologue, so every event this
+                // handler sees - a client joining the SoftAP included - paid for the
+                // scan buffer whether or not a scan had happened, and `sys_evt`
+                // overflowed the moment a phone associated. Safe as static because
+                // the default event loop is single-threaded: this handler is the only
+                // writer and never re-enters.
+                static WifiScanEntry staged[WIFI_SCAN_MAX];
                 int n = 0;
                 for (uint16_t i = 0; i < got && n < WIFI_SCAN_MAX; ++i) {
                     WifiScanEntry &s = staged[n];

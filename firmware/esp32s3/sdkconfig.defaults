@@ -19,8 +19,25 @@ CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_TYPE_AUTO=y
 CONFIG_SPIRAM_SPEED_80M=y
+# Stays at 4096, and this is load-bearing: ESP-DL allocates its layer buffers with
+# plain malloc and its TIE728 SIMD kernels cannot run against PSRAM. Lowering this
+# to 1024 - which does free a useful amount of internal RAM - crashed the detector
+# within seconds of boot, in dl_tie728_s8_conv2d.S and eye_model_infer(), with
+# "Cache error" and "LoadProhibited" on core 1. If internal RAM is needed, take it
+# from the Wi-Fi buffer counts below, not from here.
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
+# How much internal RAM is fenced off for DMA-capable and internal-only
+# allocations. IDF's default is 32768, and a boot-time census of this board showed
+# that pool holding "allocated 0" - completely untouched - while the general
+# internal pool sat at 10.9 kB free and HTTP handlers died inside malloc: fopen()
+# aborting in newlib's lock_init_generic(), lwip_send() faulting on a socket mutex.
+# The reserve is created with DMA/internal capabilities only, so generic malloc -
+# which is what newlib, lwIP and esp-mqtt use - cannot draw on it however starved
+# it gets. 8 kB is ample for what actually asks by capability here: the camera's
+# framebuffers are in PSRAM (CAMERA_FB_IN_PSRAM) and its DMA descriptors are small.
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=8192
 
 # --- performance ---
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
@@ -54,6 +71,10 @@ CONFIG_HUMAN_FACE_DETECT_MODEL_IN_FLASH_RODATA=y
 # esp32-camera web-server settings, and they are not optional decoration: with the
 # stock buffer counts an MJPEG stream stalls for hundreds of milliseconds at a time
 # and reads as a camera that cannot keep up.
+# Internal DMA RAM at ~1600 B each. The RX pool stays at 8 and cannot go lower
+# without also lowering CONFIG_ESP_WIFI_RX_BA_WIN, which ESP-IDF refuses to let
+# exceed double this number - a build error, not a runtime surprise. The TX pool is
+# where the reclaimable internal RAM actually was.
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=8
 CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
 # TX buffers are STATIC here, and that is forced rather than chosen: ESP-IDF makes
@@ -62,19 +83,49 @@ CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
 # once the Wi-Fi stack is allowed into PSRAM. Setting the derived
 # CONFIG_ESP_WIFI_TX_BUFFER_TYPE directly does nothing - it is computed from the
 # choice - so the knob that actually matters is the static count below.
-CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=24
+# Was 24, for the MJPEG smoothness reason above. Dropped to 12 because these are
+# internal DMA buffers at ~1600 B each and the board had 6.6 kB of internal heap
+# left at idle - at which point the SoftAP could no longer allocate the per-station
+# state to accept a client, and every association failed with "m f auth" /
+# "removing station after unsuccessful auth/assoc". A device nobody can join is a
+# worse camera than a slightly burstier stream. IDF's own default is 16.
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=8
 CONFIG_ESP_WIFI_CACHE_TX_BUFFER_NUM=32
 CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=y
 CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=y
 
+# NOTE on measuring these: a boot-time stack census is only valid for tasks that
+# have already done their heaviest work. The httpd and event-writer high-water
+# marks look enormous at boot purely because no request has been served yet, so
+# they are not evidence for shrinking anything. This one stays at 4096.
+#
+# The task that dispatches every Wi-Fi and IP event, and the stack that `sys_evt`
+# overflowed on v0.1.0: a client associating with the SoftAP crashed the board, so
+# joining the provisioning access point rebooted the device it was there to
+# configure. The 864-byte scan buffer that caused it is static now
+# (board_wifi.cpp), which is the actual fix - but 2304 is the IDF default and it is
+# thin for handlers that log, and a handler that logs is the only reason any of
+# this is debuggable. 4 kB of internal RAM for the task the radio cannot run
+# without is the cheapest 1.7 kB on the board.
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+
 # Two HTTP servers (control on :80, stream on :81), each with a handful of
 # sockets, plus the DHCP server for the SoftAP.
 CONFIG_LWIP_MAX_SOCKETS=16
-CONFIG_LWIP_TCP_SND_BUF_DEFAULT=65534
-CONFIG_LWIP_TCP_WND_DEFAULT=65534
-CONFIG_LWIP_TCP_RECVMBOX_SIZE=64
-CONFIG_LWIP_UDP_RECVMBOX_SIZE=64
-CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64
+# 65534 was the largest number the field takes, chosen when the constraint was
+# thought to be MJPEG smoothness. It is a cap on how much lwIP may queue per
+# connection, and on this board that ceiling is reachable: with a viewer streaming,
+# free internal heap fell to ~8 kB and the HTTP handlers started dying inside
+# malloc - fopen() aborting in newlib's lock_init_generic(), and lwip_send()
+# faulting on a socket mutex. 16 kB is still four times the frame size and this
+# device serves one viewer on a LAN.
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=16384
+CONFIG_LWIP_TCP_WND_DEFAULT=16384
+# 64 deep on every socket was ~256 B of internal RAM each across LWIP_MAX_SOCKETS,
+# to absorb bursts this device does not produce: it serves one page and one stream.
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=16
+CONFIG_LWIP_UDP_RECVMBOX_SIZE=16
+CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=32
 
 # The status JSON is a single ~1 kB response and the query strings are short, but
 # a browser's own request headers are not: leave room for them.
@@ -84,7 +135,12 @@ CONFIG_HTTPD_MAX_URI_LEN=512
 # --- app ---
 # app_main runs the capture loop directly, and BehaviorAnalyzer/Perclos keep a few
 # KB of rolling buffers on the stack path.
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+# 12288, up from 8192, and this one goes the other way on purpose: a boot-time
+# census measured main's stack high-water mark at 136 bytes of remaining headroom.
+# app_main runs the capture loop, the detector calls and BehaviorAnalyzer, and 136
+# bytes is not a margin - it is the next stack frame away from the crash this
+# firmware already had once, in sys_evt.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288
 
 # The camera + LCD current spike on a marginal USB cable trips the brownout
 # detector mid-init. Lower the threshold rather than chasing phantom camera faults;

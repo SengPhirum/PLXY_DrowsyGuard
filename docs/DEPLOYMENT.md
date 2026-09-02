@@ -26,15 +26,13 @@ Do not leave these floating for thesis experiments. Setup and flashing procedure
 Camera (240x240 RGB565) -> ESP-DL face detect + 5 landmarks, every 3rd frame ->
 **plausibility gate and track confirmation** -> one 32x32 eye crop per frame,
 alternating -> eye-closed probability -> PERCLOS + long blinks + yawn + nod fused
-into a risk score, sneeze-suppressed -> temporal risk filter -> reason-specific voice
+into a risk score -> temporal risk filter -> reason-specific voice
 alert (buzzer fallback), with the frame and every intermediate number served to a
 browser over Wi-Fi.
 
-Two decisions run alongside that chain rather than inside it, because neither is a
+One decision runs alongside that chain rather than inside it, because it is not a
 drowsiness measurement:
 
-- **Sneeze**: an edge, announced on its own channel, which also suppresses the
-  drowsiness score for `SNEEZE_MAX_S`.
 - **Presence**: `PresenceMonitor` takes the track's verdict *and* a `PipelineHealth`,
   and announces "no driver detected" once per absence episode - never when the camera
   or the models are down, because that would be a claim about the cabin drawn from a
@@ -158,8 +156,8 @@ the network and nothing else.
 | Detection hit rate with someone in frame | 20/20 at score 1.00 |
 | Gate rejections on real candidates | 0 over every logged interval |
 
-Against the same tree before the gate, the presence monitor and the sneeze
-announcement: **+276,128 B of flash** (259 kB of that is the four new voice clips;
+Against the same tree before the gate and the presence monitor: **+276,128 B of
+flash** (259 kB of that is the new voice clips;
 the logic is 5.4 kB of code) and **+1,120 B of internal RAM** (1,024 B of that is the
 status JSON buffer, grown to fit the new `presence` and `alert.counts` objects).
 Nothing new is allocated from PSRAM, and there is no measurable change in detection

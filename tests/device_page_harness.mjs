@@ -141,20 +141,19 @@ const status = {
   lm: {valid: true, x: [90, 133, 111, 96, 127], y: [86, 86, 108, 132, 132]},
   risk: {score: 0.41, trigger: 0.55, streak: 3, required: 8},
   eyes: {closed: 0.12, smooth: 0.11, shut: false, perclos: 0.07, closure_s: 0.13},
-  cues: {mouth_open: false, head_down: false, suppressed: false,
+  cues: {mouth_open: false, head_down: false,
          baselines_ready: true, stale: false, events: 8,
          open_index: 0.014, pitch_dev: -0.006},
-  rates: {blink: 14.5, long_blink: 1.2, yawn: 0.9, nod: 0.0, sneeze: 2,
-          sneeze_alerts: 1},
+  rates: {blink: 14.5, long_blink: 1.2, yawn: 0.9, nod: 0.0},
   geom: {valid: true, roll: -3.4, jaw_drop: 0.612, nose_frac: 0.481,
          nose_norm: 0.294, mouth_ratio: 0.583, eye_dist: 46.2},
   alert: {active: false, text: 'DROWSY', reason: 'drowsy', count: 1, muted: false,
           lang: 'en', lang_stored: true,
-          counts: {drowsy: 1, microsleep: 0, yawning: 0, head_nod: 0, sneeze: 0,
+          counts: {drowsy: 1, microsleep: 0, yawning: 0, head_nod: 0,
                    no_driver: 0},
           clips: {drowsy: 'embedded', microsleep: 'embedded',
                   yawning: 'embedded', head_nod: 'embedded',
-                  sneeze: 'embedded', no_driver: 'embedded'}},
+                  no_driver: 'embedded'}},
   stream: {viewers: 1, quality: 80, fps: 12, port: 81},
   net: {ssid: 'DrowsyGuard-A1B2C3', ip: '192.168.4.1', clients: 1, sta: false,
         sta_ip: '0.0.0.0', rssi: 0, sta_state: 'idle', sta_bars: 0, sta_retry_ms: 0,
@@ -206,7 +205,7 @@ run('zeros everywhere', () => page.render({
   risk: {score: 0, trigger: 0.55, streak: 0, required: 8},
   eyes: {closed: 0, smooth: 0, shut: false, perclos: 0, closure_s: 0},
   cues: {...status.cues, open_index: 0, pitch_dev: 0},
-  rates: {blink: 0, long_blink: 0, yawn: 0, nod: 0, sneeze: 0},
+  rates: {blink: 0, long_blink: 0, yawn: 0, nod: 0},
   mem: {heap: 0, psram: 0}}));
 
 // The states the new cues exist to distinguish. Each one used to be reported
@@ -270,7 +269,7 @@ run('openShot lightbox', () => page.openShot(
   {id: '0000042', uptime_ms: 3723456, size: 12345, risk: 0.71, perclos: 0.42, reason: 'microsleep'}));
 
 const clipsAll = (src) => ({drowsy: src, microsleep: src, yawning: src,
-                            head_nod: src, sneeze: src, no_driver: src});
+                            head_nod: src, no_driver: src});
 run('khmer selected, clips off the card', () => page.render({...status,
   alert: {...status.alert, lang: 'km', clips: clipsAll('card')}}));
 run('khmer selected but no clips - falls back to tones', () => page.render({...status,
@@ -316,21 +315,6 @@ run('still settling after boot', () => page.render({...status,
              alerts: 0}}));
 run('presence field absent (older firmware)', () => {
   const o = {...status}; delete o.presence; page.render(o);
-});
-
-console.log('sneeze:');
-run('sneeze suppressing the alarm', () => page.render({...status,
-  cues: {...status.cues, suppressed: true, events: 32, mouth_open: true,
-         open_index: 0.22},
-  eyes: {...status.eyes, closed: 0.95, shut: true, closure_s: 0.7},
-  rates: {...status.rates, sneeze: 3, sneeze_alerts: 2}}));
-run('sneeze announced', () => page.render({...status,
-  alert: {...status.alert, active: true, text: 'SNEEZE DETECTED', reason: 'sneeze',
-          count: 3, counts: {...status.alert.counts, sneeze: 2}}}));
-run('sneeze_alerts absent (older firmware)', () => {
-  const o = {...status, rates: {...status.rates}};
-  delete o.rates.sneeze_alerts;
-  page.render(o);
 });
 
 run('blown-out frame', () => page.render({...status, image: {luma: 244, min: 180, max: 255}}));

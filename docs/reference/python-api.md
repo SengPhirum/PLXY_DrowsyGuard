@@ -20,7 +20,7 @@ drifting apart.
 | `facedetect` | YuNet detection, gated and tracked |
 | `facegate` | which detections to believe, and when a sequence of them is a driver |
 | `presence` | is anyone there, and — separately — can the device tell |
-| `behavior` | multi-cue fusion: PERCLOS, long blinks, yawn, nod, sneeze |
+| `behavior` | multi-cue fusion: PERCLOS, long blinks, yawn, nod |
 | `alerts` | `AlertReason` and its channels, mirrored from `voice_alert.h` |
 | `risk` | `RiskFilter` — the Python mirror of the firmware filter |
 | `live` | `LiveEngine`: capture, inference and state for the dashboard |
@@ -77,26 +77,13 @@ accompany it — yawning, long/slow blinks, head nodding — and fuses them into
 score, with every cue measured against a rolling **per-driver baseline** so face
 shape and camera angle cancel out instead of becoming signal.
 
-Sneezes are detected in order to be **suppressed**, and now also announced. Those
-are two decisions, not one:
-
-- *Suppression* is the original purpose. A sneeze slams the eyes shut for about a
-  second, which an eye-closure detector would otherwise record as a microsleep, so
-  the drowsiness score is capped at its PERCLOS term for `SNEEZE_MAX_S`.
-- *Announcement* is separate and edge-triggered. The driver has just closed their
-  eyes for a second and heard nothing; without a word from the device, the system
-  appears to have missed it. `BehaviorState.sneeze_alert` is true on exactly one
-  frame per confirmed sneeze, rate-limited by `SNEEZE_ALERT_COOLDOWN_S` so a fit of
-  sneezing is one announcement. `sneeze_count` and `sneeze_alerts` are reported
-  separately for that reason.
-
-A sneeze is separated from a yawn by *when* the mouth opened relative to the eyes
-closing (`SNEEZE_MOUTH_LEAD_S`), not by how wide. The obvious alternative — require
-the opening index to rise *during* the closure — was tried and is wrong: `EyeGate`'s
-median-of-3 delays the closure decision by two frames, so a mouth that opened
-simultaneously with the eyes has already finished opening by the time the closure is
-declared, and the measured rise is zero. It would have rejected precisely the sneezes
-it was meant to find.
+A closure that began with the mouth flung wide open has to outlast `REFLEX_MAX_S`
+before it counts as a microsleep, rather than the ordinary `MICROSLEEP_MIN_S`. That is
+a false-alarm guard rather than a feature: an involuntary reflex shuts the eyes and
+opens the mouth in one movement, which duration alone cannot tell from a microsleep,
+and a reflex resolves inside that window. `REFLEX_JAW_DELTA` sets how wide the mouth
+has to be for the longer wait to apply — higher than `JAW_OPEN_DELTA`, so an ordinary
+slack jaw buys no extra grace.
 
 ## `facegate` — what to believe
 

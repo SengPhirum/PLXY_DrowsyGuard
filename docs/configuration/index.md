@@ -197,15 +197,6 @@ On the desktop these are runtime-settable — `no_driver_after` and `no_driver_a
 on the dashboard's `POST /config`, which is how you turn the alert off for a bench
 session where an empty seat is the normal state.
 
-### Sneeze detection — `main/behavior.h`
-
-| Constant | Default | Meaning |
-| --- | --- | --- |
-| `SNEEZE_JAW_DELTA` | `0.13` | How far the opening index must exceed this driver's baseline. |
-| `SNEEZE_MOUTH_LEAD_S` | `0.50` | How long the mouth may **already** have been open when the eyes closed. This is what separates a sneeze from a yawn that also shuts the eyes — in a yawn the mouth has been wide for a second by then. Getting it wrong is worse than missing a sneeze, because the suppression window would silence a genuine drowsiness cue for `SNEEZE_MAX_S`. |
-| `SNEEZE_MAX_S` | `1.20` | Longest closure that can still be a sneeze. Past this it is a microsleep whatever the mouth is doing. |
-| `SNEEZE_ALERT_COOLDOWN_S` | `2.50` | Minimum spacing between sneeze *announcements*. Detection stays per-closure, so a fit of three sneezes a second apart is counted three times and announced once. |
-
 ### Wi-Fi — `main/board_wifi.h` { #wi-fi }
 
 | Define | Default | Meaning |

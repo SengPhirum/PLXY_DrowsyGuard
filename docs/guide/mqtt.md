@@ -158,7 +158,7 @@ Three things about it are worth knowing before you build anything on it:
 * **`severity` is derived, not stored**, so it cannot disagree with `alert`.
   `microsleep` and `no_driver` are `critical`; `drowsy` and `head_nod` are `high`
   (`drowsy` escalates to `critical` above 0.85, where the fusion has stopped hedging);
-  `yawning` is `medium`; `sneeze` is `info`.
+  `yawning` is `medium`.
 * **`ts` is empty when the device does not know the time.** There is no real-time clock
   on the board, so unless something has set it the timestamp is `""` and `ts_source` is
   `"uptime"`. A fabricated timestamp in an incident record is worse than an absent one,
@@ -166,17 +166,6 @@ Three things about it are worth knowing before you build anything on it:
 * **`event_id` is stable across retries and unique across reboots.** It is
   `{device-id}-{boot-id}-{sequence}`, and the boot id is what stops a device that
   restarted mid-drive from reusing sequence numbers it already published.
-
-### A sneeze is published, and it is not a warning
-
-The sneeze detector exists to **suppress** the microsleep alarm a sneeze would
-otherwise trigger - a sneeze closes the eyes for about a second with a head jerk. That
-suppression is untouched by MQTT: a reclassified sneeze never reaches the risk filter,
-so it produces no drowsiness message here either.
-
-What is published is the sneeze itself, with `severity: "info"`. Sending it is the
-point: a second-long eye closure went by and the alarm deliberately did not fire, and
-without a record of that decision the silence looks like a fault.
 
 ## When the broker is not there
 

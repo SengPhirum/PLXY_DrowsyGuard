@@ -91,7 +91,7 @@ mechanism itself. It is also cheaper on device: the model input is a 32x32 eye p
 camera -> YuNet face + 5 landmarks -> crop both eyes (32x32)
        -> eye-state model: P(closed) per eye        -> PERCLOS
        -> face geometry: jaw drop, head pitch, roll -> yawn / nod
-       -> behaviour fusion (+ sneeze suppression)   -> risk score
+       -> behaviour fusion                          -> risk score
        -> RiskFilter (sustained + cooldown)         -> alert
 ```
 
@@ -111,21 +111,12 @@ model weight** and stay affordable on an ESP32-S3. Each is measured against a ro
 **per-driver baseline**, so face shape and camera angle cancel out rather than becoming
 signal — the same mistake that sank the whole-face classifier.
 
-**Sneezes are detected but are not a drowsiness cue.** A sneeze slams the eyes shut for
-about a second while the head jerks, which an eye-closure detector would score as a
-microsleep. Detecting it lets the system *suppress* that false alert instead of
-counting it. Distinguishing involuntary events from drowsiness is the point.
-
-What separates a sneeze from a yawn that also shuts the eyes is *when* the mouth opened
-relative to the eyes closing (`SNEEZE_MOUTH_LEAD_S`), not how wide — in a yawn the mouth
-has been open for a second by then. Getting that backwards is worse than missing a
-sneeze, because the suppression window would silence a genuine drowsiness cue.
-
-A confirmed sneeze also gets **one short announcement of its own**, on its own alert
-channel. The driver has just closed their eyes for a second and heard nothing; without a
-word from the device, a system that decided correctly is indistinguishable from one that
-missed it. Detection stays per-closure and the announcement is edge-triggered with a
-2.5 s cooldown, so a fit of sneezing is counted three times and announced once.
+**A closure that starts with the mouth flung wide gets longer to prove itself.** An
+involuntary reflex shuts the eyes and opens the mouth in one movement, which duration
+alone cannot tell from a microsleep, so such a closure has to outlast `REFLEX_MAX_S`
+(1.2 s) rather than `MICROSLEEP_MIN_S` (1.0 s) before it is announced. That is a
+false-alarm guard, not a cue: nothing is counted or reported, the alarm is simply not
+fired at a driver who is wide awake.
 
 ### Nobody there, versus nothing working
 A drowsiness detector that sees nothing has two completely different reasons for it, and
@@ -159,7 +150,7 @@ Each rejection is reported by name (`score-too-low`, `box-not-head-shaped`,
 `nose-outside-eye-pair`, `moved-too-far`, …), because a bare count is not a diagnosis.
 
 Timing thresholds are literature-informed defaults in `behavior.py`, not tuned on
-labelled yawn/nod/sneeze video — this project has none yet, so treat the event
+labelled yawn/nod video — this project has none yet, so treat the event
 detectors as unvalidated on real drivers even though their logic is unit-tested against
 synthetic traces. `yaw` is computed but not validated; it needs a real head-turn test.
 

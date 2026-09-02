@@ -27,13 +27,11 @@ EMBEDDED(en_drowsy_wav);
 EMBEDDED(en_microsleep_wav);
 EMBEDDED(en_yawning_wav);
 EMBEDDED(en_head_nod_wav);
-EMBEDDED(en_sneeze_wav);
 EMBEDDED(en_no_driver_wav);
 EMBEDDED(km_drowsy_wav);
 EMBEDDED(km_microsleep_wav);
 EMBEDDED(km_yawning_wav);
 EMBEDDED(km_head_nod_wav);
-EMBEDDED(km_sneeze_wav);
 EMBEDDED(km_no_driver_wav);
 
 struct Embedded {
@@ -48,13 +46,11 @@ static const Embedded kEmbedded[] = {
     {"en", "microsleep", en_microsleep_wav_start, en_microsleep_wav_end},
     {"en", "yawning", en_yawning_wav_start, en_yawning_wav_end},
     {"en", "head_nod", en_head_nod_wav_start, en_head_nod_wav_end},
-    {"en", "sneeze", en_sneeze_wav_start, en_sneeze_wav_end},
     {"en", "no_driver", en_no_driver_wav_start, en_no_driver_wav_end},
     {"km", "drowsy", km_drowsy_wav_start, km_drowsy_wav_end},
     {"km", "microsleep", km_microsleep_wav_start, km_microsleep_wav_end},
     {"km", "yawning", km_yawning_wav_start, km_yawning_wav_end},
     {"km", "head_nod", km_head_nod_wav_start, km_head_nod_wav_end},
-    {"km", "sneeze", km_sneeze_wav_start, km_sneeze_wav_end},
     {"km", "no_driver", km_no_driver_wav_start, km_no_driver_wav_end},
 };
 

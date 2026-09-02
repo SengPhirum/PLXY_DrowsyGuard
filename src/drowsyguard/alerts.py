@@ -12,10 +12,9 @@ enum against the header and checks that every reason has an embedded clip in bot
 languages.
 
 Channels exist because alerts do not all belong to the same conversation. Giving them
-one shared cooldown was wrong: a sneeze acknowledgement suppressed by a drowsiness
-cooldown is a message that silently never arrives, and a no-driver warning suppressed
-by either of them is a safety message lost to an unrelated rate limit. Each channel
-keeps its own episode.
+one shared cooldown was wrong: a no-driver warning suppressed by a drowsiness cooldown
+is a safety message lost to an unrelated rate limit. Each channel keeps its own
+episode.
 """
 from __future__ import annotations
 
@@ -24,8 +23,7 @@ from enum import IntEnum
 
 class AlertChannel(IntEnum):
     DROWSINESS = 0
-    SNEEZE = 1
-    PRESENCE = 2
+    PRESENCE = 1
 
 
 class AlertReason(IntEnum):
@@ -33,13 +31,8 @@ class AlertReason(IntEnum):
     MICROSLEEP = 1
     YAWNING = 2
     HEAD_NOD = 3
-    #: A confirmed sneeze. Not a drowsiness cue - detecting it is what suppresses the
-    #: microsleep alarm it would otherwise trigger - but announced in its own right,
-    #: because a driver whose alarm just went quiet during a violent reflex should be
-    #: told the system noticed and decided.
-    SNEEZE = 4
     #: Nobody in front of the camera for long enough that it is not a glance away.
-    NO_DRIVER = 5
+    NO_DRIVER = 4
 
     @property
     def clip(self) -> str:
@@ -61,7 +54,6 @@ _CLIP = {
     AlertReason.MICROSLEEP: 'microsleep',
     AlertReason.YAWNING: 'yawning',
     AlertReason.HEAD_NOD: 'head_nod',
-    AlertReason.SNEEZE: 'sneeze',
     AlertReason.NO_DRIVER: 'no_driver',
 }
 
@@ -70,7 +62,6 @@ _BANNER = {
     AlertReason.MICROSLEEP: 'WAKE UP',
     AlertReason.YAWNING: 'TAKE A BREAK',
     AlertReason.HEAD_NOD: 'STAY ALERT',
-    AlertReason.SNEEZE: 'SNEEZE DETECTED',
     AlertReason.NO_DRIVER: 'NO DRIVER DETECTED',
 }
 
@@ -79,7 +70,6 @@ _CHANNEL = {
     AlertReason.MICROSLEEP: AlertChannel.DROWSINESS,
     AlertReason.YAWNING: AlertChannel.DROWSINESS,
     AlertReason.HEAD_NOD: AlertChannel.DROWSINESS,
-    AlertReason.SNEEZE: AlertChannel.SNEEZE,
     AlertReason.NO_DRIVER: AlertChannel.PRESENCE,
 }
 

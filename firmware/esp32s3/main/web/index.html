@@ -299,7 +299,6 @@
         <span class="pill" id="cueMouth">mouth &mdash;</span>
         <span class="pill" id="cueHead">head &mdash;</span>
         <span class="pill" id="cueBase">baselines &mdash;</span>
-        <span class="pill" id="cueSup">sneeze filter &mdash;</span>
         <span class="pill w-hold" id="cueFresh">landmarks &mdash;</span>
       </div>
       <div class="meta">
@@ -309,8 +308,6 @@
         <div><span>long blinks / min</span><span id="rLong">&mdash;</span></div>
         <div><span>yawns / min</span><span id="rYawn">&mdash;</span></div>
         <div><span>nods / min</span><span id="rNod">&mdash;</span></div>
-        <div title="Sneezes the closure detector saw and reclassified, so they never reached the drowsiness alarm."><span>sneezes suppressed</span><span id="rSneeze">&mdash;</span></div>
-        <div title="Of those, how many were announced. One per sneeze, rate-limited so a fit of sneezing is one announcement."><span>sneezes announced</span><span id="rSneezeA">&mdash;</span></div>
         <div><span>head roll</span><span id="gRoll">&mdash;</span></div>
         <div><span>jaw drop</span><span id="gJaw">&mdash;</span></div>
         <div><span>mouth width</span><span id="gWidth">&mdash;</span></div>
@@ -341,8 +338,7 @@
         <button class="say" data-r="1">Microsleep</button>
         <button class="say" data-r="2">Yawning</button>
         <button class="say" data-r="3">Head nod</button>
-        <button class="say" data-r="4">Sneeze</button>
-        <button class="say" data-r="5">No driver</button>
+        <button class="say" data-r="4">No driver</button>
       </div>
       <label class="ctl">
         <span class="lab">Stream rate <b id="fpsVal">12 fps</b></span>
@@ -999,9 +995,6 @@ function drawTrend(trigger) {
 const EVENT_BITS = [
   [1, 'blink', ''], [2, 'long blink', 'warn'], [4, 'MICROSLEEP', 'bad'],
   [8, 'yawn', 'warn'], [16, 'head nod', 'warn'],
-  // Not a warning. It is logged because it explains a silence: a second-long eye
-  // closure went by and the drowsiness alarm deliberately did not fire.
-  [32, 'sneeze - drowsiness alarm suppressed', ''],
 ];
 function logLine(text, kind) {
   const li = document.createElement('li');
@@ -1968,8 +1961,6 @@ function render(s) {
           present && s.cues.head_down ? 'warn' : '');
   setPill('cueBase', s.cues.baselines_ready ? 'baselines ready' : 'learning baselines',
           s.cues.baselines_ready ? 'ok' : 'info');
-  setPill('cueSup', s.cues.suppressed ? 'sneeze filter active' : 'sneeze filter idle',
-          s.cues.suppressed ? 'info' : '');
   // Held landmarks are the last real ones repeated, so the geometric cues are
   // deliberately frozen while this says "held". Worth showing rather than hiding:
   // a mouth or nod reading that will not move is otherwise indistinguishable from
@@ -1983,8 +1974,6 @@ function render(s) {
   setText('rLong', s.rates.long_blink.toFixed(1));
   setText('rYawn', s.rates.yawn.toFixed(1));
   setText('rNod', s.rates.nod.toFixed(1));
-  setText('rSneeze', s.rates.sneeze);
-  if (s.rates.sneeze_alerts !== undefined) setText('rSneezeA', s.rates.sneeze_alerts);
   // Geometry is quantised harder than it is measured: jaw drop and the pitch proxy
   // are ratios that wobble in the third decimal on every frame, and that last digit
   // is noise, not signal.

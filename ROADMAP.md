@@ -29,9 +29,10 @@ Build and scientifically evaluate an affordable retrofit driver-drowsiness warni
       face classifiers, which are 70-343 MB and cannot run on the target
 - [x] Integrate pretrained eye-state base model (open-closed-eye-0001, 11.3k params)
 - [x] Multi-cue behaviour analysis: PERCLOS, long blinks, yawning, head nodding
-- [x] Sneeze detection as a false-alarm suppressor
+- [x] Reflex guard: a mouth-open closure must outlast REFLEX_MAX_S to count as a
+      microsleep (replaced the sneeze detector, removed 2026-09-02)
 - [ ] Fine-tune the eye model for visible light (IR-trained model transfers poorly)
-- [ ] Tune and validate behaviour thresholds on labelled yawn/nod/sneeze video
+- [ ] Tune and validate behaviour thresholds on labelled yawn/nod video
 - [ ] Validate head yaw against a real head-turn recording
 - [ ] Add class weighting and augmentation
 - [ ] Add ROC-AUC, sensitivity, specificity, latency and false-alarm/hour metrics

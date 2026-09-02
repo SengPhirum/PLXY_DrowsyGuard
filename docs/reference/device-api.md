@@ -38,8 +38,8 @@ returns **500** rather than letting the page parse half an object.
 | `lm` | `valid`, `x[5]`, `y[5]` — the five landmarks |
 | `risk` | `score`, `trigger`, `streak`, `required` |
 | `eyes` | `closed`, `smooth`, `shut`, `perclos`, `closure_s` |
-| `cues` | `mouth_open`, `head_down`, `suppressed`, `baselines_ready`, `stale`, `events`, `open_index`, `pitch_dev` |
-| `rates` | `blink`, `long_blink`, `yawn`, `nod` (per minute), `sneeze` and `sneeze_alerts` (counts) |
+| `cues` | `mouth_open`, `head_down`, `baselines_ready`, `stale`, `events`, `open_index`, `pitch_dev` |
+| `rates` | `blink`, `long_blink`, `yawn`, `nod` (per minute) |
 | `geom` | `valid`, `roll`, `jaw_drop`, `nose_frac`, `nose_norm`, `mouth_ratio`, `eye_dist` |
 | `alert` | `active`, `text`, `reason`, `count`, `muted`, `lang`, `lang_stored`, `counts{…}`, `clips{…}` |
 | `stream` | `viewers`, `quality`, `fps`, `port` |
@@ -85,19 +85,11 @@ a person reads.
 
 #### `alert.counts` — announcements per reason
 
-`{"drowsy":N,"microsleep":N,"yawning":N,"head_nod":N,"sneeze":N,"no_driver":N}`.
+`{"drowsy":N,"microsleep":N,"yawning":N,"head_nod":N,"no_driver":N}`.
 
 `alert.count` alone is not diagnosable: forty microsleep announcements and forty
 no-driver announcements describe completely different drives, and one of them is not
 about the driver at all.
-
-#### `rates.sneeze` and `rates.sneeze_alerts`
-
-Detections and announcements, and they are deliberately different numbers. One sneeze
-is frequently two or three closures a second apart — every one is a real detection and
-belongs in `sneeze`, and announcing each of them is noise that trains a driver to
-ignore the speaker. `SNEEZE_ALERT_COOLDOWN_S` collapses a fit into one announcement,
-so `sneeze_alerts` is the count of times the speaker actually interrupted anyone.
 
 ```bash
 curl http://192.168.4.1/api/status | python -m json.tool
@@ -173,10 +165,9 @@ curl -X POST 'http://192.168.4.1/api/alert-test?reason=1'
 | `1` | microsleep | "Wake up! Wake up!" |
 | `2` | yawning | "You seem tired. Take a break." |
 | `3` | head nod | "Stay alert. Eyes on the road." |
-| `4` | sneeze | "Sneeze detected." |
-| `5` | no driver | "No driver detected." |
+| `4` | no driver | "No driver detected." |
 
-All six exist in English and Khmer, embedded in the firmware, and any of them can be
+All five exist in English and Khmer, embedded in the firmware, and any of them can be
 replaced by dropping `<lang>_<reason>.wav` on the SD card — no rebuild. The numbering
 is part of this API and is appended to, never renumbered; out-of-range values are
 clamped to the valid range rather than rejected, so a client written against an older
@@ -436,8 +427,8 @@ rendering a device with no risk and no remark.
 | `seq` | monotonic within one boot |
 | `device_id`, `fleet_id` | the validated topic segments |
 | `remark` | operator free text — "Driver A". JSON-escaped, so quotes and backslashes survive |
-| `alert` | `drowsy`, `microsleep`, `yawning`, `head_nod`, `sneeze`, `no_driver` or `test`. The same token as the SD-card filename and the spoken clip, so the three records of one event cannot disagree |
-| `severity` | **derived** from `alert`, so it cannot disagree with it. `microsleep` and `no_driver` are `critical`; `drowsy` and `head_nod` are `high` (`drowsy` escalates to `critical` above 0.85); `yawning` is `medium`; `sneeze` is `info` |
+| `alert` | `drowsy`, `microsleep`, `yawning`, `head_nod`, `no_driver` or `test`. The same token as the SD-card filename and the spoken clip, so the three records of one event cannot disagree |
+| `severity` | **derived** from `alert`, so it cannot disagree with it. `microsleep` and `no_driver` are `critical`; `drowsy` and `head_nod` are `high` (`drowsy` escalates to `critical` above 0.85); `yawning` is `medium` |
 | `risk` | the fused behaviour score, 0–1. A non-finite value is published as `0` — `printf` emits `nan`, which is not JSON, and a subscriber whose parser throws loses every alert after the bad one |
 | `perclos` | share of the window with the eyes closed, 0–1 |
 | `alert_count` | announcements since boot, across every channel |
@@ -448,13 +439,6 @@ rendering a device with no risk and no remark.
 `ts` is empty on a device that has not reached a time server, which is the normal case:
 there is no real-time clock on the board. A fabricated timestamp in an incident record
 is worse than an absent one.
-
-A **sneeze is published** like the others, with `severity: "info"`. The sneeze
-detector's job is to *suppress* the microsleep alarm a sneeze would otherwise trigger,
-and that is unchanged — a reclassified sneeze never reaches the risk filter, so it
-produces no drowsiness message either. What is published is the record that the device
-saw a second-long eye closure and decided it was not drowsiness, which is exactly the
-silence that would otherwise look like a fault.
 
 ### The status payload
 

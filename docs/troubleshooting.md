@@ -195,14 +195,15 @@ Three things suppress it deliberately, and the status page says which:
 - Something in the frame is being confirmed as a driver. Check `face.reject`; a
   headrest that passes the gate is a real bug and worth reporting with a snapshot.
 
-### The sneeze filter fires on a yawn (or never fires)
+### A microsleep is announced late when the mouth is open
 
-A sneeze is distinguished from a yawn by *when* the mouth opened relative to the eyes
-closing, not by how wide it opened. If a yawn is being reclassified, the mouth is
-opening within `SNEEZE_MOUTH_LEAD_S` (0.5 s) of the closure, which means the eye model
-is late — check `eyes.closed` against the preview. If real sneezes are missed, the
-opening index is not reaching `SNEEZE_JAW_DELTA`; watch **opening index** on the page
-during one and compare.
+By design. A closure that begins with the mouth flung wide has to outlast
+`REFLEX_MAX_S` (1.2 s) rather than `MICROSLEEP_MIN_S` (1.0 s) before it counts,
+because an involuntary reflex shuts the eyes and opens the mouth in one movement
+and duration alone cannot tell the two apart. If the extra 200 ms matters more to
+you than the false alarms it prevents, lower `REFLEX_JAW_DELTA` toward
+`JAW_OPEN_DELTA` in `behavior.h` — but expect a yawn with the eyes shut, and any
+sudden reflex, to start announcing itself as a microsleep.
 
 ### No `DrowsyGuard-` SSID anywhere
 

@@ -910,10 +910,8 @@ def test_the_payload_says_when_it_does_not_know_the_time(mq):
     ('drowsy', 0.9, 'critical'),
     ('head_nod', 0.6, 'high'),
     ('yawning', 0.6, 'medium'),
-    # A sneeze is announced to EXPLAIN a silence, not to warn: the drowsiness alarm
     # deliberately did not fire. Grading it as a drowsiness event would undo the whole
     # point of detecting it.
-    ('sneeze', 0.9, 'info'),
     ('test', 0.0, 'info'),
     ('something-new', 0.99, 'info'),
 ])

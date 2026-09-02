@@ -94,7 +94,7 @@ curl -o frame.jpg http://192.168.4.1/api/snapshot
 ## Layout
 | file | role |
 | --- | --- |
-| `behavior.h/.cpp` | eye/yawn/nod/sneeze logic + PERCLOS, mirrors `drowsyguard/behavior.py` |
+| `behavior.h/.cpp` | eye/yawn/nod logic + PERCLOS, mirrors `drowsyguard/behavior.py` |
 | `risk_filter.h/.cpp` | sustained-risk trigger + cooldown |
 | `board_camera.h` | verified DVP pin map (OV3660/OV5640) + sensor tuning |
 | `board_audio.h/.cpp` | I2S bring-up for the MAX98357A, tone + PCM playback |

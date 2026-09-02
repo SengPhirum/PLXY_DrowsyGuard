@@ -24,7 +24,7 @@
 // failure modes here matter more than they did: see repeat_reset_ms in the header.
 //
 // Rate limiting is per channel, not global. That is the one structural change worth
-// calling out: with a single shared cooldown, a sneeze announcement or a "no driver"
+// calling out: with a single shared cooldown, a "no driver"
 // announcement could be swallowed by a drowsiness cooldown that had nothing to do
 // with it, and the symptom is silence - the hardest failure of all to notice.
 
@@ -102,10 +102,6 @@ static TonePattern pattern_for(AlertReason reason) {
         case AlertReason::Microsleep: return {1200, 150, 90, 3};
         case AlertReason::HeadNod:    return {780, 200, 120, 2};
         case AlertReason::Yawning:    return {660, 260, 0, 1};
-        // A sneeze is an acknowledgement, not a warning, so it is the one pattern
-        // that rises rather than repeats - deliberately unlike the alarms, because
-        // its whole message is "that was not drowsiness".
-        case AlertReason::Sneeze:     return {520, 120, 60, 2};
         // Two long low tones. Slow and unhurried on purpose: nothing is wrong with
         // the vehicle, the device has simply stopped being able to watch anyone, and
         // a pattern that sounds like the microsleep alarm would be actively harmful
@@ -160,7 +156,6 @@ static void alert_audio_task(void *) {
 
 AlertChannel voice_alert_channel(AlertReason reason) {
     switch (reason) {
-        case AlertReason::Sneeze:   return AlertChannel::Sneeze;
         case AlertReason::NoDriver: return AlertChannel::Presence;
         default:                    return AlertChannel::Drowsiness;
     }
@@ -168,7 +163,6 @@ AlertChannel voice_alert_channel(AlertReason reason) {
 
 static const VoiceAlertChannelConfig &channel_config(AlertChannel c) {
     switch (c) {
-        case AlertChannel::Sneeze:   return g_config.sneeze;
         case AlertChannel::Presence: return g_config.presence;
         default:                     return g_config.drowsiness;
     }
@@ -176,7 +170,6 @@ static const VoiceAlertChannelConfig &channel_config(AlertChannel c) {
 
 static const char *channel_name(AlertChannel c) {
     switch (c) {
-        case AlertChannel::Sneeze:   return "sneeze";
         case AlertChannel::Presence: return "presence";
         default:                     return "drowsiness";
     }
@@ -198,7 +191,7 @@ bool voice_alert_init(const VoiceAlertConfig& config) {
     }
 
     // Three deep, one per channel: the point of separating the channels is that a
-    // sneeze and a no-driver announcement can both be pending behind a drowsiness
+    // a no-driver announcement can be pending behind a drowsiness
     // one without either being dropped.
     g_queue = xQueueCreate(3, sizeof(AlertReason));
     if (g_queue == nullptr) return false;
@@ -282,7 +275,6 @@ const char* voice_alert_banner_text(AlertReason reason) {
         case AlertReason::Microsleep: return "WAKE UP";
         case AlertReason::Yawning:    return "TAKE A BREAK";
         case AlertReason::HeadNod:    return "STAY ALERT";
-        case AlertReason::Sneeze:     return "SNEEZE DETECTED";
         case AlertReason::NoDriver:   return "NO DRIVER DETECTED";
         case AlertReason::Drowsy:
         default:                      return "DROWSY";
@@ -294,7 +286,6 @@ const char* voice_alert_clip_name(AlertReason reason) {
         case AlertReason::Microsleep: return "microsleep";
         case AlertReason::Yawning:    return "yawning";
         case AlertReason::HeadNod:    return "head_nod";
-        case AlertReason::Sneeze:     return "sneeze";
         case AlertReason::NoDriver:   return "no_driver";
         case AlertReason::Drowsy:
         default:                      return "drowsy";
@@ -317,7 +308,7 @@ bool voice_alert_trigger(uint32_t now_ms, AlertReason reason) {
 
     // A long quiet spell ends the episode, so the repeat cap applies per episode
     // rather than per power cycle. Per channel, so a quiet drowsiness spell does not
-    // reset the sneeze channel's episode or vice versa.
+    // reset the presence channel's episode or vice versa.
     if (st.repeats > 0 && cfg.repeat_reset_ms > 0 &&
         (now_ms - st.last_ms) >= cfg.repeat_reset_ms) {
         ESP_LOGI(TAG, "%lu ms quiet on the %s channel; repeat counter reset",

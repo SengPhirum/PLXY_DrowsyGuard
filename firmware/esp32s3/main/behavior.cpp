@@ -268,12 +268,7 @@ void BehaviorAnalyzer::reset() {
     mouth_peak_ = 0.0f;
     nod_start_ = nod_lapse_ = -1.0f;
     nod_peak_ = 0.0f;
-    suppress_until_ = -1.0f;
-    mouth_lead_ = 0.0f;
-    sneeze_alert_until_ = -1.0f;
-    sneezes_ = 0;
-    sneeze_alerts_ = 0;
-    yawn_fired_ = micro_fired_ = sneeze_fired_ = false;
+    yawn_fired_ = micro_fired_ = false;
 }
 
 BehaviorState BehaviorAnalyzer::update(float p_closed, const FaceGeometry &geom,
@@ -366,38 +361,9 @@ BehaviorState BehaviorAnalyzer::update(float p_closed, const FaceGeometry &geom,
         closure_lapse_ = -1.0f;
         if (closure_start_ < 0.0f) {
             closure_start_ = now;
-            // How long the mouth had already been open when the eyes shut. This is
-            // what separates a sneeze from a yawn that also closes the eyes: in a
-            // yawn the mouth has been wide for a second by now. Sampled once, here,
-            // because by the time the sneeze window opens at BLINK_MAX_S the mouth
-            // episode may already have ended.
-            mouth_lead_ = (mouth_start_ >= 0.0f) ? (now - mouth_start_) : 0.0f;
-            sneeze_fired_ = false;
             micro_fired_ = false;
         }
         closure_s = now - closure_start_;
-
-        // A long closure with the mouth flung open at the same moment is a sneeze,
-        // not a microsleep. Decided during the event so the alert is suppressed, not
-        // retracted. Three conditions, and each rejects a different impostor: the
-        // duration window rejects blinks and real microsleeps, the absolute level
-        // rejects a closed mouth, and the lead rejects a yawn.
-        if (!sneeze_fired_ && closure_s >= BLINK_MAX_S && closure_s <= SNEEZE_MAX_S &&
-            open_index >= SNEEZE_JAW_DELTA && mouth_lead_ <= SNEEZE_MOUTH_LEAD_S) {
-            ++sneezes_;
-            suppress_until_ = now + SNEEZE_MAX_S;
-            st.events |= EVENT_SNEEZE;
-            sneeze_fired_ = true;
-
-            // The announcement is a separate decision from the detection. One sneeze
-            // is often several closures in a row, each a real detection; the cooldown
-            // turns that into one alert while leaving the counter honest.
-            if (now >= sneeze_alert_until_) {
-                sneeze_alert_until_ = now + SNEEZE_ALERT_COOLDOWN_S;
-                ++sneeze_alerts_;
-                st.sneeze_alert = true;
-            }
-        }
 
         // Microsleep, announced WHILE THE EYES ARE STILL SHUT.
         //
@@ -407,11 +373,11 @@ BehaviorState BehaviorAnalyzer::update(float p_closed, const FaceGeometry &geom,
         // event it exists to interrupt. Firing at the threshold instead means the
         // warning arrives MICROSLEEP_MIN_S into the closure and not one frame later.
         //
-        // The wait is longer only when the mouth says this could still be a sneeze:
-        // a sneeze resolves inside SNEEZE_MAX_S, so surviving that long is itself
-        // the proof that it was not one.
-        const float need = (open_index >= SNEEZE_JAW_DELTA) ? SNEEZE_MAX_S : MICROSLEEP_MIN_S;
-        if (!micro_fired_ && closure_s >= need && now >= suppress_until_) {
+        // The wait is longer when the mouth was flung wide at the same instant,
+        // because an involuntary reflex looks exactly like this and resolves inside
+        // REFLEX_MAX_S. See the constant for why this guard is here at all.
+        const float need = (open_index >= REFLEX_JAW_DELTA) ? REFLEX_MAX_S : MICROSLEEP_MIN_S;
+        if (!micro_fired_ && closure_s >= need) {
             long_blinks_.add(now);
             st.events |= EVENT_MICROSLEEP;
             micro_fired_ = true;
@@ -423,14 +389,12 @@ BehaviorState BehaviorAnalyzer::update(float p_closed, const FaceGeometry &geom,
             // reopened, not where the tolerance expired - otherwise the tolerance
             // itself would promote a 0.9 s long blink into a 1.1 s microsleep.
             const float dur = closure_lapse_ - closure_start_;
-            const bool sneezing = closure_lapse_ < suppress_until_;
             if (dur <= BLINK_MAX_S) {
                 blinks_.add(now);
                 st.events |= EVENT_BLINK;
-            } else if (!micro_fired_ && !sneezing) {
-                // Between a blink and a microsleep, or a microsleep that was
-                // suppressed while it was happening. Counts toward the long-blink
-                // rate either way; micro_fired_ stops it being counted twice.
+            } else if (!micro_fired_) {
+                // Between a blink and a microsleep. Counts toward the long-blink
+                // rate; micro_fired_ stops it being counted twice.
                 long_blinks_.add(now);
                 st.events |= EVENT_LONG_BLINK;
             }
@@ -440,7 +404,6 @@ BehaviorState BehaviorAnalyzer::update(float p_closed, const FaceGeometry &geom,
         }
     }
 
-    const bool suppressed = now < suppress_until_;
     const float blink_rate = blinks_.rate(now);
     const float long_rate = long_blinks_.rate(now);
     const float yawn_rate = yawns_.rate(now);
@@ -454,7 +417,6 @@ BehaviorState BehaviorAnalyzer::update(float p_closed, const FaceGeometry &geom,
 
     float score = W_PERCLOS * pc + W_LONG_BLINK * norm(long_rate, LONG_BLINK_RATE_FULL) +
                   W_YAWN * norm(yawn_rate, YAWN_RATE_FULL) + W_NOD * norm(nod_rate, NOD_RATE_FULL);
-    if (suppressed) score = std::min(score, W_PERCLOS * pc);
 
     st.score = std::min(score, 1.0f);
     st.perclos = pc;
@@ -463,7 +425,6 @@ BehaviorState BehaviorAnalyzer::update(float p_closed, const FaceGeometry &geom,
     st.closed = closed;
     st.mouth_open = mouth_open;
     st.head_down = head_down;
-    st.suppressed = suppressed;
     st.stale = geom.valid && !fresh;
     st.baselines_ready = jaw_.ready() && pitch_.ready() && width_.ready() && nose_.ready();
     st.open_index = open_index;
@@ -472,8 +433,6 @@ BehaviorState BehaviorAnalyzer::update(float p_closed, const FaceGeometry &geom,
     st.long_blink_rate = long_rate;
     st.yawn_rate = yawn_rate;
     st.nod_rate = nod_rate;
-    st.sneeze_count = sneezes_;
-    st.sneeze_alerts = sneeze_alerts_;
     st.closure_s = closure_s;
     return st;
 }

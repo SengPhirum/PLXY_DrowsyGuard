@@ -405,7 +405,6 @@ const char *mqtt_severity_for(const char *alert, float risk) {
     if (strcmp(alert, "drowsy") == 0) return risk >= 0.85f ? "critical" : "high";
     if (strcmp(alert, "head_nod") == 0) return "high";
     if (strcmp(alert, "yawning") == 0) return "medium";
-    if (strcmp(alert, "sneeze") == 0) return "info";
     return "info";
 }
 

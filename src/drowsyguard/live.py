@@ -337,9 +337,8 @@ class LiveEngine:
                 rgb = cv2.cvtColor(frame[y0:y0 + side, x0:x0 + side], cv2.COLOR_BGR2RGB)
                 t0 = time.perf_counter()
                 behavior_events = []
-                sneeze_alert = False
                 if self._eye is not None:
-                    p, arr, eye_state, behavior_events, sneeze_alert = self._eye_risk(
+                    p, arr, eye_state, behavior_events = self._eye_risk(
                         cv2, frame, (x0, y0, side), landmarks,
                         present=face_state['present'])
                 else:
@@ -377,14 +376,12 @@ class LiveEngine:
                     required, cooldown = self.filter.required, self.filter.cooldown
                     trigger = self.filter.trigger
                     # Only the drowsiness channel goes through the risk filter. The
-                    # other two are edges from their own detectors and are announced
-                    # independently, exactly as main.cpp does it: routing a sneeze or
-                    # an empty seat through an accumulator that measures drowsiness
-                    # would mean neither ever reached the trigger.
+                    # presence alert is an edge from its own detector and is announced
+                    # independently, exactly as main.cpp does it: routing an empty
+                    # seat through an accumulator that measures drowsiness would mean
+                    # it never reached the trigger.
                     if fired and face_state['present']:
                         self._log_alert(reason_for_events(behavior_events), p)
-                    if sneeze_alert:
-                        self._log_alert(AlertReason.SNEEZE, p)
                     if pres.alert:
                         self._log_alert(AlertReason.NO_DRIVER, p)
                     self._presence_state = {
@@ -432,7 +429,7 @@ class LiveEngine:
             cap.release()
 
     def _eye_risk(self, cv2, frame, crop, landmarks, present=True):
-        """Measure eyelid closure and return (risk, patch, state, events, sneeze).
+        """Measure eyelid closure and return (risk, patch, state, events).
 
         Risk is PERCLOS - the fraction of recent frames with eyes closed - not the
         instantaneous probability, so a blink cannot trigger an alert while a
@@ -463,7 +460,7 @@ class LiveEngine:
             state.update({'available': False, 'perclos': self._perclos.value,
                           'window': self._perclos.window})
             grey = np.full((32, 64), 0.5, np.float32)
-            return self._perclos.value, grey, state, [], False
+            return self._perclos.value, grey, state, []
 
         right_p = self._eye.p_closed(patches[0])
         left_p = self._eye.p_closed(patches[1])
@@ -472,8 +469,7 @@ class LiveEngine:
         perclos = self._perclos.update(closed)
 
         # Fuse eye closure with yawning, long blinks and head nodding; the returned
-        # risk is the fused score, so behaviour beyond eye closure can raise an alert
-        # and an involuntary sneeze can suppress one.
+        # risk is the fused score, so behaviour beyond eye closure can raise an alert.
         from .behavior import face_geometry
         geometry = face_geometry(landmarks)
         behavior = self._behavior.update(closed, geometry, perclos)
@@ -483,17 +479,15 @@ class LiveEngine:
                  'closed': round(closed, 3), 'perclos': round(perclos, 3),
                  'window': self._perclos.window, 'available': True,
                  'score': behavior.score, 'mouth_open': behavior.mouth_open,
-                 'head_down': behavior.head_down, 'suppressed': behavior.suppressed,
+                 'head_down': behavior.head_down,
                  'closure_s': behavior.closure_s,
                  'baselines_ready': behavior.baselines_ready,
                  'blink_rate': behavior.blink_rate, 'long_blink_rate': behavior.long_blink_rate,
                  'yawn_rate': behavior.yawn_rate, 'nod_rate': behavior.nod_rate,
-                 'sneeze_count': behavior.sneeze_count,
-                 'sneeze_alerts': behavior.sneeze_alerts,
                  'roll': round(geometry.roll, 1) if geometry.valid else None}
         self._encode_eyes(cv2, patches)
         return (behavior.score, (pair.astype(np.float32) / 255.0), state,
-                behavior.events, behavior.sneeze_alert)
+                behavior.events)
 
     def _encode_eyes(self, cv2, patches):
         big = [cv2.resize(p, (96, 96), interpolation=cv2.INTER_NEAREST) for p in patches]

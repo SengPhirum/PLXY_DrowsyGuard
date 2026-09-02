@@ -20,7 +20,7 @@ section below is what to read before doing that.
     DrowsyGuard is a thesis research prototype. It is **not** a certified
     automotive safety device, it has never been validated on real drivers, and
     it must not be relied on to keep anyone awake or alert. Its event detectors
-    (yawn, nod, sneeze) use literature-informed thresholds that have **not** been
+    (yawn, nod) use literature-informed thresholds that have **not** been
     tuned on labelled video, and its eye model is
     [known to transfer poorly](guide/training.md#the-eye-model) to visible-light
     footage.
@@ -38,7 +38,6 @@ specific way a research prototype gets over-trusted.
 | Alert | What it means | What it does **not** mean |
 | --- | --- | --- |
 | **Drowsy / Microsleep / Yawning / Head nod** | Sustained eye closure, or a behavioural cue, crossed a threshold. | That the driver is impaired. The thresholds are literature-informed defaults, never tuned on labelled video, and the eye model is IR-trained with an [AUC of 0.62 on visible light](guide/training.md#the-eye-model). Both false alarms and silence are expected. |
-| **Sneeze detected** | A ~1 s eye closure coincided with the mouth opening at the same moment, so the drowsiness alarm was deliberately suppressed. | That it was definitely a sneeze. It is a *discriminator*, not a classifier: what it actually establishes is that this closure does not look like a microsleep. A yawn with the eyes shut is explicitly ruled out (see `SNEEZE_MOUTH_LEAD_S`), but no labelled sneeze video exists for this project. |
 | **No driver detected** | Nobody has been confirmed in front of the camera for the configured time, and the camera and models are working. | That the seat is empty. It equally means the driver is turned away, out of frame, badly lit, or wearing something the detector cannot see past. The honest reading is "this device is not monitoring anyone", which is exactly what the clip says. |
 
 The no-driver alert exists because of an asymmetry worth stating plainly: a
@@ -298,12 +297,10 @@ rather than global:
 | Channel | Reasons | Default limit | Why |
 | --- | --- | --- | --- |
 | Drowsiness | drowsy, microsleep, yawning, head nod | 30 s cooldown, 3 per episode, episode resets after 5 min quiet | A driver already pulling over should not be nagged. The 5-minute reset stops the cap becoming permanent for the rest of a long trip. |
-| Sneeze | sneeze | 2 s cooldown, no cap | The behaviour analyzer already limits this to one per 2.5 s; the channel is a backstop. Capping it would go silent on a driver with a cold. |
 | Presence | no driver | 5 s cooldown, no cap | The presence monitor fires exactly once per absence episode. "Nobody is driving" must never be a message the device has used up its allowance of. |
 
-Before this split there was a single shared cooldown, and a sneeze acknowledgement
-or a no-driver warning could be swallowed by a drowsiness cooldown that had nothing
-to do with it. The symptom of that is silence, which is the hardest failure to
+Before this split there was a single shared cooldown, and a no-driver warning could
+be swallowed by a drowsiness cooldown that had nothing to do with it. The symptom of that is silence, which is the hardest failure to
 notice.
 
 ## Personal data
