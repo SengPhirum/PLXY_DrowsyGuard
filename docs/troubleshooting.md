@@ -106,10 +106,22 @@ In order of how often it is the cause:
 The page fetched no manifest. Two possibilities, and the status line above the button
 says which:
 
-- *No published build* — the release workflow has not produced one yet. Use
+- *No published build (http 404)* — there is no GitHub release to serve. This is the
+  expected state until somebody pushes a `v*` tag: the release workflow only publishes
+  on a tag, and the documentation deployment copies the assets out of the **latest
+  release** into `site/firmware/`. A green firmware run on a pull request builds and
+  verifies but deliberately publishes nothing. Until then, use
   [flash it yourself](getting-started/install-esp32.md#flash-it-yourself-instead).
 - *Web Serial unsupported* — you are on Firefox or Safari. There is no extension or
   flag that adds it; use Chrome or Edge, or flash manually.
+
+!!! note "Publishing a build"
+    `git tag v0.1.0 && git push origin v0.1.0` on `main`. That runs
+    *Build and publish firmware*, which builds in Espressif's container at the pinned
+    IDF, checks the app fits its partition, verifies the merged image byte-for-byte
+    against its parts, validates the manifest, and creates the release. Finishing that
+    run re-triggers the documentation deployment, which picks the assets up — so the
+    install page starts working a few minutes later without anyone editing a page.
 
 ### The install fails part way through
 
