@@ -35,8 +35,17 @@ on:
       - "firmware/**"
       - "scripts/make_manifest.py"
       - ".github/workflows/firmware-release.yml"
+  # Pushing a `v*` tag is the normal route. This one exists for the case where the
+  # person releasing cannot push a tag - a fine-grained token without that permission,
+  # a protected-tag ruleset, or an automation environment scoped to branches. Given a
+  # version here, the release step creates the tag itself from `target_commitish`,
+  # using the workflow's own GITHUB_TOKEN, so no tag has to be pushed by hand.
   workflow_dispatch:
     inputs:
+      version:
+        description: "Version to release, e.g. v0.1.0. Blank builds an unversioned dev prerelease."
+        type: string
+        default: ""
       publish:
         description: "Create a GitHub release from this build"
         type: boolean
@@ -61,6 +70,13 @@ jobs:
   build:
     name: Build and verify
     runs-on: ubuntu-latest
+    # Resolved once, here, and read by the publish job below. The manifest version and
+    # the release tag are the same string by construction: the install page shows the
+    # manifest's version, and a page offering to overwrite somebody's firmware should
+    # not name a build differently from the release it came out of.
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - name: Checkout repository
         # Tags and full history, so `git describe` can produce a real version string
@@ -68,6 +84,42 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      # Three routes in, one answer out:
+      #   a `v*` tag push      -> that tag, a real release
+      #   a dispatch + version -> that version, a real release, tag created by the
+      #                           release step from the dispatched commit
+      #   anything else        -> dev-<sha>, a PRERELEASE, which GitHub excludes from
+      #                           "latest" and the documentation site therefore never
+      #                           serves. A build nobody named is not an install.
+      - name: Resolve the version this build is called
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF#refs/tags/}" != "$GITHUB_REF" ]; then
+            tag="${GITHUB_REF#refs/tags/}"
+            pre=false
+          elif [ -n "${INPUT_VERSION:-}" ]; then
+            # Validated, because this one is typed into a web form and the step below
+            # would otherwise create whatever tag the typo spelled - permanently, on a
+            # public repository, as the thing every visitor's board is offered.
+            if ! printf '%s' "$INPUT_VERSION" \
+                 | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+              echo "::error::version \"$INPUT_VERSION\" is not vMAJOR.MINOR.PATCH " \
+                   "(optionally -suffix), e.g. v0.1.0 or v0.1.0-rc1"
+              exit 1
+            fi
+            tag="$INPUT_VERSION"
+            pre=false
+          else
+            tag="dev-${GITHUB_SHA::7}"
+            pre=true
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$pre" >> "$GITHUB_OUTPUT"
+          echo "this build is $tag (prerelease: $pre)"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -187,15 +239,10 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --disable-pip-version-check --quiet esptool
-          VERSION="${GITHUB_REF_NAME}"
-          case "$GITHUB_REF" in
-            refs/tags/*) ;;
-            *) VERSION="$(git describe --tags --always)" ;;
-          esac
           python scripts/make_manifest.py \
             --build firmware/esp32s3/build \
             --out dist/firmware \
-            --version "$VERSION"
+            --version "${{ steps.version.outputs.tag }}"
 
       # The check that makes the merge trustworthy rather than merely successful.
       # esptool exits 0 for a merge that produced a file; this asserts the file
@@ -298,30 +345,23 @@ jobs:
           name: firmware-web-installer
           path: dist/firmware
 
-      # action-gh-release falls back to github.ref_name when tag_name is absent, and
-      # on the workflow_dispatch path its own `if` above allows, that ref_name is a
-      # BRANCH. The result would be a release tagged `main` - a tag nobody meant,
-      # pointing at a ref that keeps moving, and, because GitHub treats the newest
-      # non-prerelease as "latest", the thing the documentation site would then hand
-      # to every visitor's board. Named explicitly instead, and a dispatch build is
-      # marked a prerelease so it cannot become the published install.
-      - name: Decide what this release is called
-        id: name
-        run: |
-          set -euo pipefail
-          if [ "${GITHUB_REF#refs/tags/}" != "$GITHUB_REF" ]; then
-            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=dev-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-          fi
-
+      # tag_name explicitly, never inherited. action-gh-release falls back to
+      # github.ref_name when it is absent, and on the workflow_dispatch path this
+      # job's own `if` allows, that ref_name is a BRANCH - so the result would be a
+      # release tagged `main`, pointing at a ref that keeps moving, and, because
+      # GitHub treats the newest non-prerelease as "latest", the thing the
+      # documentation site would then hand to every visitor's board.
+      #
+      # target_commitish is what lets a dispatch release without a pushed tag: the
+      # action creates the tag here, at the dispatched commit, with the workflow's own
+      # token. Without it the tag would be created on the default branch's head, which
+      # is not necessarily what was built.
       - name: Create or update the release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.name.outputs.tag }}
-          prerelease: ${{ steps.name.outputs.prerelease }}
+          tag_name: ${{ needs.build.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ needs.build.outputs.prerelease }}
           files: dist/firmware/*
           generate_release_notes: true
           body: |
