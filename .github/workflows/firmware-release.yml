@@ -82,9 +82,19 @@ jobs:
           python -m pip install --disable-pip-version-check --quiet pytest ziglang
 
       - name: Test the host-compilable firmware logic
+        # PYTHONPATH rather than `pip install -e .`, and that is the whole fix:
+        # test_presence.py and test_firmware_parity.py import drowsyguard.presence,
+        # .behavior and .risk, which are pure standard library - so they need to be
+        # importable and nothing more. Installing the package would drag in torch,
+        # opencv and onnxruntime from pyproject's `dependencies` for three files that
+        # use `math` and `dataclasses`, which is exactly the coupling this workflow
+        # exists to avoid.
+        env:
+          PYTHONPATH: src
         run: |
           python -m pytest tests/test_face_gate.py tests/test_presence.py \
-                           tests/test_firmware_parity.py -q
+                           tests/test_firmware_parity.py \
+                           tests/test_mqtt_config.py -q
 
       - name: Build firmware
         uses: espressif/esp-idf-ci-action@v1
