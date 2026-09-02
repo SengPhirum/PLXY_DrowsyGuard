@@ -21,6 +21,8 @@ the design rather than constraining it.
 
 #include <cstdint>
 
+#include "wifi_provision.h"
+
 // --- SoftAP identity -------------------------------------------------------
 // The last three bytes of the AP MAC are appended to the SSID, so two boards on
 // the same bench are distinguishable without reflashing either of them.
@@ -55,6 +57,26 @@ struct WifiStatus {
     bool sta_connected = false;
     char sta_ip[16] = {0};
     int8_t sta_rssi = 0;
+
+    // --- provisioning ------------------------------------------------------
+    // The SSID the radio is configured for, which is not the same question as
+    // whether it joined. A page that only showed "not connected" cannot tell an
+    // operator whether the device is trying the network they meant.
+    char sta_ssid[33] = {0};
+    WifiStaState sta_state = WifiStaState::Disabled;
+    // The 802.11 reason code from the last disconnection, and how many attempts have
+    // failed since the last success. Together these are what turns "it did not work"
+    // into "the passphrase is wrong" - see wifi_disconnect_reason_text().
+    uint8_t sta_reason = 0;
+    uint32_t sta_attempts = 0;
+    // Remaining backoff before the next attempt, in milliseconds. Shown so that a
+    // device waiting 60 s does not look like a device that has given up.
+    uint32_t sta_retry_ms = 0;
+    // Whether the BOOT-button watcher has seen a release and would act on a hold.
+    // False on a board with a serial adapter holding GPIO0 low - see
+    // wifi_provision.h, which is the only place that hazard is explained in full.
+    bool button_armed = false;
+    uint32_t button_held_ms = 0;
 };
 
 // Runtime station credentials, which take precedence over WIFI_STA_SSID above when
@@ -78,6 +100,13 @@ struct WifiStaOverride {
 // Initialises NVS, the network stack and the radio. Returns false only if the AP
 // itself could not be started - the firmware still runs in that case, because the
 // alert path does not depend on the network.
+//
+// The radio always comes up in AP+STA, whether or not there are credentials, and
+// that changed with provisioning. It used to be AP-only until an SSID was stored,
+// which made the first boot - the one boot where somebody definitely needs to
+// configure Wi-Fi - the one boot where they could neither scan nor join without a
+// reboot afterwards. A station interface with nothing configured costs a few
+// kilobytes and does not associate; it is what makes scanning possible at all.
 bool board_wifi_init(const WifiStaOverride *sta = nullptr);
 
 // Applies station credentials to a running radio, so a broker can be reached without
@@ -92,3 +121,42 @@ bool board_wifi_apply_station(const WifiStaOverride &sta);
 
 // Snapshot of the current network state, for the status endpoint and the log.
 void board_wifi_status(WifiStatus *out);
+
+// --- scanning --------------------------------------------------------------
+// Starts a scan and returns immediately. Results arrive on the Wi-Fi event task and
+// are collected with board_wifi_scan_results(); nothing here blocks, which is the
+// requirement rather than a preference - the capture loop has a 23 ms frame budget
+// and a scan takes seconds.
+//
+// Returns false when a scan is already running or the radio is mid-association.
+// esp_wifi_scan_start() refuses in both cases, and reporting that is better than
+// letting the page think it asked for something.
+//
+// ONE COST WORTH KNOWING. Scanning hops the radio across every channel, and the
+// SoftAP shares that radio - so for the two or three seconds a scan takes, the
+// access point is off its own channel most of the time and the browser's connection
+// stalls. It recovers on its own. The page says so before it starts one, because a
+// dashboard that freezes with no explanation reads as a crash.
+bool board_wifi_scan_start();
+bool board_wifi_scan_busy();
+
+// Copies the last completed scan into `out` (room for WIFI_SCAN_MAX), already
+// sorted, de-duplicated and with hidden networks dropped by wifi_scan_prepare().
+// Returns the count. `age_ms` receives how old the results are, so the page can
+// offer a refresh rather than presenting a ten-minute-old list as current.
+int board_wifi_scan_results(WifiScanEntry *out, uint32_t *age_ms);
+
+// --- provisioning ----------------------------------------------------------
+// Clears the station credentials from the RADIO and stops trying to associate. The
+// SoftAP is untouched, which is the entire point: this is the operation most likely
+// to be performed by somebody who has locked themselves out, so it must not be able
+// to take away the interface they are performing it from.
+//
+// It does NOT touch NVS - settings_nvs.cpp owns that, and the caller does both so
+// that the persisted record and the live radio cannot disagree.
+void board_wifi_forget();
+
+// Immediately retries the configured network, resetting the backoff. What the page's
+// Reconnect button calls: a device sitting on a 60-second backoff after a router
+// reboot should not need a power cycle to notice the router came back.
+void board_wifi_reconnect();

@@ -64,7 +64,13 @@ def test_the_harness_actually_exercised_something(harness_output):
     assert 'topic preview:' in out
     assert 'submitted body:' in out
     assert 'copy to clipboard:' in out
-    assert out.count('  ok') >= 60, f'only {out.count("  ok")} checks ran:\n{out}'
+    # Wi-Fi provisioning is the other credential form on this page, and the one an
+    # operator reaches for when the device is joined to nothing - so a silent failure
+    # here is a device that cannot be recovered from the page it is serving.
+    assert 'Wi-Fi modal against /api/wifi:' in out
+    assert 'scan list:' in out
+    assert 'Wi-Fi actions:' in out
+    assert out.count('  ok') >= 100, f'only {out.count("  ok")} checks ran:\n{out}'
 
 
 def test_the_mqtt_modal_is_wired_to_the_firmware_api():
@@ -87,9 +93,17 @@ def test_the_mqtt_modal_is_wired_to_the_firmware_api():
     for field in ('mqEnabled', 'mqTransport', 'mqProtocol', 'mqHost', 'mqPort',
                   'mqWsPath', 'mqClientId', 'mqUser', 'mqPass', 'mqQos',
                   'mqKeepalive', 'mqLwt', 'mqTlsInsecure', 'mqCa', 'mqDeviceId',
-                  'mqFleetId', 'mqRemark', 'mqTopicMode', 'mqTopic',
-                  'mqStaEnabled', 'mqStaSsid', 'mqStaPass'):
+                  'mqFleetId', 'mqRemark', 'mqTopicMode', 'mqTopic'):
         assert f'id="{field}"' in html, f'{field} is missing from the modal'
+
+    # And the station fields are NOT here any more. Two forms writing one NVS record
+    # meant that saving the broker from a page opened before a network change put the
+    # old SSID back without saying so.
+    for gone in ('mqStaEnabled', 'mqStaSsid', 'mqStaPass'):
+        assert f'id="{gone}"' not in html, (
+            f'{gone} is back in the mqtt modal; /api/wifi owns the station record')
+    for gone in ('"sta_ssid"', '"sta_password"', '"sta_enabled"'):
+        assert gone not in html
 
     # The fleet topic's copy button specifically: that is the string somebody pastes
     # into the documentation's fleet monitor, and without it they retype sixty
@@ -113,8 +127,8 @@ def test_the_page_never_renders_a_stored_password():
     """
     html = PAGE.read_text(encoding='utf-8')
     script = html.split('<script>')[1]
-    for blanked in ("mqSet('mqPass', '')", "mqSet('mqStaPass', '')",
-                    "mqSet('mqUser', '')", "mqSet('mqCa', '')"):
+    for blanked in ("mqSet('mqPass', '')", "mqSet('mqUser', '')",
+                    "mqSet('mqCa', '')"):
         assert blanked in script, f'{blanked} is missing from mqttFill()'
 
     # And the firmware must not be sending one in the first place.
@@ -155,8 +169,107 @@ def test_the_page_still_fits_in_flash_comfortably():
     page that has quietly grown to hundreds of kilobytes is a mistake, not a
     feature."""
     size = PAGE.stat().st_size
-    # 96 kB against roughly 79 kB today. The MQTT modal accounts for about 16 kB of
-    # that, which was most of the headroom this budget used to have - so the next
-    # feature that wants a form should ask whether the page is still one document,
-    # not whether it can afford another 16 kB.
-    assert size < 96 * 1024, f'the device page is {size / 1024:.0f} kB'
+    # 128 kB against roughly 97 kB today, raised from 96 kB when the Wi-Fi card and
+    # modal were added (+19 kB, after the MQTT modal's +16 kB before it). The last
+    # note here said the next feature wanting a form should ask whether this is still
+    # one document rather than whether it can afford the bytes, so: it is, and it has
+    # to be. The device is an access point with no route to the internet, so a second
+    # file is a file that may not arrive. What the size actually costs is app-partition
+    # flash - 97 kB of a partition with 2.5 MB free - and one uncompressed transfer
+    # over the SoftAP, which is a fraction of a second on a 2.4 GHz link and happens
+    # once per visit. Neither is close to mattering; a page at 128 kB would still not
+    # be, but a page that reached it without anybody deciding to would be worth
+    # stopping.
+    assert size < 128 * 1024, f'the device page is {size / 1024:.0f} kB'
+
+
+def test_the_wifi_card_is_wired_to_the_firmware_api():
+    """Same reasoning as the MQTT modal: the stub DOM invents an element for every id
+    in the file, so a rename that agrees with itself passes the harness and fails on
+    the device. What is checked here is that the page and the firmware name the same
+    endpoints and the same form fields."""
+    html = PAGE.read_text(encoding='utf-8')
+    server = WEB_SERVER.read_text(encoding='utf-8')
+
+    for endpoint in ("'/api/wifi'", "'/api/wifi/scan'"):
+        assert endpoint in html, f'the page never calls {endpoint}'
+    for route in ('"/api/wifi"', '"/api/wifi/scan"'):
+        assert route in server, f'the firmware does not serve {route}'
+
+    for field in ('wifiPill', 'wifiAp', 'wifiSsid', 'wifiIp', 'wifiRssi', 'wifiNote',
+                  'wifiBtn', 'wifiReconnectBtn', 'wfScan', 'wfNets', 'wfSsid',
+                  'wfPass', 'wfOpen', 'wfConnect', 'wfReconnect', 'wfForget',
+                  'wfState', 'wfNet', 'wfIp', 'wfRssi', 'wfTries', 'wfButton'):
+        assert f'id="{field}"' in html, f'{field} is missing from the page'
+
+    # The three form fields and the two actions the firmware reads, by name.
+    for field in ('"ssid"', '"password"', '"open"', '"action"'):
+        assert field in server, f'the firmware never reads {field}'
+    for action in ('"forget"', '"reconnect"'):
+        assert action in server, f'the firmware never handles action={action}'
+    for sent in ('action: \'forget\'', 'action: \'reconnect\''):
+        assert sent in html, f'the page never sends {sent}'
+
+    # The physical reset has to be described where somebody looking for it would
+    # look, and its one guarantee stated: it clears the station credentials only.
+    assert 'BOOT button' in html
+    assert 'broker settings' in html
+
+
+def test_forgetting_a_network_is_confirmed_and_scoped():
+    """A button three floors from the device that silently strands it is not a
+    button. And the physical reset must erase one NVS key, not the namespace."""
+    html = PAGE.read_text(encoding='utf-8')
+    script = html.split('<script>')[1]
+
+    forget = script.split("$('wfForget').onclick")[1][:900]
+    assert 'confirm(' in forget, 'Forget network does not confirm'
+    assert 'access point' in forget, 'the confirmation does not say what survives'
+
+    # The firmware half: one key, by name, erased from a namespace that holds four.
+    nvs = (ROOT / 'firmware/esp32s3/main/settings_nvs.cpp').read_text(encoding='utf-8')
+    # Bounded at the function's own closing brace, so this reads settings_clear_wifi()
+    # and not whatever happens to be defined under it.
+    body = nvs.split('bool settings_clear_wifi')[1]
+    clear = body[:body.index('\n}\n') + 3]
+    assert 'KEY_WIFI' in clear
+    for other in ('KEY_MQTT', 'KEY_DEVICE', 'KEY_CA'):
+        assert other not in clear, (
+            f'settings_clear_wifi() touches {other}; a wi-fi reset must not factory '
+            f'reset the broker or the device identity')
+    assert 'nvs_erase_all' not in clear, (
+        'settings_clear_wifi() erases the whole namespace')
+
+    # And the button calls exactly that, plus the radio-side forget - nothing wider.
+    main = (ROOT / 'firmware/esp32s3/main/main.cpp').read_text(encoding='utf-8')
+    assert 'board_button_start' in main
+    hook = main.split('board_button_start')[1][:1200]
+    assert 'settings_clear_wifi' in hook and 'board_wifi_forget' in hook
+    assert 'esp_restart' not in hook, (
+        'the button reboots the device; the access point and the detector are '
+        'supposed to keep running')
+
+
+def test_a_hostile_ssid_cannot_reach_the_page_as_markup():
+    """An SSID is 32 bytes chosen by whoever owns the access point, and anybody in
+    radio range of this device can broadcast one. It is escaped twice, in two
+    different alphabets: by the firmware for JSON, and by the page for HTML."""
+    html = PAGE.read_text(encoding='utf-8')
+    script = html.split('<script>')[1]
+
+    # The page's half. The scan list is the one place it assigns markup rather than
+    # text, so the SSID in it has to go through esc().
+    assert 'function esc(' in script
+    rows = script.split('function wifiRenderNets')[1][:2000]
+    assert 'esc(n.ssid)' in rows, 'the scan list interpolates an SSID unescaped'
+
+    # The firmware's half.
+    prov = (ROOT / 'firmware/esp32s3/main/wifi_provision.cpp').read_text(
+        encoding='utf-8')
+    scan = prov.split('size_t wifi_scan_json')[1][:2200]
+    assert 'settings_json_escape' in scan, 'wifi_scan_json() emits a raw SSID'
+
+    server = WEB_SERVER.read_text(encoding='utf-8')
+    respond = server.split('static esp_err_t wifi_respond')[1][:2600]
+    assert respond.count('settings_json_escape') >= 1, (
+        'wifi_respond() emits a raw SSID')

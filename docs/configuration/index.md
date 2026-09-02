@@ -220,15 +220,46 @@ session where an empty seat is the normal state.
 `./plxy.sh wifi` reads these straight out of the header, so it always prints what
 the firmware will actually do. See [Security](../security.md#the-access-point-is-open-by-default).
 
-`WIFI_STA_SSID` is now a **default rather than the only route**: station credentials
-stored in NVS take precedence over it, and the settings modal writes them. That is
-what MQTT needed — the board's own access point has no route to the internet, so a
+`WIFI_STA_SSID` is a **compile-time default, not the only route**: station credentials
+stored in NVS take precedence, and the Wi-Fi card on the device page writes them. That
+is what MQTT needed — the board's own access point has no route to the internet, so a
 device that could only be its own AP could only ever publish to something on the same
 island, and a demonstration has to be able to point it at a phone hotspot in the room
 without a rebuild.
 
 The access point comes up either way and never comes down. A wrong hotspot password
 costs you the broker, never the dashboard and never the alarm.
+
+### Wi-Fi provisioning { #wi-fi-provisioning }
+
+Set from the device's own page and stored in NVS. Nothing here is compiled in — one of
+the values is somebody's home Wi-Fi password.
+
+Full walkthrough: [Using the device](../guide/device.md#joining-an-existing-network).
+API: [`GET`/`POST /api/wifi`](../reference/device-api.md#get-apiwifi).
+
+| Setting | Default | Range / notes |
+| --- | --- | --- |
+| enabled | off | Set by saving a network; cleared by **Forget network** or the BOOT button. Off means access-point-only, which is a working device |
+| SSID | empty | ≤ 32 **bytes**, not characters — a name in Khmer or with an accent costs two or three bytes each. Any byte except a control character: 802.11 says an SSID is 32 arbitrary octets, and a validator that refused them would refuse the network and blame the operator |
+| password | empty | empty (open network) or 8–63 characters of ASCII, which is what WPA2-PSK itself allows. 1–7 is always a typo, and the radio would otherwise reject it with a reason code that reads like a bad SSID |
+
+| Constant | Value | Where |
+| --- | --- | --- |
+| `WIFI_SCAN_MAX` | 24 | `wifi_provision.h`. Networks kept from one scan, strongest first, de-duplicated by name. A busy office produces about fifteen |
+| `WIFI_BUTTON_HOLD_MS` | 5000 | `wifi_provision.h`. The BOOT hold that erases the credentials, with a warning at 2000 ms |
+| `WIFI_BUTTON_ARM_AFTER_MS` | 3000 | Nothing counts in the first three seconds after boot |
+| `WIFI_BUTTON_STUCK_MS` | 30000 | A press that never releases stops counting, so a wedged button cannot erase the credentials on every boot |
+| `BUTTON_GPIO` | 0 | `board_button.h`. The BOOT button; the only one on the board, and the application uses no other GPIO |
+| retry backoff | 2 s → 60 s | `board_wifi.cpp`. Doubling with jitter, reset by a successful join. **Reconnect now** on the page skips the wait |
+
+!!! danger "The reset button clears Wi-Fi and only Wi-Fi"
+    `settings_clear_wifi()` erases one key by name from a namespace that holds four.
+    The broker settings, the device and fleet identity and the CA certificate survive
+    a physical reset, and the device does not reboot — the access point, the camera
+    and the detector keep running while it happens. There is deliberately no
+    factory-reset path on this button: an accidental five-second press must not cost
+    somebody their broker configuration.
 
 ## MQTT alerting { #mqtt-alerting }
 
@@ -286,11 +317,10 @@ truncated will topic means a retained message on a topic nobody subscribes to.
 
 ### Wi-Fi station
 
-| Setting | Default | Notes |
-| --- | --- | --- |
-| enabled | off | falls back to `WIFI_STA_SSID` |
-| SSID | empty | ≤ 32 chars |
-| password | empty | empty (open network) or 8–63 chars. 1–7 is always a typo, and the radio would otherwise reject it with an error that reads like a bad SSID |
+Not part of `POST /api/mqtt` — it has its own form and its own endpoint, above under
+[Wi-Fi provisioning](#wi-fi-provisioning). One NVS record, one owner: two forms writing
+it meant that saving the broker from a page opened before a network change quietly put
+the old SSID back.
 
 ### Not settable, on purpose
 

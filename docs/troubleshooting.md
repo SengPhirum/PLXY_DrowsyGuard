@@ -228,6 +228,75 @@ chosen as durations, so `main.cpp` re-derives them from the measured rate once a
 second. If you bypassed `retune_for_fps()`, that coupling is back. See
 [Configuration](configuration/index.md#risk-and-timing-mainmaincpp).
 
+## Wi-Fi { #wi-fi }
+
+### The scan finds nothing
+
+The ESP32-S3 radio is **2.4 GHz only**, so a 5 GHz network is invisible to it — check
+the phone or router is not offering only 5 GHz. A hidden network is also absent by
+design: it does not broadcast its name, so type the SSID in by hand instead of picking
+it from the list.
+
+If the list is empty *and* the page said "The device did not answer", the scan buffer
+could not be allocated at boot. The log says so
+(`wi-fi scan buffer unavailable`); typing the SSID in still works.
+
+### The page freezes for a couple of seconds when scanning
+
+Expected. One radio, one antenna, and a scan walks every channel — so the access point
+this page is served over stalls while it does. It resumes on its own, disconnects
+nobody, and does not touch the camera, the detector or the alerts: those run on the
+other core and never wait on the radio.
+
+### It says "the password was refused" and keeps retrying
+
+That is 802.11 reason 15 or 2, and it means what it says. Reopen **Wi-Fi settings**
+and retype the password — the box opens empty because the device never hands a stored
+passphrase back, so an empty box means "keep the wrong one". Watch for a network that
+is WPA3-only: this radio negotiates WPA2, and some routers reject rather than fall
+back.
+
+The backoff doubles from 2 s to a minute, so a device that looks idle is usually just
+waiting. **Reconnect now** skips the wait.
+
+### It says "no access point with that name is in range"
+
+Reason 201: the SSID is not being heard at all. Either the network is gone, or it is
+5 GHz, or the SSID has a typo — scan again and pick it from the list rather than
+retyping it. Note that an SSID is 32 **bytes**, so a name in Khmer or with an accent
+runs out sooner than it looks.
+
+### It joined, but the tooling still cannot reach it
+
+Read the address from the Wi-Fi card or `net.sta_ip`, and point the tooling at it with
+`PLXY_HOST=10.0.0.42 ./plxy.sh watch`. On a guest network with client isolation the
+device is joined and reachable by nothing — that is the router's setting, not the
+board's. The access point is still up either way, so `192.168.4.1` keeps working.
+
+### The Wi-Fi card says the reset button is "not armed"
+
+Something is holding GPIO0 low, and it is almost always a serial monitor: this board's
+auto-reset lines are inverted, so opening a port pulls BOOT down. Close the monitor,
+or press and release BOOT once — the watcher arms on the first clean release. It
+refuses to act on a press it never saw begin, which is the whole reason a plugged-in
+cable cannot erase your credentials.
+
+### I held BOOT for five seconds and nothing was erased
+
+Check the serial log. `BOOT released - nothing was changed` means the hold was short —
+the warning fires at two seconds and the erase at five. `GPIO0 has been low since
+boot` is the case above. And nothing happens at all in the first three seconds after
+a reset, so a hold started during boot has to be released and repeated.
+
+### The device forgot its network after a reboot
+
+Check `nvs` in `GET /api/wifi`. `false` means the settings partition is unusable, so
+nothing saved there survives a power cycle — erase and reflash
+(`./plxy.sh flash`) and check the partition table. If `nvs` is `true` and the record
+still vanished, the stored blob failed its checksum on the way back in and the device
+came up provisioning on purpose: a half-read passphrase is a device that will not join
+and cannot say why.
+
 ## MQTT and the fleet monitor { #mqtt-and-the-fleet-monitor }
 
 ### The MQTT card says "off" and nothing publishes

@@ -147,7 +147,7 @@ expect:
 | **33-37** | SPI flash + **octal PSRAM**; driving these hangs the board |
 | 19, 20 | native USB D-/D+ (free only if you never use the USB-OTG port) |
 | 43, 44 | UART0 console, which `idf.py monitor` needs |
-| 0 | BOOT button / strapping |
+| 0 | BOOT button / strapping — **read by the firmware after boot** as the Wi-Fi reset (hold 5 s). Free to use as a button, not as an output |
 | 45, 46 | strapping pins; avoid driving them at boot |
 | 48 | on-board RGB LED on most units |
 

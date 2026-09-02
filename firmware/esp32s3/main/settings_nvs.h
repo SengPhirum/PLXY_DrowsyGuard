@@ -42,6 +42,19 @@ bool settings_load_identity(DeviceIdentity *out);
 bool settings_load_wifi(WifiStaConfig *out);
 bool settings_load_mqtt(MqttConfig *out);
 
+// Erases the stored station credentials and nothing else.
+//
+// One key, by name, in a namespace that holds four - which is the whole safety
+// property the physical reset button depends on. "Reset the Wi-Fi" must not become
+// "reset the device": the broker configuration, the device identity and the CA
+// certificate are separate records and stay exactly as they were. An
+// nvs_erase_all() here would have been one character shorter and would have thrown
+// away a broker password somebody typed on a phone.
+//
+// Erasing a key that is not there succeeds: a first boot with nothing stored is not
+// a failure to report.
+bool settings_clear_wifi();
+
 // Validated by the caller before it gets here; these only serialise and write.
 bool settings_save_identity(const DeviceIdentity &id);
 bool settings_save_wifi(const WifiStaConfig &sta);

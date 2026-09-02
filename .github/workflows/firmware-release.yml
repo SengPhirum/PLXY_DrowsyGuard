@@ -94,7 +94,9 @@ jobs:
         run: |
           python -m pytest tests/test_face_gate.py tests/test_presence.py \
                            tests/test_firmware_parity.py \
-                           tests/test_mqtt_config.py -q
+                           tests/test_mqtt_config.py \
+                           tests/test_wifi_provision.py \
+                           tests/test_device_page.py -q
 
       - name: Build firmware
         uses: espressif/esp-idf-ci-action@v1

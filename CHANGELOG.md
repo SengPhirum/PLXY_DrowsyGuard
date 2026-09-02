@@ -1,5 +1,124 @@
 # Changelog
 
+## 2026-09-02 - the board can be told which network to join, and told to forget it
+
+Wi-Fi provisioning. The device page scans, joins, reports, and forgets; a five-second
+hold on BOOT erases the stored credentials from the outside. Nothing here can take the
+access point down, and nothing here runs on the detector's core.
+
+### The constraint, first
+
+A device configured for a network that no longer exists is not a broken device unless
+you cannot reach it. So the access point is up **during** a scan, **during** a join and
+**after a failed one** — which meant changing how the radio starts: it now comes up
+`WIFI_MODE_APSTA` with the station netif created whether or not anything is stored. It
+used to create the STA interface only when credentials existed, which made first-boot
+provisioning impossible without a reboot and made scanning impossible at all.
+
+Everything else follows from that:
+
+| Requirement | How |
+| --- | --- |
+| A scan must not stall the page | `esp_wifi_scan_start(&cfg, false)` and a `WIFI_EVENT_SCAN_DONE` handler. The HTTP handler starts it and returns; the results are collected by a later request |
+| A scan must not touch detection | It never did — the radio is on-die, the capture loop and ESP-DL are on core 0, and the web servers are on core 1. The scan does interrupt the *access point* for two to three seconds, because there is one antenna, and the page says so |
+| A wrong password must cost nothing but the network | The AP is a separate interface with its own netif. `sta.state` goes to `failed`, `reason_text` says why, the backoff doubles from 2 s to a minute, and `192.168.4.1` never blinks |
+| A reboot must rejoin | The credentials were already an NVS blob with a magic, a version and a CRC. Now they are written by a form that owns them alone |
+
+### The physical reset, and the hazard that shaped it
+
+`ButtonWatch` in `wifi_provision.cpp` is pure C++ with no ESP-IDF headers, driven by an
+injected clock in `tests/test_wifi_provision.py`. Three rules:
+
+1. nothing counts in the first three seconds after boot;
+2. **a debounced release must be seen before any press is believed**;
+3. a press that never releases stops counting after thirty seconds.
+
+Rule 2 is not defensive programming. This board's auto-reset lines are inverted, so
+pyserial pulls GPIO0 low when it opens a port — anyone attaching `idf.py monitor` is,
+electrically, holding BOOT down for as long as the terminal is open. Without that rule
+the first five seconds of every debugging session would erase the device's Wi-Fi.
+`test_a_pin_held_low_from_boot_never_fires` is the test that pins it.
+
+What the button does when it fires is `settings_clear_wifi()` plus `board_wifi_forget()`
+and nothing else. One NVS key erased by name from a namespace holding four; the broker
+settings, the device identity, the CA certificate and the captures all survive. It does
+not reboot, either — the access point, the camera and the detector keep running, so the
+page stays open in your hand while the reset happens.
+
+It also deliberately makes **no sound**. `board_audio_play_tone()` blocks until its
+samples are queued and neither `board_audio.cpp` nor `voice_alert.cpp` holds a lock, so
+a convenience beep from the button task would put a second writer on the I2S path the
+alert uses. On a device whose speaker is the only output a drowsy driver perceives,
+that is not a trade worth making. Feedback goes to the serial log and to the page.
+
+### An SSID is 32 bytes chosen by a stranger
+
+Anybody in radio range can stand up an access point and name it whatever they like, and
+that name lands in the device's own recovery page. Two things came out of taking that
+seriously:
+
+- `settings_json_escape()` passes bytes ≥ 0x80 through untouched, which is right for
+  every field it was written for — they are all validated to printable ASCII first —
+  and wrong for a scanned SSID. A high byte that is not part of a well-formed UTF-8
+  sequence makes the whole document undecodable, so `JSON.parse` throws and the
+  operator sees an **empty network list on the page they are using to recover the
+  device**. That is the cheapest denial of service available against this feature and
+  it costs one beacon frame. `settings_json_escape_utf8()` passes well-formed sequences
+  through — a network really called `café` reads as itself — and escapes everything
+  else as `\u00XX`;
+- the scan buffer is sized for the worst case rather than the likely one: 24 networks
+  of 32 bytes that all need six characters each is about 6.3 kB, so it is 8 kB and in
+  PSRAM rather than 4 kB on the control task's doorstep.
+
+The page escapes independently for HTML. Two alphabets, two defences, neither
+substituting for the other.
+
+Relatedly, the SSID rule was **loosened**: 802.11 says an SSID is 32 arbitrary octets,
+and networks named in Khmer or with an accent are ordinary things this device has to be
+able to join. Control bytes are still refused — the serial log is a terminal. The
+*passphrase* stays printable ASCII, because that is what WPA2-PSK itself allows.
+
+### One record, one owner
+
+The station credentials used to be editable from the MQTT modal, since MQTT was what
+first needed them. They are not any more: `/api/wifi` owns that NVS record and
+`/api/mqtt` no longer reads or writes it. Two forms over one record meant that saving
+the broker from a page opened before a network change put the old SSID back without
+saying so. `test_the_mqtt_modal_is_wired_to_the_firmware_api` now fails if those fields
+come back.
+
+### New surface
+
+| Endpoint | Does |
+| --- | --- |
+| `GET /api/wifi` | where it is joined, why it is not, and whether the reset button is armed. No passphrase — `password_set` and nothing else |
+| `POST /api/wifi` | connect, `action=forget`, `action=reconnect`. Empty password means keep |
+| `GET /api/wifi/scan` | the last scan: strongest first, de-duplicated, hidden ones dropped, at most 24 |
+| `POST /api/wifi/scan` | start one, return immediately. **409** while the radio is busy |
+
+`/api/status` gained `net.sta_state`, `sta_bars`, `sta_retry_ms` and `button_armed` —
+four scalars, no SSID and no credential, because that document is what a screenshot of
+the device page shows.
+
+### Files
+
+| New | Owns |
+| --- | --- |
+| `main/wifi_provision.{h,cpp}` | pure. The button state machine, scan preparation and de-duplication, the scan JSON, signal bars, station states, and the sentence for each 802.11 disconnect reason |
+| `main/board_button.{h,cpp}` | the GPIO0 polling task. Core 1, priority 2, 50 ms. No logic of its own |
+| `tests/test_wifi_provision.py` | 74 cases against both files, host-compiled with `-Wall -Wextra -Werror` |
+
+### Verification
+
+- ESP-IDF v5.5.5, real xtensa-esp32s3 toolchain: builds clean;
+- 74 Wi-Fi cases, 158 MQTT/settings cases, the device-page harness (a stub DOM against
+  the real page, now including the scan list and every Wi-Fi action), `./plxy.sh
+  docs-check` green;
+- **not run on hardware.** `docs/DEPLOYMENT.md` has W1–W11 with pass criteria that do
+  not depend on anybody's judgement. W4 and W8 are the two to record: a wrong password
+  must leave `192.168.4.1` serving, and a five-second hold must clear the network and
+  nothing else.
+
 ## 2026-09-01 - the alerts leave the vehicle, without the detector noticing
 
 MQTT alerting. Every confirmed alert is now also published to a broker as one

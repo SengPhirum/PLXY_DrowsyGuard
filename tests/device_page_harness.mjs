@@ -48,6 +48,26 @@ const mkEl = (id) => ({
     save() {}, restore() {}, translate() {}, rotate() {}, scale() {}, drawImage() {},
   }),
   removeAttribute() {}, setAttribute() {}, dataset: {},
+  // The scan list is built by assigning innerHTML and then wired by querying the
+  // result, which a string-valued stub cannot answer. Parsing the `data-i` attributes
+  // back out is enough to reproduce the browser's behaviour for the one markup shape
+  // the page writes - and it means a click handler that is wired onto the wrong row,
+  // or onto nothing, is a test failure rather than something to notice on a phone.
+  querySelectorAll(sel) {
+    if (!String(sel).includes('button')) return [];
+    // Re-parsed only when the markup changed, so two queries of the same list return
+    // the same objects - which is what a browser does, and what the page depends on
+    // when it writes rows and then wires them.
+    if (this._rowsFor !== this.innerHTML) {
+      this._rowsFor = this.innerHTML;
+      this._rows = [...String(this.innerHTML).matchAll(/data-i="(\d+)"/g)].map(m => {
+        const b = mkEl('net-' + m[1]);
+        b.dataset = {i: m[1]};
+        return b;
+      });
+    }
+    return this._rows;
+  },
 });
 const store = new Map(ids.map(i => [i, mkEl(i)]));
 // Selector-aware, unlike the first version of this stub: the page now wires two
@@ -101,7 +121,8 @@ const factory = new Function(
   js + '\nreturn {render, drawOverlay, drawTrend, logLine, openShot, loadHistory, '
      + 'drawFrame, startLive, startPhotos, stopVideo, renderMqtt, mqttFill, '
      + 'mqttTopics, mqttBody, mqttSave, mqttLoad, mqttRefreshTopics, copyText, '
-     + 'openMqtt, mqttTest};');
+     + 'openMqtt, mqttTest, wifiFill, wifiRenderNets, wifiScan, wifiLoad, '
+     + 'openWifi, renderWifiCard, esc, barsHtml};');
 const page = factory();
 
 // --- a payload shaped exactly like web_server.cpp emits ------------------- //
@@ -136,7 +157,8 @@ const status = {
                   sneeze: 'embedded', no_driver: 'embedded'}},
   stream: {viewers: 1, quality: 80, fps: 12, port: 81},
   net: {ssid: 'DrowsyGuard-A1B2C3', ip: '192.168.4.1', clients: 1, sta: false,
-        sta_ip: '0.0.0.0', rssi: 0},
+        sta_ip: '0.0.0.0', rssi: 0, sta_state: 'idle', sta_bars: 0, sta_retry_ms: 0,
+        button_armed: true},
   mem: {heap: 187392, psram: 7654321},
   image: {luma: 132, min: 6, max: 251},
   card: {mounted: true, events: 7, free_mb: 14812, stored: 7},
@@ -161,7 +183,19 @@ run('no camera', () => page.render({...status, camera: false,
 run('no models, no geometry', () => page.render({...status, models: false,
   geom: {...status.geom, valid: false}}));
 run('station mode joined', () => page.render({...status,
-  net: {...status.net, sta: true, sta_ip: '10.0.0.42', rssi: -58}}));
+  net: {...status.net, sta: true, sta_ip: '10.0.0.42', rssi: -58,
+        sta_state: 'connected', sta_bars: 4}}));
+run('station failing, backing off', () => page.render({...status,
+  net: {...status.net, sta_state: 'failed', sta_retry_ms: 16000}}));
+// Firmware built before the provisioning change sends none of the station fields.
+// The page has to survive that rather than throw inside render() and take every
+// later line of the dashboard down with it.
+run('older firmware - no station fields at all', () => {
+  const net = {...status.net};
+  delete net.sta_state; delete net.sta_bars; delete net.sta_retry_ms;
+  delete net.button_armed;
+  page.render({...status, net});
+});
 run('every event bit set', () => page.render({...status,
   cues: {...status.cues, events: 63}}));
 run('zeros everywhere', () => page.render({
@@ -465,8 +499,6 @@ run('mqtt 5, qos 0, no will', () => page.mqttFill(mqttCfg({
   protocol: '5', qos: 0, lwt: false})));
 run('pinned client id', () => page.mqttFill(mqttCfg({
   client_id: 'lorry-7', client_id_auto: false})));
-run('station mode joined', () => page.mqttFill(mqttCfg({
-  sta: {enabled: true, ssid: 'Pixel_Hotspot', password_set: true}})));
 run('no credentials stored', () => page.mqttFill(mqttCfg({
   username_masked: '', username_set: false, password_set: false})));
 run('a completely empty document', () => page.mqttFill({}));
@@ -481,9 +513,8 @@ run('topics object missing', () => {
 {
   page.mqttFill(mqttCfg());
   const pass = store.get('mqPass');
-  const staPass = store.get('mqStaPass');
   const user = store.get('mqUser');
-  const ok = pass.value === '' && staPass.value === '' && user.value === ''
+  const ok = pass.value === '' && user.value === ''
       && /leave blank/.test(pass.placeholder);
   if (!ok) failures++;
   console.log(`  ${ok ? 'ok   ' : 'FAIL '} credential boxes open empty `
@@ -541,13 +572,12 @@ console.log('\nsubmitted body:');
   store.get('mqFleetId').value = 'demo-fleet';
   store.get('mqRemark').value = 'Driver A';
   store.get('mqPass').value = '';
-  store.get('mqStaPass').value = '';
   store.get('mqUser').value = '';
   store.get('mqCa').value = '';
 
   const body = page.mqttBody();
-  const noCreds = !/(^|&)password=/.test(body) && !/(^|&)sta_password=/.test(body)
-      && !/(^|&)username=/.test(body) && !/(^|&)ca_cert=/.test(body);
+  const noCreds = !/(^|&)password=/.test(body) && !/(^|&)username=/.test(body)
+      && !/(^|&)ca_cert=/.test(body);
   if (!noCreds) failures++;
   console.log(`  ${noCreds ? 'ok   ' : 'FAIL '} blank boxes submit no credential fields`);
 
@@ -573,6 +603,12 @@ console.log('\nsubmitted body:');
   const cleared = /(^|&)clear_password=1(&|$)/.test(bodyExtra);
   if (!cleared) failures++;
   console.log(`  ${cleared ? 'ok   ' : 'FAIL '} an explicit clear flag is carried`);
+
+  // The station record has one owner. Two forms writing it meant that saving the
+  // broker from a stale page put the old SSID back, silently.
+  const noSta = !/(^|&)sta_/.test(body);
+  if (!noSta) failures++;
+  console.log(`  ${noSta ? 'ok   ' : 'FAIL '} the mqtt form carries no station fields`);
 }
 
 console.log('\nsave and test:');
@@ -621,6 +657,212 @@ console.log('\ncopy to clipboard:');
   const empty = await page.copyText('', null);
   console.log(`  ok    empty text is harmless (${empty})`);
 }
+
+// --- Wi-Fi provisioning --------------------------------------------------- //
+// A document shaped exactly like wifi_respond() in web_server.cpp emits.
+const wifiDoc = (sta, over) => ({
+  ap: {ssid: 'DrowsyGuard-A1B2C3', ip: '192.168.4.1', clients: 1, up: true},
+  sta: {
+    state: 'connected', ssid: 'KDSB-Office', stored: true, connected: true,
+    ip: '10.0.0.42', rssi: -58, bars: 4, attempts: 0, retry_ms: 0, reason: 0,
+    reason_text: '', password_set: true, auth_failed: false,
+    ...(sta || {}),
+  },
+  button: {gpio: 0, armed: true, held_ms: 0, hold_ms: 5000},
+  nvs: true,
+  ...(over || {}),
+});
+
+console.log('\nWi-Fi modal against /api/wifi:');
+run('connected', () => page.wifiFill(wifiDoc()));
+run('never provisioned', () => page.wifiFill(wifiDoc({
+  state: 'disabled', ssid: '', stored: false, connected: false, ip: '0.0.0.0',
+  rssi: 0, bars: 0, password_set: false})));
+run('connecting', () => page.wifiFill(wifiDoc({
+  state: 'connecting', connected: false, ip: '0.0.0.0', rssi: 0, bars: 0})));
+run('wrong password', () => page.wifiFill(wifiDoc({
+  state: 'failed', connected: false, ip: '0.0.0.0', rssi: 0, bars: 0,
+  attempts: 3, retry_ms: 8000, reason: 15, reason_text: 'the password was refused',
+  auth_failed: true})));
+run('network out of range', () => page.wifiFill(wifiDoc({
+  state: 'failed', connected: false, ip: '0.0.0.0', rssi: 0, bars: 0, attempts: 12,
+  retry_ms: 60000, reason: 201, reason_text: 'no access point with that name is in '
+      + 'range'})));
+run('settings partition unavailable', () => page.wifiFill(wifiDoc({}, {nvs: false})));
+run('button held down by a serial adapter', () => page.wifiFill(
+    wifiDoc({}, {button: {gpio: 0, armed: false, held_ms: 0, hold_ms: 5000}})));
+run('a completely empty document', () => page.wifiFill({}));
+run('sta object missing entirely', () => page.wifiFill({ap: {ssid: 'x'}}));
+
+// The password box opens empty whatever the device said, exactly as the broker's does.
+{
+  page.wifiFill(wifiDoc());
+  const pass = store.get('wfPass');
+  const ok = pass.value === '' && /leave blank/.test(pass.placeholder);
+  if (!ok) failures++;
+  console.log(`  ${ok ? 'ok   ' : 'FAIL '} the password box opens empty `
+      + `(value "${pass.value}", placeholder "${pass.placeholder}")`);
+}
+
+// Forget and Reconnect are meaningless with nothing stored, and a button that does
+// nothing when pressed is worse than one that is visibly unavailable.
+{
+  page.wifiFill(wifiDoc({state: 'disabled', ssid: '', stored: false,
+                         connected: false, password_set: false}));
+  const off = store.get('wfForget').disabled && store.get('wfReconnect').disabled;
+  page.wifiFill(wifiDoc());
+  const on = !store.get('wfForget').disabled && !store.get('wfReconnect').disabled;
+  const ok = off && on;
+  if (!ok) failures++;
+  console.log(`  ${ok ? 'ok   ' : 'FAIL '} forget/reconnect follow whether anything `
+      + `is stored`);
+}
+
+console.log('\nscan list:');
+const scanDoc = (nets, scanning) => ({
+  scanning: !!scanning, age_ms: 1200,
+  networks: nets.map(n => ({
+    ssid: n[0], rssi: n[1], bars: n[2], channel: 6,
+    auth: n[3] ? 'open' : 'wpa2-psk', open: !!n[3],
+  })),
+});
+run('several networks', () => page.wifiRenderNets(scanDoc([
+  ['KDSB-Office', -46, 4, false], ['KDSB-Guest', -61, 3, true],
+  ['Pixel_Hotspot', -72, 2, false], ['neighbour', -88, 1, false]])));
+run('a scan in progress', () => page.wifiRenderNets(scanDoc([], true)));
+run('nothing found', () => page.wifiRenderNets(scanDoc([])));
+run('a document with no networks key', () => page.wifiRenderNets({scanning: false}));
+run('an empty document', () => page.wifiRenderNets({}));
+run('undefined', () => page.wifiRenderNets(undefined));
+
+// An SSID is 32 bytes chosen by whoever owns the access point, and anybody in radio
+// range of this device can broadcast one. The firmware escapes it for JSON; that is a
+// different job from escaping it for HTML, and this is the page's half.
+{
+  const hostile = '<img src=x onerror="alert(1)">';
+  page.wifiRenderNets(scanDoc([[hostile, -50, 4, false]]));
+  const html = store.get('wfNets').innerHTML;
+  const safe = !html.includes('<img') && html.includes('&lt;img')
+      && !html.includes('onerror="');
+  if (!safe) failures++;
+  console.log(`  ${safe ? 'ok   ' : 'FAIL '} a hostile SSID is escaped into text`);
+
+  const quoted = 'a" onclick="steal()';
+  page.wifiRenderNets(scanDoc([[quoted, -50, 4, false]]));
+  const html2 = store.get('wfNets').innerHTML;
+  const safe2 = !html2.includes('onclick="') && html2.includes('&quot;');
+  if (!safe2) failures++;
+  console.log(`  ${safe2 ? 'ok   ' : 'FAIL '} a quote in an SSID cannot break out of `
+      + `an attribute`);
+}
+
+// Selecting a row fills the two boxes - and must NOT carry the previous network's
+// passphrase across to the one just chosen.
+{
+  page.wifiRenderNets(scanDoc([
+    ['KDSB-Office', -46, 4, false], ['KDSB-Guest', -61, 3, true]]));
+  store.get('wfPass').value = 'the-office-password';
+  const rows = store.get('wfNets').querySelectorAll('button');
+  const wired = rows.length === 2 && typeof rows[1].onclick === 'function';
+  if (!wired) failures++;
+  console.log(`  ${wired ? 'ok   ' : 'FAIL '} every row is wired (${rows.length} rows)`);
+  if (wired) {
+    rows[1].onclick();
+    const ok = store.get('wfSsid').value === 'KDSB-Guest'
+        && store.get('wfPass').value === '' && store.get('wfOpen').checked === true;
+    if (!ok) failures++;
+    console.log(`  ${ok ? 'ok   ' : 'FAIL '} picking an open network clears the `
+        + `password box (ssid "${store.get('wfSsid').value}", pass `
+        + `"${store.get('wfPass').value}")`);
+  }
+}
+
+console.log('\nWi-Fi actions:');
+const wifiCase = async (label, fn, response, ok, check) => {
+  globalThis.fetch = () => Promise.resolve({ok: ok, json: () => response});
+  try {
+    await fn();
+    const good = check ? check() : true;
+    if (!good) failures++;
+    console.log(`  ${good ? 'ok   ' : 'FAIL '} ${label}`);
+  } catch (e) {
+    failures++;
+    console.log('  FAIL ', label, '->', e.message);
+  }
+};
+// A typed password is sent percent-encoded, and a blank one is not sent at all -
+// which is what makes "leave blank to keep" work against a device that never hands
+// the secret back.
+{
+  let seen = '';
+  globalThis.fetch = (url, opt) => {
+    const post = opt && opt.method === 'POST';
+    // Only the POST bodies to /api/wifi. A save also triggers a status poll, and
+    // recording that GET afterwards blanked the body this is checking.
+    if (post && String(url) === '/api/wifi') seen = opt.body || '';
+    if (String(url).startsWith('/api/status')) {
+      return Promise.resolve({ok: true, json: () => status});
+    }
+    return Promise.resolve({ok: true, json: () => wifiDoc()});
+  };
+  page.wifiFill(wifiDoc());
+  store.get('wfSsid').value = 'KDSB-Office';
+  store.get('wfPass').value = '';
+  store.get('wfOpen').checked = false;
+  await store.get('wfConnect').onclick();
+  const blank = /(^|&)ssid=KDSB-Office(&|$)/.test(seen) && !/(^|&)password=/.test(seen);
+  if (!blank) failures++;
+  console.log(`  ${blank ? 'ok   ' : 'FAIL '} a blank box submits no password `
+      + `("${seen}")`);
+
+  store.get('wfPass').value = 'p&ss=w/rd +1';
+  await store.get('wfConnect').onclick();
+  const enc = seen.includes('password=' + encodeURIComponent('p&ss=w/rd +1'));
+  if (!enc) failures++;
+  console.log(`  ${enc ? 'ok   ' : 'FAIL '} a typed password is percent-encoded`);
+
+  // An open network is explicit rather than inferred, so the stored passphrase from
+  // the last network is not handed to an access point anybody can stand up.
+  store.get('wfOpen').checked = true;
+  store.get('wfPass').value = 'still-here';
+  await store.get('wfConnect').onclick();
+  const open = /(^|&)open=1(&|$)/.test(seen) && !/(^|&)password=/.test(seen);
+  if (!open) failures++;
+  console.log(`  ${open ? 'ok   ' : 'FAIL '} an open network sends open=1 and no `
+      + `password ("${seen}")`);
+  store.get('wfOpen').checked = false;
+  store.get('wfPass').value = '';
+
+  await store.get('wfForget').onclick();
+  const forget = /(^|&)action=forget(&|$)/.test(seen);
+  if (!forget) failures++;
+  console.log(`  ${forget ? 'ok   ' : 'FAIL '} forget posts action=forget`);
+
+  await store.get('wfReconnect').onclick();
+  const again = /(^|&)action=reconnect(&|$)/.test(seen);
+  if (!again) failures++;
+  console.log(`  ${again ? 'ok   ' : 'FAIL '} reconnect posts action=reconnect`);
+}
+// An empty SSID never reaches the device: it would be stored and then retried
+// forever against a network that does not exist.
+{
+  let called = false;
+  globalThis.fetch = () => { called = true; return Promise.reject(new Error('x')); };
+  store.get('wfSsid').value = '   ';
+  await store.get('wfConnect').onclick();
+  if (called) failures++;
+  console.log(`  ${called ? 'FAIL ' : 'ok   '} an empty SSID is refused locally`);
+}
+await wifiCase('rejected - a field the page knows', () => page.wifiFill(wifiDoc()),
+               {error: 'at most 32 characters', field: 'ssid'}, false);
+globalThis.fetch = () => Promise.resolve({ok: true, json: () => wifiDoc()});
+await wifiCase('open the modal', () => page.openWifi(), wifiDoc(), true);
+await wifiCase('start a scan', () => page.wifiScan(),
+               {scanning: true, age_ms: 0, networks: []}, true);
+globalThis.fetch = () => Promise.reject(new Error('offline'));
+await wifiCase('device unreachable during a scan', () => page.wifiScan(), {}, false);
+await wifiCase('device unreachable during a load', () => page.wifiLoad(), {}, false);
+globalThis.fetch = () => Promise.resolve({ok: true, json: () => ({})});
 
 console.log(failures ? `\n${failures} failure(s)` : '\nall paths clean');
 process.exit(failures ? 1 : 0);

@@ -221,6 +221,15 @@ int main() {
             if (g_overflow != nullptr) printf("err %s\n", g_overflow);
             else if (wifi_sta_validate(s, &err)) printf("ok\n");
             else printf("err %s\n", err.field != nullptr ? err.field : "?");
+        } else if (strcmp(cmd, "reason_sta") == 0) {
+            // Field AND sentence, unlike validate_sta above: the field is what the
+            // page highlights and the sentence is what it prints, and a rule with no
+            // sentence is a rule the operator has to guess at.
+            const WifiStaConfig s = parse_sta(q);
+            SettingsError err{};
+            if (g_overflow != nullptr) printf("err %s|overflow\n", g_overflow);
+            else if (wifi_sta_validate(s, &err)) printf("ok\n");
+            else printf("err %s|%s\n", err.field, err.reason);
         } else if (strcmp(cmd, "reason") == 0) {
             // The sentence a UI puts under the input. Checked separately because an
             // error with no actionable text is an error nobody can fix.
@@ -1094,6 +1103,85 @@ def test_corruption_in_the_identity_record_falls_back_to_defaults(mq):
     script = ''.join(_cmd('roundtrip_identity', flip=i) + '\n'
                      for i in range(n)) + 'quit\n'
     assert all(line == 'err reject' for line in mq(script))
+
+
+def test_wifi_credentials_survive_a_reboot_exactly(mq):
+    """This is the "automatically reconnect after reboot" requirement, at the only
+    layer a host test can reach it: the bytes that go into NVS have to come back out
+    as the same credentials, character for character. A passphrase that round-trips
+    to something almost right is worse than one that fails to store - the device
+    retries forever against a network that will never accept it."""
+    # The awkward cases, all of them legal in WPA2: the maximum-length SSID, a
+    # passphrase at each end of the 8-63 range, and the punctuation that a
+    # length-free or delimiter-based encoding would eat.
+    for ssid, password in (
+            ('A' * 32, 'x' * 63),
+            ('Guest WiFi 2.4GHz', 'p@ss w0rd=with&signs'),
+            # An SSID is 32 arbitrary octets, and networks named in Khmer or with
+            # an accent are ordinary. The passphrase is a different rule and stays
+            # ASCII - see the test under this one.
+            ('café-résidence', 'longenough'),
+            ('ភ្នំពេញ-office', 'longenough'),
+            ('KDSB', 'a' * 8),
+            ('open-network', ''),
+    ):
+        got = dict(kv.split('=', 1) for kv in ok_value(
+            one(mq, 'roundtrip_wifi', sta_enabled=1, sta_ssid=ssid,
+                sta_password=password)).split('|'))
+        assert got['ssid'] == ssid, f'{ssid!r} came back as {got["ssid"]!r}'
+        assert got['password'] == (password or '-'), (
+            f'the passphrase for {ssid!r} did not survive')
+        assert got['enabled'] == '1'
+
+    # And "do not join anything" is a stored state rather than an absent record: a
+    # device told to stay access-point-only must still be that after a power cycle.
+    got = dict(kv.split('=', 1) for kv in ok_value(
+        one(mq, 'roundtrip_wifi', sta_enabled=0, sta_ssid='KDSB-Office',
+            sta_password='longenough')).split('|'))
+    assert got['enabled'] == '0'
+    assert got['ssid'] == 'KDSB-Office'
+
+
+def test_a_passphrase_outside_ascii_is_refused_with_a_reason(mq):
+    """WPA2-PSK is 8-63 characters of ASCII 32..126 - that is the standard, not a
+    shortcut. A passphrase the operator typed in another alphabet would be stored
+    happily and then rejected by the access point with a reason code that reads like
+    a wrong SSID, which is a whole evening lost. Refused at the form instead."""
+    line = one(mq, 'reason_sta', sta_enabled=1, sta_ssid='KDSB-Office',
+               sta_password='åéîøü-passphrase')
+    assert line.startswith('err sta_password|'), line
+    assert 'ascii' in line.lower(), line
+
+    # And a control character in an SSID, which would be a terminal escape sequence
+    # in the serial log rather than a network name. The rest of the byte range is
+    # accepted now, so this is the one thing left that an SSID may not contain.
+    line = one(mq, 'reason_sta', sta_enabled=1, sta_ssid='bell\x07here',
+               sta_password='longenough')
+    assert line.startswith('err sta_ssid|'), line
+    assert 'control' in line.lower(), line
+
+    # A 32-byte SSID is legal; 33 is not, and it is measured in bytes because that is
+    # what 802.11 counts - eleven Khmer characters are thirty-three bytes.
+    assert one(mq, 'reason_sta', sta_enabled=1, sta_ssid='x' * 32,
+               sta_password='longenough') == 'ok'
+
+
+def test_corruption_in_the_station_record_falls_back_to_provisioning(mq):
+    """Every single byte, flipped. A half-read passphrase is not a smaller version of
+    the right one - it is a device that will not join and cannot say why - so the
+    record is rejected whole and the device comes back up provisioning, which is the
+    state somebody can actually recover it from."""
+    n = int(ok_value(one(mq, 'roundtrip_wifi', sta_enabled=1, sta_ssid='KDSB-Office',
+                         sta_password='longenough')).split('|')[0].split('=')[1])
+    script = ''.join(
+        _cmd('roundtrip_wifi', sta_enabled=1, sta_ssid='KDSB-Office',
+             sta_password='longenough', flip=i) + '\n'
+        for i in range(n)) + 'quit\n'
+    lines = mq(script)
+    assert len(lines) == n
+    assert all(line == 'err reject' for line in lines), (
+        [f'byte {i}: {line}' for i, line in enumerate(lines)
+         if line != 'err reject'][:8])
 
 
 # --------------------------------------------------------------------------- #

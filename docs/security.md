@@ -181,9 +181,13 @@ The broker password and the Wi-Fi station password are write-only through the AP
   able to tell which account is configured without the value being readable over a
   shoulder or out of a screenshot. Below four characters nothing is kept: `a*b`
   discloses two thirds of `ab`;
+- `GET /api/wifi` follows the same rule: `password_set` and no passphrase field.
+  Selecting a different network in the scan list **clears the password box**, so the
+  passphrase for one access point is never submitted to another;
 - the device page's password boxes open **empty**, with a placeholder saying whether
   one is stored. An empty box submits nothing, which the firmware reads as "keep the
-  stored one"; erasing takes an explicit Clear button;
+  stored one"; erasing takes an explicit Clear button, or **Forget network** for the
+  Wi-Fi one;
 - nothing is logged. `board_wifi.cpp` logs the SSID and never the passphrase,
   `mqtt_publisher.cpp` logs the URI and the masked username, and the error strings it
   publishes to the page are built from `esp_err_t` names and numeric codes only. That
@@ -194,6 +198,52 @@ The broker password and the Wi-Fi station password are write-only through the AP
 `tests/test_mqtt_config.py` checks the last point by searching the whole API document
 for the secret rather than by inspecting named fields - a future field that happened
 to include the password would pass a field-by-field check and fail that one.
+
+### An SSID is 32 bytes chosen by a stranger
+
+Anybody within radio range of the device can stand up an access point and name it
+whatever they like, and that name lands in the device's own configuration page. It is
+treated as hostile input on every hop:
+
+- **into JSON**, by `settings_json_escape_utf8()`. Quotes, backslashes and control
+  bytes are escaped, and so is any byte that is not part of a well-formed UTF-8
+  sequence - as `\u00XX` rather than passed through. A raw high byte would make the
+  whole scan document undecodable, so `JSON.parse` throws and the operator sees an
+  empty network list on the one page they are using to recover the device. That is
+  the cheapest denial of service available against this feature, and it costs one
+  beacon frame;
+- **into HTML**, by the page's own `esc()`. Two different alphabets, two independent
+  defences: the firmware's escaping is for a parser and the page's is for a renderer,
+  and neither substitutes for the other;
+- **into the buffer**, by sizing it for the worst case rather than the likely one:
+  24 networks of 32 bytes that all need six characters each is about 6.3 kB, and a
+  document that does not fit produces no document at all.
+
+Control bytes are refused outright when an SSID is *stored*, because the serial log is
+a terminal and an escape sequence in a network name is not a network name.
+`tests/test_wifi_provision.py` puts a lone continuation byte, a truncated sequence, an
+overlong encoding, a surrogate half and 24 networks of `0xFF` through the real
+function and requires a document that parses.
+
+### The reset button clears Wi-Fi and only Wi-Fi
+
+A five-second hold on BOOT erases one NVS key by name from a namespace that holds
+four. The broker settings, the device and fleet identity, the CA certificate, the
+alert language and the stored captures all survive, and the device does not reboot -
+the access point, the camera and the detector keep running while it happens.
+
+There is deliberately **no factory-reset path on this button**. A physical control
+that can be triggered by an accidental press in a pocket must not be able to cost
+somebody their broker configuration, and the recovery it exists for - a saved network
+that no longer exists - needs nothing else erased.
+
+Three rules stop it firing by accident: nothing counts in the first three seconds
+after boot, a debounced **release** must be seen before any press is believed, and a
+press that never releases stops counting after thirty seconds. The middle one matters
+on this board specifically: its auto-reset lines are inverted, so opening a serial
+terminal pulls GPIO0 low - anyone with a monitor attached is, electrically, holding
+BOOT down. The watcher stays disarmed, says so once in the log, and reports it on the
+Wi-Fi card rather than going quiet.
 
 ### The fleet monitor is a page, not a service
 

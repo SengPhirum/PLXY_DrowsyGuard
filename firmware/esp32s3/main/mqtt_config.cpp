@@ -562,7 +562,9 @@ size_t mqtt_config_json(const MqttConfig &cfg, const DeviceIdentity &id,
     char remark[DEVICE_REMARK_MAX * 6 + 1];
     if (!settings_json_escape(id.remark, remark, sizeof(remark))) return 0;
     char ssid[WIFI_SSID_MAX * 6 + 1];
-    if (!settings_json_escape(sta.ssid, ssid, sizeof(ssid))) return 0;
+    // The one field in this document that did not come from a printable-ASCII
+    // validator: an SSID is 32 arbitrary octets. See settings_json_escape_utf8().
+    if (!settings_json_escape_utf8(sta.ssid, ssid, sizeof(ssid))) return 0;
     char topic_manual[MQTT_TOPIC_MAX * 6 + 1];
     if (!settings_json_escape(cfg.topic, topic_manual, sizeof(topic_manual))) return 0;
 
