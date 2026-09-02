@@ -36,10 +36,17 @@ on:
   # nothing under docs/ has to change for that to be true - so the deployment is
   # re-run when the firmware workflow finishes. Without this the installer would
   # keep offering the previous release until somebody happened to edit a page.
+  #
+  # `v*` alongside `main` is not redundant. This filter matches the *triggering* run's
+  # head_branch, and a release is published by pushing a tag - for which head_branch
+  # is the tag name, not the branch the tag points at. With `main` alone the release
+  # that the installer exists to serve would be the one release that never reached it,
+  # and the symptom would be an install page still reporting http 404 hours after a
+  # green release run.
   workflow_run:
     workflows: ["Build and publish firmware"]
     types: [completed]
-    branches: [main]
+    branches: [main, "v*"]
   workflow_dispatch:
 
 # Minimum required to publish Pages. Notably absent: `contents: write` - this

@@ -298,9 +298,30 @@ jobs:
           name: firmware-web-installer
           path: dist/firmware
 
+      # action-gh-release falls back to github.ref_name when tag_name is absent, and
+      # on the workflow_dispatch path its own `if` above allows, that ref_name is a
+      # BRANCH. The result would be a release tagged `main` - a tag nobody meant,
+      # pointing at a ref that keeps moving, and, because GitHub treats the newest
+      # non-prerelease as "latest", the thing the documentation site would then hand
+      # to every visitor's board. Named explicitly instead, and a dispatch build is
+      # marked a prerelease so it cannot become the published install.
+      - name: Decide what this release is called
+        id: name
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF#refs/tags/}" != "$GITHUB_REF" ]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=dev-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create or update the release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.name.outputs.tag }}
+          prerelease: ${{ steps.name.outputs.prerelease }}
           files: dist/firmware/*
           generate_release_notes: true
           body: |
