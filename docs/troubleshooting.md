@@ -116,12 +116,24 @@ says which:
   flag that adds it; use Chrome or Edge, or flash manually.
 
 !!! note "Publishing a build"
-    `git tag v0.1.0 && git push origin v0.1.0` on `main`. That runs
-    *Build and publish firmware*, which builds in Espressif's container at the pinned
-    IDF, checks the app fits its partition, verifies the merged image byte-for-byte
-    against its parts, validates the manifest, and creates the release. Finishing that
-    run re-triggers the documentation deployment, which picks the assets up — so the
-    install page starts working a few minutes later without anyone editing a page.
+    Either route runs *Build and publish firmware*, which builds in Espressif's
+    container at the pinned IDF, checks the app fits its partition, verifies the merged
+    image byte-for-byte against its parts, validates the manifest, and creates the
+    release. Finishing that run re-triggers the documentation deployment, which picks
+    the assets up — so the install page starts working a few minutes later without
+    anyone editing a page.
+
+    - **Push a tag:** `git tag -a v0.1.0 -m "…" && git push origin v0.1.0` on `main`.
+    - **Or from the Actions tab**, when you cannot push a tag — a fine-grained token
+      without that permission, a protected-tag ruleset, an automation environment
+      scoped to branches: *Actions → Build and publish firmware → Run workflow*, pick
+      `main`, set **version** to `v0.1.0` and tick **publish**. The release step
+      creates the tag itself at the commit it built, with the workflow's own token.
+
+    A run with **publish** ticked but **version** left blank builds a `dev-<sha>`
+    **prerelease**. That is deliberate: GitHub excludes prereleases from "latest", and
+    the documentation site serves the latest release — so an unnamed build can be
+    downloaded from the Releases page but is never offered to a visitor's board.
 
 ### The install fails part way through
 
