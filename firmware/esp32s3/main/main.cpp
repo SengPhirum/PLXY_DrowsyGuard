@@ -7,6 +7,7 @@
 
 #include "behavior.h"
 #include "board_audio.h"
+#include "board_button.h"
 #include "eye_model.h"
 #include "board_camera.h"
 #include "board_sdcard.h"
@@ -210,6 +211,28 @@ extern "C" void app_main(void) {
     over.password = sta.password;
     const bool net_up = board_wifi_init(sta_stored ? &over : nullptr);
     if (!net_up) ESP_LOGE(TAG, "Wi-Fi bring-up failed; alerts still work, preview does not");
+
+    // The way back into a device whose credentials are wrong. Started here, right
+    // after the radio, because that is the failure it exists for: a board that
+    // cannot join anything still has its access point, but a board handed to
+    // somebody whose hotspot is gone needs a way to clear the saved network without
+    // one.
+    //
+    // The callback clears the Wi-Fi record and NOTHING else - settings_clear_wifi()
+    // erases one key out of four - and then tears the association down. It does not
+    // reboot: the camera, the models, the alert path and the MQTT publisher are all
+    // running by the time somebody presses this, and restarting them to change a
+    // network setting would mean a drowsiness detector that stops detecting for six
+    // seconds because a button was held.
+    board_button_start([]() {
+        const bool cleared = settings_clear_wifi();
+        board_wifi_forget();
+        ESP_LOGW(TAG, "Wi-Fi reset by the BOOT button: credentials %s. The access "
+                      "point is still up - reconnect to it and open http://192.168.4.1/ "
+                      "to set a network. Detection, alerts and MQTT settings are "
+                      "unchanged.",
+                 cleared ? "erased" : "could not be erased (nvs unavailable)");
+    });
 
     // The identity the topics and the payload are built from. Defaulted off the
     // SoftAP name - which is MAC-derived, so it is unique per board with no

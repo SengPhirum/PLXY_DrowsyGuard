@@ -266,7 +266,7 @@ ${B}firmware${Z}
 
 ${B}device${Z}
   port               list serial ports and say which one will be used
-  wifi               how to reach the live preview from a phone
+  wifi [sub]         how to reach the board, and its network  ${DIM}status|scan|forget|reconnect${Z}
   open               open the preview in your browser
   status             pretty-print GET /api/status
   watch              poll the risk/PERCLOS line once a second
@@ -412,7 +412,88 @@ cmd_port() {
     fi
 }
 
+# Bare `wifi` is the joining instructions, read out of the header so they always
+# match what the firmware will do. The subcommands talk to a running board about the
+# *other* side of the radio - the network it joins rather than the one it serves.
+# Provisioning itself is done from the page: it needs a scan list, and a scan list is
+# not something to render in a terminal that cannot be tapped.
 cmd_wifi() {
+    local py=""
+    for c in python python3; do
+        command -v "$c" >/dev/null 2>&1 && { py="$c"; break; }
+    done
+
+    case "${1:-}" in
+        status)
+            local j; j="$(api GET /api/wifi)" \
+                || die "no answer from $HOST - join the board Wi-Fi first (./plxy.sh wifi)"
+            if [ -z "$py" ]; then echo "$j"; return 0; fi
+            # No passphrase in the response at all - see docs/security.md - so it is
+            # safe to print whole.
+            echo "$j" | "$py" -c '
+import json, sys
+d = json.load(sys.stdin)
+ap, s, b = d["ap"], d["sta"], d["button"]
+out = []
+out.append("  access point %s  %s  %d client(s)" % (ap["ssid"], ap["ip"], ap["clients"]))
+out.append("  station      %s%s" % (
+    s["state"], "  " + s["ssid"] if s["ssid"] else ""))
+if s["connected"]:
+    out.append("  address      %s  %d dBm (%d/4 bars)" % (s["ip"], s["rssi"], s["bars"]))
+if s["state"] == "failed":
+    out.append("  last failure %s (802.11 reason %d)" % (s["reason_text"], s["reason"]))
+if s["attempts"]:
+    out.append("  attempts     %d failed%s" % (
+        s["attempts"],
+        ", retrying in %.0f s" % (s["retry_ms"] / 1000.0) if s["retry_ms"] else ""))
+out.append("  stored       %s, password %s" % (
+    "yes" if s["stored"] else "no", "set" if s["password_set"] else "none"))
+out.append("  reset button GPIO%d, hold %.0f s%s" % (
+    b["gpio"], b["hold_ms"] / 1000.0,
+    "" if b["armed"] else "  - NOT ARMED (a serial monitor holds this pin low)"))
+if not d.get("nvs", True):
+    out.append("  WARNING: nvs is unavailable - nothing saved will survive a reboot")
+print("\n".join(out))'
+            ;;
+        scan)
+            [ -n "$py" ] || die "python not found"
+            api POST /api/wifi/scan >/dev/null 2>&1
+            say "scanning  ${DIM}(the board's own access point pauses for a moment)${Z}"
+            local i=0
+            while [ "$i" -lt 8 ]; do
+                sleep 1
+                i=$((i + 1))
+                api GET /api/wifi/scan 2>/dev/null | "$py" -c '
+import json, sys
+d = json.load(sys.stdin)
+if d.get("scanning") or not d.get("networks"):
+    sys.exit(1)
+for n in d["networks"]:
+    print("  %-32s %4d dBm  %d/4  ch %-3d %s" % (
+        n["ssid"], n["rssi"], n["bars"], n["channel"],
+        "open" if n["open"] else n["auth"]))' && return 0
+            done
+            warn "no results - 5 GHz and hidden networks are invisible to this radio"
+            ;;
+        forget)
+            warn "this erases the saved network. mqtt, identity and captures are untouched"
+            read -r -p "  forget the stored Wi-Fi network? [y/N] " a
+            case "$a" in
+                [yY]*) api POST /api/wifi -d action=forget >/dev/null \
+                           && ok "erased; the board is access-point-only again" ;;
+                *) echo "  skipped" ;;
+            esac
+            ;;
+        reconnect)
+            api POST /api/wifi -d action=reconnect >/dev/null \
+                && ok "retrying now rather than waiting out the backoff"
+            ;;
+        "") cmd_wifi_help ;;
+        *)  die "usage: ./plxy.sh wifi [status|scan|forget|reconnect]" ;;
+    esac
+}
+
+cmd_wifi_help() {
     local ssid pw
     ssid="$(sed -n 's/^#define WIFI_AP_SSID_PREFIX[[:space:]]*"\(.*\)".*/\1/p' \
             "$FW/main/board_wifi.h" | head -1)"
@@ -433,6 +514,15 @@ ${B}Watch the camera from your phone${Z}
 
   ${DIM}The exact SSID is printed in the boot log:  wifi: SoftAP "..." up on channel 6${Z}
   ${DIM}One live viewer at a time; a second phone gets still frames instead.${Z}
+
+${B}Joining the board to your own network${Z}
+
+  Do it from that page: ${B}Wi-Fi${Z} card > ${B}Wi-Fi settings${Z} > Scan, pick, save.
+  The access point stays up throughout, including after a wrong password, so
+  ${B}http://${HOST}/${Z} is never the thing you lose. Hold ${B}BOOT for five seconds${Z} to
+  erase the saved network from the outside - that clears Wi-Fi and nothing else.
+
+  ${DIM}From here:  ./plxy.sh wifi status | scan | reconnect | forget${Z}
 EOF
 }
 

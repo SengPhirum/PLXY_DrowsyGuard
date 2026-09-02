@@ -1,6 +1,6 @@
 # Project State
 
-Last updated: 2026-09-01
+Last updated: 2026-09-02
 Status: Scaffold and live dashboard complete. Detection reworked from whole-face
 classification to multi-cue behaviour analysis (PERCLOS + long blinks + yawn + nod,
 with sneeze suppression) after the face CNN was found to key on driver identity. The
@@ -16,9 +16,19 @@ everything downstream of the (still unbound) eye model remain unverified.
 **MQTT alerting added 2026-09-01.** Every confirmed alert is also published to a
 broker as one versioned JSON document, configured from a modal on the device page and
 persisted in NVS; the documentation site carries a live fleet dashboard that
-subscribes to it. Off by default. Builds clean against ESP-IDF v5.5.1 (2.3 MB app,
-64 % of the 6 MB partition free) and passes 155 host-compiled tests, but **no part of
-it has touched a broker on hardware** - see gap 13.
+subscribes to it. Off by default. Builds clean against ESP-IDF v5.5.5 in CI -
+3 662 000 B of the 6 291 456 B app partition, 41.8 % free, +251 kB over the pre-MQTT
+baseline - and passes 158 host-compiled tests, but **no part of it has touched a
+broker on hardware** - see gap 13.
+
+**Wi-Fi provisioning added 2026-09-02.** The board no longer needs a rebuild to join a
+network: the device page scans, joins, shows the state, IP and signal, and forgets,
+and a five-second hold on BOOT erases the stored credentials from the outside. The
+radio runs AP+STA from boot whether or not anything is stored, so the access point is
+up during a scan, during a join and after a failed one - which is what makes a wrong
+password recoverable rather than terminal. 74 host-compiled tests in
+`tests/test_wifi_provision.py`, plus the device-page harness. **Not yet exercised on
+hardware** - see gap 14.
 
 ## Locked design decisions
 - **MQTT publishing may never stall the capture loop, and the shape of the code is the
@@ -55,9 +65,30 @@ it has touched a broker on hardware** - see gap 13.
   over WebSocket itself. The page's only job is to display a driver's alertness state,
   and a CDN dependency on it means a third party can change what it does for every
   reader. It also has no `innerHTML`, and a test fails the build if one appears.
-- **The access point never comes down for MQTT.** Station mode is additive. A wrong
-  hotspot password, a dead uplink or a refused broker all degrade to "no telemetry",
-  never to "no dashboard" and never to "no alarm".
+- **The access point never comes down.** Not for MQTT, not while the radio scans, not
+  while it joins, and not when a join fails. Station mode is additive and the radio is
+  APSTA from boot. A wrong hotspot password, a dead uplink or a refused broker all
+  degrade to "no telemetry", never to "no dashboard" and never to "no alarm" - and the
+  page that fixes the password is served over the interface that cannot be lost by
+  getting the password wrong.
+- **The physical reset clears Wi-Fi and only Wi-Fi.** `settings_clear_wifi()` erases
+  one NVS key by name from a namespace that holds four, and the button hook does not
+  reboot. A control that an accidental pocket press can trigger must not be able to
+  cost somebody their broker configuration, their device identity or their captures.
+  There is no factory-reset path on this button and there should not be one.
+- **The button state machine is pure and tested, because the hazard is real.** This
+  board's auto-reset lines are inverted, so opening a serial port pulls GPIO0 low -
+  anyone with a monitor attached is electrically holding BOOT down. `ButtonWatch`
+  therefore requires a debounced *release* before it believes any press, ignores the
+  first three seconds after boot, and gives up on a pin that never rises. All three
+  rules are in `wifi_provision.cpp` with no ESP-IDF headers, and
+  `tests/test_wifi_provision.py` drives them by injected clock.
+- **An SSID is hostile input.** It is 32 bytes chosen by whoever owns the access point,
+  anybody in radio range can broadcast one, and it lands in the device's own recovery
+  page. Escaped twice in two alphabets - `settings_json_escape_utf8()` for the parser
+  (bytes that are not well-formed UTF-8 become `\u00XX`, because a raw one makes the
+  whole scan document undecodable) and the page's `esc()` for the renderer - and the
+  scan buffer is sized for the worst case rather than the likely one.
 - Target platform: ESP32-S3 with PSRAM and camera. **ESP32-S2 is ruled out**: it has no
   AI vector instructions and ESP-DL's face detection models do not support it, so the
   detector + two eye inferences per frame is not achievable. See
@@ -237,10 +268,21 @@ it has touched a broker on hardware** - see gap 13.
    versus alive. `docs/DEPLOYMENT.md` has these as tests M1-M8 with pass criteria that
    do not depend on anybody's judgement. Run M3 first and record it.
 
-   Two further things are untested by construction rather than by omission: the
-   station-mode reconnect path (`board_wifi_apply_station()` returns false on an
-   AP-only radio and the settings are then applied at the next boot), and NVS
+   One further thing is untested by construction rather than by omission: NVS
    behaviour on a partition that is genuinely full.
+
+14. **Wi-Fi provisioning has not been exercised on hardware.** As of 2026-09-02 it
+   compiles and links against ESP-IDF v5.5.5 with the real xtensa toolchain, and the
+   logic is covered by `tests/test_wifi_provision.py` (74 cases, including the button
+   state machine driven by an injected clock and hostile SSIDs through the real JSON
+   builder) and by the device-page harness. What that does **not** establish is
+   anything about a real radio: whether a scan really returns in two to three seconds
+   and really costs the detector nothing, whether the access point genuinely stays
+   associated through a scan and a failed join, whether the ESP-IDF disconnect reason
+   codes arriving from a real router match the sentences written for them, and whether
+   a five-second BOOT hold on this board behaves as the state machine assumes.
+   `docs/DEPLOYMENT.md` has these as tests W1-W11. Run W4 and W8 first: W4 is the
+   recovery guarantee and W8 is the scope guarantee.
 
 ## Next best action
 Model: get eye-state labels in the target (visible-light) domain and fine-tune the
@@ -249,6 +291,9 @@ its filenames but is infrared and needs Kaggle credentials, which are not config
 here. Confirm any result per-driver on held-out subjects, and note for the write-up
 that the highest-accuracy public drowsiness models (70-343 MB, 224x224) cannot run on
 an ESP32-S3, which is why the eye-closure route was chosen.
+Wi-Fi: run `docs/DEPLOYMENT.md` tests W1-W11, and record W2 - `fps`, `ms_detect` and
+`ms_eye` during a scan against the same three when idle. That, and W4 (a wrong
+password must leave 192.168.4.1 serving), are the two claims a host test cannot make.
 MQTT: run `docs/DEPLOYMENT.md` tests M1-M8 against a broker, in that order, and
 record M3 - `fps`, `ms_detect` and `ms_eye` with the broker dead against the same
 three with it live. That measurement is the entire safety argument for the feature and

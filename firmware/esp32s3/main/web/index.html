@@ -77,6 +77,7 @@
   .pill.w-card{min-width:112px}
   .pill.w-hold{min-width:124px}
   .pill.w-mqtt{min-width:112px}
+  .pill.w-wifi{min-width:104px}
   /* The tag row is a fixed two lines high, so a pill wrapping onto a second line
      cannot shove the preview around. */
   .tags{min-height:46px;align-content:flex-start}
@@ -211,6 +212,32 @@
                 padding-top:12px;border-top:1px solid var(--line)}
   .sheet .acts .grow{margin-left:auto}
 
+  /* Scan results. A list of buttons rather than a <select>, because the two things
+     an operator actually picks by - how strong it is and whether it is locked - do
+     not survive inside an <option>, and in a room with four access points all named
+     after the same company the SSID alone is not enough to choose from. */
+  .nets{display:flex;flex-direction:column;gap:6px;max-height:224px;overflow-y:auto;
+        overscroll-behavior:contain;margin-bottom:10px}
+  .nets button{display:flex;align-items:center;gap:9px;width:100%;text-align:left;
+               padding:8px 10px;font-size:12px;min-width:0}
+  .nets button.sel{border-color:var(--accent);color:var(--text)}
+  .nets .ssid{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+              white-space:nowrap}
+  .nets .rssi{color:var(--muted);font-size:10px;flex:none;
+              font-variant-numeric:tabular-nums}
+  /* Four bars, lit by wifi_rssi_bars() on the device so the page and the firmware
+     agree about what "two bars" means. */
+  .bars{display:inline-flex;align-items:flex-end;gap:2px;height:11px;flex:none}
+  .bars i{width:3px;background:var(--line);border-radius:1px}
+  .bars i:nth-child(1){height:3px}
+  .bars i:nth-child(2){height:6px}
+  .bars i:nth-child(3){height:8px}
+  .bars i:nth-child(4){height:11px}
+  .bars.b1 i:nth-child(-n+1){background:var(--bad)}
+  .bars.b2 i:nth-child(-n+2){background:var(--warn)}
+  .bars.b3 i:nth-child(-n+3){background:var(--ok)}
+  .bars.b4 i{background:var(--ok)}
+
 </style>
 </head>
 <body>
@@ -335,6 +362,24 @@
     </div>
 
     <div class="card">
+      <h2>Wi-Fi <span class="right pill w-wifi" id="wifiPill">wi-fi &mdash;</span></h2>
+      <div class="meta" style="grid-template-columns:1fr">
+        <div title="This device's own access point. It stays up whatever the station side is doing, which is what makes this page reachable when a saved password is wrong."><span>access point</span><span id="wifiAp">&mdash;</span></div>
+        <div><span>network</span><span id="wifiSsid">&mdash;</span></div>
+        <div><span>address</span><span id="wifiIp">&mdash;</span></div>
+        <div title="Received signal strength. Below about -75 dBm the stream stutters before the connection drops."><span>signal</span><span id="wifiRssi">&mdash;</span></div>
+      </div>
+      <div class="empty" id="wifiNote">
+        Not joined to any network. The access point above is always available, so
+        detection, alerts and this page work without one.
+      </div>
+      <div class="btns" style="margin-top:10px">
+        <button class="pri" id="wifiBtn">Wi-Fi settings</button>
+        <button id="wifiReconnectBtn">Reconnect</button>
+      </div>
+    </div>
+
+    <div class="card">
       <h2>Fleet alerting (MQTT)
         <span class="right pill w-mqtt" id="mqttPill">mqtt &mdash;</span></h2>
       <div class="meta" style="grid-template-columns:1fr">
@@ -395,6 +440,83 @@
         <div><span>captures stored</span><span id="stored">&mdash;</span></div>
         <div title="How long the seat has looked empty, and the threshold at which the device says so. Blank while the pipeline is faulty, because an absence it cannot verify is not an absence."><span>no driver for</span><span id="absentFor">&mdash;</span></div>
       </div>
+    </div>
+  </div>
+</div>
+
+<!--
+  Wi-Fi provisioning.
+
+  What this has to survive is the case it exists for: the device is joined to nothing,
+  or joined to the wrong thing, and the only way in is the access point it is serving
+  this page from. So nothing here can take the access point down, and nothing here can
+  block - a scan takes two to three seconds inside the radio, and it is started and
+  then polled rather than waited on.
+
+  The password box is write-only, the same rule as the broker credentials: the device
+  answers `password_set` and never a password, so the box opens empty and an empty box
+  means "keep what is stored".
+-->
+<div class="modal" id="wifiModal">
+  <div class="sheet">
+    <h3>Wi-Fi</h3>
+    <p class="sub">Join the device to a network so it can reach an MQTT broker, an NTP
+      server or your own machine. Detection, voice alerts, capture and this page do not
+      need one.</p>
+
+    <div class="note info">
+      <b>The DrowsyGuard access point stays up.</b> It is not switched off while the
+      device joins another network and it does not come down when that fails, so
+      <code>http://192.168.4.1/</code> remains reachable from the phone you are
+      holding &mdash; including after a wrong password. Scanning briefly interrupts
+      it: the radio has one antenna and a scan walks every channel, so this page may
+      stall for two or three seconds and then carry on.
+    </div>
+
+    <div class="btns" style="margin-bottom:10px">
+      <button class="pri" id="wfScan">Scan for networks</button>
+      <span class="empty" id="wfScanNote" style="padding:0;align-self:center">&nbsp;</span>
+    </div>
+    <div class="nets" id="wfNets"></div>
+
+    <div class="row">
+      <label class="fld" id="f_wf_ssid"><span>Network name (SSID)</span>
+        <input id="wfSsid" autocomplete="off" spellcheck="false"
+               placeholder="pick one above, or type it">
+        <span class="hint">A hidden network can be typed in; the scan does not list
+          one because it does not broadcast its name. Up to 32 bytes &mdash; a name
+          in Khmer or with an accent costs two or three bytes per character.</span>
+      </label>
+      <label class="fld" id="f_wf_password"><span>Password</span>
+        <input id="wfPass" type="password" autocomplete="new-password">
+        <span class="hint">8 to 63 characters, or blank for an open network. Leave it
+          alone to keep the stored one.</span>
+      </label>
+    </div>
+    <label class="chk"><input type="checkbox" id="wfOpen">
+      <span>This network is open (no password)</span></label>
+
+    <div class="note info" id="wifiResult" hidden></div>
+
+    <h3 style="margin-top:14px">Status</h3>
+    <div class="meta" style="grid-template-columns:1fr">
+      <div><span>state</span><span id="wfState">&mdash;</span></div>
+      <div><span>network</span><span id="wfNet">&mdash;</span></div>
+      <div><span>address</span><span id="wfIp">&mdash;</span></div>
+      <div><span>signal</span><span id="wfRssi">&mdash;</span></div>
+      <div><span>failed attempts</span><span id="wfTries">&mdash;</span></div>
+      <div title="GPIO0, the BOOT button. Not armed means something is holding it down - usually a serial adapter, whose auto-reset line pulls that pin low the moment a terminal is opened."><span>reset button</span><span id="wfButton">&mdash;</span></div>
+    </div>
+    <p class="sub" style="margin:8px 0 0">Credentials are stored in the settings
+      partition and rejoined automatically after a reboot. Holding the BOOT button for
+      five seconds erases them and nothing else &mdash; the broker settings, the
+      detector and the stored captures are untouched.</p>
+
+    <div class="acts">
+      <button class="pri" id="wfConnect">Save and connect</button>
+      <button id="wfReconnect">Reconnect now</button>
+      <button id="wfForget">Forget network</button>
+      <button class="grow" id="wfClose">Close</button>
     </div>
   </div>
 </div>
@@ -557,18 +679,15 @@
       subscription that covers every device, and the status topic. Paste the middle
       one into the documentation&rsquo;s fleet monitor.</p>
 
-    <h3 style="margin-top:14px">Wi-Fi station</h3>
-    <p class="sub">The access point stays up whatever happens here, so a wrong
-      password costs you the broker and never the dashboard. A broker on the internet
-      needs this: the device&rsquo;s own access point has no route off itself.</p>
-    <label class="chk"><input type="checkbox" id="mqStaEnabled">
-      <span>Also join an existing network</span></label>
-    <div class="row">
-      <label class="fld" id="f_sta_ssid"><span>Network name (SSID)</span>
-        <input id="mqStaSsid" autocomplete="off" spellcheck="false"></label>
-      <label class="fld" id="f_sta_password"><span>Network password</span>
-        <input id="mqStaPass" type="password" autocomplete="new-password"></label>
-    </div>
+    <!--
+      The Wi-Fi station fields used to live here. They now have their own card and
+      their own modal, because two forms writing one NVS record meant that saving the
+      broker from a page left open since before a network change would quietly put
+      the old SSID back. One record, one owner.
+    -->
+    <p class="sub" style="margin-top:14px">A broker on the internet needs the device
+      joined to a network: its own access point has no route off itself. That is set
+      up under <b>Wi-Fi settings</b> on the dashboard, not here.</p>
 
     <div class="note info" id="mqttResult" hidden></div>
 
@@ -1002,6 +1121,329 @@ $('clearBtn').onclick = async () => {
   loadHistory();
 };
 
+// --- Wi-Fi provisioning ----------------------------------------------------
+// Four calls, all of them short: GET /api/wifi for state, POST /api/wifi to connect
+// or to forget or to retry, POST /api/wifi/scan to start a scan, GET /api/wifi/scan
+// to collect it.
+//
+// The scan is polled rather than awaited, because the device does not block on it
+// either: the POST returns as soon as the radio accepts the request and the results
+// arrive two to three seconds later. Polling here mirrors that instead of hiding it.
+//
+// The password rule matches the broker's: the device answers `password_set` and never
+// a password, so the box opens empty and an empty box means keep. This page never
+// holds a credential it did not just take from the operator's keyboard.
+let wifiState = null;
+let wifiScanTimer = 0;
+let wifiSelected = null;      // the scan row the operator tapped, if any
+
+function wifiResult(text, kind) {
+  const n = $('wifiResult');
+  n.textContent = text;
+  n.className = 'note ' + (kind || 'info');
+  n.hidden = !text;
+}
+
+function barsHtml(n) {
+  const k = Math.max(0, Math.min(4, Number(n) || 0));
+  return `<span class="bars b${k}"><i></i><i></i><i></i><i></i></span>`;
+}
+
+// Every SSID on this page goes through here. An SSID is 32 bytes chosen by whoever
+// owns the access point, and one of them is `<img onerror=...>`; the firmware escapes
+// it for JSON, which is a different job from escaping it for HTML.
+function esc(s) {
+  return String(s === undefined || s === null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+}
+
+function wifiRenderNets(j) {
+  const box = $('wfNets');
+  const nets = (j && j.networks) || [];
+  const scanning = !!(j && j.scanning);
+  $('wfScanNote').textContent = scanning
+      ? 'Scanning… this page may pause for a moment.'
+      : nets.length ? `${nets.length} network(s), strongest first`
+                    : 'No scan yet.';
+  $('wfScan').disabled = scanning;
+  if (!nets.length) {
+    box.innerHTML = '';
+    return;
+  }
+  // Built as one string rather than appended row by row: the list is redrawn on every
+  // poll while a scan is running, and 24 separate insertions per second is how a
+  // phone browser starts dropping frames on a page that is also decoding MJPEG.
+  box.innerHTML = nets.map((n, i) =>
+      `<button type="button" data-i="${i}">`
+      + barsHtml(n.bars)
+      + `<span class="ssid">${esc(n.ssid)}</span>`
+      + `<span class="rssi">${n.open ? '' : '\u{1f512} '}${Number(n.rssi) || 0} dBm`
+      + `</span></button>`).join('');
+  Array.prototype.forEach.call(box.querySelectorAll('button'), b => {
+    b.onclick = () => {
+      const n = nets[Number(b.dataset.i)];
+      if (!n) return;
+      wifiSelected = n;
+      $('wfSsid').value = n.ssid;
+      $('wfOpen').checked = !!n.open;
+      // A password box left holding the last network's passphrase is how an operator
+      // sends the wrong secret to the wrong access point.
+      $('wfPass').value = '';
+      $('wfPass').placeholder = n.open ? 'not needed — open network' : '';
+      Array.prototype.forEach.call(box.querySelectorAll('button'),
+                                   o => o.classList.toggle('sel', o === b));
+      wifiResult(n.open
+          ? 'Open network selected. Anything the device sends over it is readable by '
+            + 'anyone in range — use TLS for the broker.'
+          : `Selected ${n.ssid}. Enter its password, then Save and connect.`,
+          n.open ? 'warn' : 'info');
+    };
+  });
+}
+
+async function wifiScanPoll() {
+  try {
+    const res = await fetch('/api/wifi/scan', {cache: 'no-store'});
+    const j = await res.json();
+    wifiRenderNets(j);
+    if (j.scanning) {
+      wifiScanTimer = setTimeout(wifiScanPoll, 700);
+    } else {
+      wifiScanTimer = 0;
+      if (!(j.networks || []).length) {
+        wifiResult('No networks found. 5 GHz networks are invisible to this radio — '
+                   + 'it is 2.4 GHz only — and so are hidden ones, which can be typed '
+                   + 'in by hand.', 'warn');
+      }
+    }
+  } catch (e) {
+    wifiScanTimer = 0;
+    $('wfScan').disabled = false;
+    $('wfScanNote').textContent = 'The device did not answer.';
+  }
+}
+
+async function wifiScan() {
+  if (wifiScanTimer) return;
+  $('wfScan').disabled = true;
+  $('wfScanNote').textContent = 'Scanning…';
+  try {
+    const res = await fetch('/api/wifi/scan', {method: 'POST'});
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      // 409: the radio is busy associating. Not an error to report, a moment to wait.
+      $('wfScan').disabled = false;
+      $('wfScanNote').textContent = j.error || 'The radio is busy — try again.';
+      return;
+    }
+  } catch (e) {
+    $('wfScan').disabled = false;
+    $('wfScanNote').textContent = 'The device did not answer.';
+    return;
+  }
+  wifiScanTimer = setTimeout(wifiScanPoll, 900);
+}
+
+// Fills both the modal's status block and, through renderWifiCard, the dashboard card.
+function wifiFill(j) {
+  wifiState = j;
+  const s = (j && j.sta) || {};
+  const ap = (j && j.ap) || {};
+  const b = (j && j.button) || {};
+
+  setText('wfState', s.state === 'connected' ? 'connected'
+      : s.state === 'connecting' ? 'connecting…'
+      : s.state === 'failed' ? `not connected — ${s.reason_text || 'unknown reason'}`
+      : s.stored ? 'idle' : 'no network saved');
+  setText('wfNet', s.ssid || (s.stored ? '—' : 'none saved'));
+  setText('wfIp', s.connected ? s.ip : '—');
+  setText('wfRssi', s.connected ? `${s.rssi} dBm` : '—');
+  setText('wfTries', s.attempts
+      ? `${s.attempts}${s.retry_ms ? `, retrying in ${Math.ceil(s.retry_ms / 1000)} s`
+                                   : ''}`
+      : 'none');
+  setText('wfButton', b.armed ? `GPIO${b.gpio}, hold ${(b.hold_ms || 5000) / 1000} s`
+                              : `GPIO${b.gpio} — not armed (held down?)`);
+
+  // The SSID field follows the device only while the operator has not typed into it,
+  // and never overwrites a scan selection.
+  if (!wifiSelected && document.activeElement !== $('wfSsid')) {
+    $('wfSsid').value = s.ssid || '';
+  }
+  $('wfPass').placeholder = s.password_set ? 'stored — leave blank to keep'
+                                           : (s.stored ? 'none stored' : '');
+  $('wfForget').disabled = !s.stored;
+  $('wfReconnect').disabled = !s.stored;
+  if (j && j.nvs === false) {
+    wifiResult('The settings partition is unavailable, so anything saved here will be '
+               + 'lost on the next reboot.', 'warn');
+  } else if (s.auth_failed) {
+    wifiResult(`The password for “${s.ssid}” was refused. Retype it and save again; `
+               + 'the access point is unaffected either way.', 'bad');
+  }
+  renderWifiCard({ap: ap, sta: s});
+}
+
+async function wifiLoad() {
+  try {
+    const res = await fetch('/api/wifi', {cache: 'no-store'});
+    if (!res.ok) throw new Error(res.status);
+    wifiFill(await res.json());
+    return true;
+  } catch (e) {
+    wifiResult('The device did not answer the Wi-Fi request.', 'bad');
+    return false;
+  }
+}
+
+// One POST for all three actions. `extra` carries action=forget or action=reconnect;
+// without it this is a connect built from the two boxes.
+async function wifiPost(extra, saying) {
+  ['f_wf_ssid', 'f_wf_password'].forEach(id => $(id).classList.remove('bad'));
+  wifiResult(saying, 'info');
+  const f = Object.assign({}, extra || {});
+  if (!extra) {
+    f.ssid = $('wfSsid').value.trim();
+    if ($('wfOpen').checked) f.open = 1;
+    // Only sent when non-empty. That is what makes "leave blank to keep" work, and
+    // it is also why an open network needs the explicit tick rather than an empty box.
+    else if ($('wfPass').value) f.password = $('wfPass').value;
+  }
+  let res, j;
+  try {
+    res = await fetch('/api/wifi', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: Object.entries(f).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&'),
+    });
+    j = await res.json();
+  } catch (e) {
+    wifiResult('The device did not answer. The access point is served by the same '
+               + 'radio it is reconfiguring, so give it a few seconds and reopen '
+               + 'this.', 'warn');
+    return false;
+  }
+  if (!res.ok) {
+    if (j && j.field) {
+      const e = $('f_wf_' + j.field);
+      if (e) e.classList.add('bad');
+    }
+    wifiResult((j && j.error) || 'Rejected.', 'bad');
+    return false;
+  }
+  wifiFill(j);
+  $('wfPass').value = '';
+  return true;
+}
+
+async function openWifi() {
+  $('wifiModal').classList.add('show');
+  wifiResult('', 'info');
+  wifiSelected = null;
+  return wifiLoad();
+}
+$('wifiBtn').onclick = openWifi;
+$('wfClose').onclick = () => {
+  $('wifiModal').classList.remove('show');
+  if (wifiScanTimer) { clearTimeout(wifiScanTimer); wifiScanTimer = 0; }
+};
+$('wifiModal').onclick = e => { if (e.target === $('wifiModal')) $('wfClose').onclick(); };
+$('wfScan').onclick = wifiScan;
+$('wfOpen').onchange = () => {
+  if ($('wfOpen').checked) $('wfPass').value = '';
+  $('wfPass').disabled = $('wfOpen').checked;
+};
+$('wfSsid').addEventListener('input', () => { wifiSelected = null; });
+
+$('wfConnect').onclick = async () => {
+  const ssid = $('wfSsid').value.trim();
+  if (!ssid) {
+    $('f_wf_ssid').classList.add('bad');
+    wifiResult('Pick a network from the scan, or type its name.', 'bad');
+    return;
+  }
+  if (await wifiPost(null, `Saving and joining “${ssid}”…`)) {
+    const s = (wifiState && wifiState.sta) || {};
+    wifiResult(s.connected
+        ? `Connected to ${s.ssid} at ${s.ip}.`
+        : 'Saved. The device is joining now — this can take ten seconds, and the '
+          + 'status above updates as it goes. The access point stays up either way.',
+        'info');
+    logLine('wi-fi credentials saved', '');
+    poll();
+  }
+};
+$('wfReconnect').onclick = async () => {
+  if (await wifiPost({action: 'reconnect'}, 'Retrying…')) {
+    wifiResult('Retrying now rather than waiting out the backoff.', 'info');
+  }
+};
+// Two confirmations' worth of consequence in one sentence, because this is the button
+// that strands a device on a bench three floors away.
+$('wfForget').onclick = async () => {
+  const s = (wifiState && wifiState.sta) || {};
+  if (!confirm(`Erase the saved credentials for “${s.ssid || 'this network'}”?\n\n`
+               + 'The device will stop joining it, now and after a reboot. Its own '
+               + 'access point and this page are unaffected, and the broker, detector '
+               + 'and stored captures are untouched.')) return;
+  if (await wifiPost({action: 'forget'}, 'Erasing…')) {
+    $('wfSsid').value = '';
+    wifiSelected = null;
+    wifiResult('Erased. The device is back to access-point-only until a network is '
+               + 'saved here.', 'info');
+    logLine('wi-fi credentials erased', '');
+    poll();
+  }
+};
+$('wifiReconnectBtn').onclick = async () => {
+  await openWifi();
+  await $('wfReconnect').onclick();
+};
+
+// The dashboard card. Fed from two places - the modal's own document, and the compact
+// `net` object in /api/status - so the pill is honest between visits to the modal.
+function renderWifiCard(j) {
+  const s = (j && j.sta) || {};
+  const ap = (j && j.ap) || {};
+  if (ap.ssid) setText('wifiAp', `${ap.ssid} · ${ap.ip || '192.168.4.1'}`);
+  const state = s.state || 'disabled';
+  const cls = state === 'connected' ? 'ok'
+      : state === 'connecting' ? 'info'
+      : state === 'failed' ? 'warn' : '';
+  setPill('wifiPill', state === 'connected' ? 'wi-fi joined'
+      : state === 'connecting' ? 'wi-fi joining'
+      : state === 'failed' ? 'wi-fi failed' : 'ap only', cls);
+  setText('wifiSsid', s.ssid || (s.stored || s.connected ? '—' : 'none saved'));
+  setText('wifiIp', s.connected ? s.ip : '—');
+  setText('wifiRssi', s.connected
+      ? `${s.rssi} dBm (${'▮'.repeat(Math.max(0, Math.min(4, s.bars || 0)))
+                          || 'weak'})`
+      : '—');
+  const note = $('wifiNote');
+  // The status poll knows the state but not the name — so every sentence here has to
+  // read correctly with the name missing, which is what the first half-second after a
+  // reload looks like.
+  const named = s.ssid ? `“${s.ssid}”` : 'the saved network';
+  if (state === 'connected') {
+    note.textContent = `Joined ${named}. The access point is still up alongside it.`;
+    note.style.color = 'var(--ok)';
+  } else if (state === 'connecting') {
+    note.textContent = `Joining ${named}…`;
+    note.style.color = 'var(--muted)';
+  } else if (state === 'failed') {
+    note.textContent = (s.reason_text ? `${named}: ${s.reason_text}`
+                                      : `Not connected to ${named}`)
+        + (s.retry_ms ? ` — retrying in ${Math.ceil(s.retry_ms / 1000)} s` : '')
+        + '. The access point and this page are unaffected.';
+    note.style.color = 'var(--warn)';
+  } else {
+    note.textContent = 'Not joined to any network. The access point above is always '
+        + 'available, so detection, alerts and this page work without one.';
+    note.style.color = 'var(--muted)';
+  }
+}
+
 // --- MQTT settings ---------------------------------------------------------
 // One fetch of GET /api/mqtt fills the modal; one POST of a form-encoded body saves
 // it. The device is the authority on every value here, so the modal is populated from
@@ -1105,11 +1547,6 @@ function mqttFill(j) {
       : 'Leave blank to verify against the root certificate bundle in flash, which is '
         + 'what the public broker needs. Paste one root certificate for a private '
         + 'broker — not a chain, and never a private key.');
-  const sta = c.sta || {};
-  mqCheck('mqStaEnabled', sta.enabled);
-  mqSet('mqStaSsid', sta.ssid);
-  mqSet('mqStaPass', '');
-  $('mqStaPass').placeholder = sta.password_set ? 'stored — leave blank to keep' : 'none';
   mqttRefreshTopics();
 }
 
@@ -1137,7 +1574,7 @@ function mqttResult(text, kind) {
 function mqttClearMarks() {
   ['transport', 'protocol', 'host', 'port', 'ws_path', 'client_id', 'username',
    'password', 'qos', 'keepalive', 'topic_mode', 'topic', 'device_id', 'fleet_id',
-   'remark', 'ca_cert', 'sta_ssid', 'sta_password'].forEach(f => {
+   'remark', 'ca_cert'].forEach(f => {
     const e = $('f_' + f);
     if (e) e.classList.remove('bad');
   });
@@ -1163,14 +1600,11 @@ function mqttBody(extra) {
     device_id: $('mqDeviceId').value.trim(),
     fleet_id: $('mqFleetId').value.trim(),
     remark: $('mqRemark').value,
-    sta_enabled: $('mqStaEnabled').checked ? 1 : 0,
-    sta_ssid: $('mqStaSsid').value,
   };
   if ($('mqTopicMode').value === 'manual') f.topic = $('mqTopic').value.trim();
   // Only sent when non-empty, which is what makes "leave blank to keep" work.
   if ($('mqUser').value) f.username = $('mqUser').value;
   if ($('mqPass').value) f.password = $('mqPass').value;
-  if ($('mqStaPass').value) f.sta_password = $('mqStaPass').value;
   if ($('mqCa').value.trim()) f.ca_cert = $('mqCa').value;
   Object.assign(f, extra || {});
   return Object.entries(f)
@@ -1210,7 +1644,6 @@ async function mqttSave(extra) {
       'info');
   // Blank the credential boxes again: they were only ever holding what was typed.
   mqSet('mqPass', '');
-  mqSet('mqStaPass', '');
   mqSet('mqCa', '');
   logLine('mqtt settings saved', '');
   poll();
@@ -1405,6 +1838,24 @@ function render(s) {
   const netText = `${s.net.ssid} \u00b7 ${s.net.ip}` +
       (s.net.sta ? ` \u00b7 ${s.net.sta_ip} (${s.net.rssi} dBm)` : '');
   setText('net', netText);
+  // /api/status deliberately carries no SSID for the station side and no credentials -
+  // it is the document a screenshot of this page shows. The card therefore takes the
+  // state, the address and the signal from here, and the network name from whatever
+  // the last /api/wifi answered, which is why it is not blanked when absent.
+  renderWifiCard({
+    ap: {ssid: s.net.ssid, ip: s.net.ip},
+    sta: {
+      state: s.net.sta_state || (s.net.sta ? 'connected' : 'disabled'),
+      ssid: (wifiState && wifiState.sta && wifiState.sta.ssid) || '',
+      connected: !!s.net.sta,
+      ip: s.net.sta_ip,
+      rssi: s.net.rssi,
+      bars: s.net.sta_bars,
+      retry_ms: s.net.sta_retry_ms,
+      reason_text: (wifiState && wifiState.sta && wifiState.sta.reason_text) || '',
+      stored: !!(wifiState && wifiState.sta && wifiState.sta.stored),
+    },
+  });
 
   // alert banner
   const b = $('banner');
@@ -1723,6 +2174,10 @@ loadHistory();
 // come from the settings document rather than the 2 Hz poll. Re-fetched whenever the
 // modal opens or a save lands.
 mqttLoad();
+// Same reasoning for the Wi-Fi card: /api/status deliberately carries no station
+// SSID - it is the document a screenshot of this page shows - so the network name has
+// to come from here. Re-fetched whenever the modal opens or an action lands.
+wifiLoad();
 // 500 ms, not 300. The sparkline spans two minutes either way, nothing on the
 // page is actionable at a third of a second, and each poll is a JSON build on a
 // device that would rather be running inference.

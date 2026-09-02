@@ -93,6 +93,26 @@ Each of these has a pass criterion that does not depend on anybody's judgement:
 M3 is the one to run first and the one to record. It is the whole safety argument:
 `fps`, `ms_detect` and `ms_eye` must be the same with a dead broker as with a live one.
 
+### Acceptance tests for Wi-Fi provisioning
+
+| # | Test | Pass |
+| --- | --- | --- |
+| W1 | First boot on an erased NVS | the access point comes up, the Wi-Fi card reads `ap only`, and `GET /api/wifi` reports `sta.stored: false`. Detection and alerts run |
+| W2 | Scan from the page | `POST /api/wifi/scan` returns immediately; results appear within ~3 s, strongest first, no duplicate SSIDs, no unnamed rows. **`fps` in the log line does not change** |
+| W3 | Save a correct password | `sta.state` reaches `connected` within 15 s and `sta.ip` is a real address. The access point never dropped: the page stayed open throughout |
+| W4 | Save a wrong password | `sta.state` is `failed`, `auth_failed` is `true`, `reason_text` names the passphrase, and `retry_ms` counts down. **`192.168.4.1` is still serving this page** — that is the requirement, not a side effect |
+| W5 | Power-cycle after W3 | it rejoins with no interaction: `sta.state` is `connected` and `sta.ssid` is what was saved |
+| W6 | Take the network away while joined | `sta.state` goes to `failed`, attempts climb, and the backoff doubles to a 60 s ceiling. Bring it back: it rejoins without a reboot |
+| W7 | **Forget network** on the page | `sta.stored` and `password_set` both go `false`; after a power cycle it is still forgotten. `GET /api/mqtt` is unchanged — same host, same topics, same `password_set` |
+| W8 | Hold BOOT for five seconds | the log warns at 2 s and erases at 5 s; the device does **not** reboot, the stream keeps running, and `/api/mqtt` is again unchanged |
+| W9 | Tap BOOT briefly, and hold it during the first three seconds after reset | nothing is erased in either case (`BOOT released - nothing was changed`, or silence) |
+| W10 | Attach a serial monitor and hold BOOT | `button.armed` is `false` and nothing is erased — the inverted auto-reset lines hold GPIO0 low, and the watcher refuses a press it never saw begin |
+| W11 | `GET /api/wifi` and search the response | no passphrase anywhere in it |
+
+W4 and W8 are the two to record. W4 is the recovery guarantee — a wrong password must
+never cost the dashboard — and W8 is the scope guarantee: the physical reset clears
+the network and nothing else.
+
 ## Hardware acceptance tests
 - Camera initializes 100 consecutive boots.
 - No heap exhaustion after 1 hour.

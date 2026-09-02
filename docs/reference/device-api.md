@@ -43,7 +43,7 @@ returns **500** rather than letting the page parse half an object.
 | `geom` | `valid`, `roll`, `jaw_drop`, `nose_frac`, `nose_norm`, `mouth_ratio`, `eye_dist` |
 | `alert` | `active`, `text`, `reason`, `count`, `muted`, `lang`, `lang_stored`, `counts{…}`, `clips{…}` |
 | `stream` | `viewers`, `quality`, `fps`, `port` |
-| `net` | `ssid`, `ip`, `clients`, `sta`, `sta_ip`, `rssi` |
+| `net` | `ssid`, `ip`, `clients`, `sta`, `sta_ip`, `rssi`, `sta_state`, `sta_bars`, `sta_retry_ms`, `button_armed` |
 | `image` | `luma`, `min`, `max`, `peak` |
 | `mem` | `heap`, `psram` |
 | `card` | `mounted`, `events`, `free_mb`, `stored` |
@@ -273,8 +273,11 @@ holding the secret.
 | `topic` | manual mode only. No `+` or `#`, no leading `$` or `/`, no empty levels |
 | `device_id`, `fleet_id` | lowercase letters, digits, `-`, `_`, `.`; must start and end alphanumeric |
 | `remark` | printable ASCII, ≤ 47 chars. Escaped, not restricted — quotes and backslashes are fine |
-| `sta_enabled`, `sta_ssid`, `sta_password` | Wi-Fi station. `clear_sta_password=1` erases |
 | `preset` | `emqx` loads the public broker's host, path and default port |
+
+Station credentials are **not** here. They were until the Wi-Fi card got its own form;
+two endpoints writing one NVS record meant a broker save from a stale page put the old
+SSID back, silently. See [`POST /api/wifi`](#post-apiwifi).
 
 Everything is validated **before anything is applied**, whether or not `enabled` is
 set — so switching publishing on can never fail on a field filled in three screens
@@ -291,12 +294,6 @@ On success the response is the same document as `GET`. A value that would have t
 **truncated** to fit is refused rather than stored short: a hostname silently cut at 95
 characters resolves to nothing, and the operator then sees a connection error instead
 of the field they got wrong.
-
-Station credentials are applied without a reboot when the radio came up in AP+STA
-mode. When it came up access-point-only there is no station interface to configure, so
-they are persisted and take effect on the next boot — creating one after
-`esp_wifi_start()` is not something ESP-IDF supports cleanly, and a half-applied radio
-change on the device that is also serving the page is not a trade worth making.
 
 ```bash
 curl -X POST http://192.168.4.1/api/mqtt \
@@ -322,6 +319,102 @@ fall asleep.
 ```
 
 **409** when publishing is disabled, with `queued: false`.
+
+### `GET /api/wifi`
+
+Where the station side is, why it is not somewhere else, and whether the reset button
+would do anything. No credentials: `password_set` is a boolean, and there is nowhere
+in the document to put a passphrase.
+
+```json
+{"ap": {"ssid": "DrowsyGuard-A1B2C3", "ip": "192.168.4.1", "clients": 1, "up": true},
+ "sta": {"state": "connected", "ssid": "KDSB-Office", "stored": true,
+         "connected": true, "ip": "10.0.0.42", "rssi": -58, "bars": 4,
+         "attempts": 0, "retry_ms": 0, "reason": 0, "reason_text": "",
+         "password_set": true, "auth_failed": false},
+ "button": {"gpio": 0, "armed": true, "held_ms": 0, "hold_ms": 5000},
+ "nvs": true}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `ap` | the device's own access point, which is up in every one of these states |
+| `sta.state` | `disabled`, `idle`, `connecting`, `connected`, `failed` |
+| `sta.ssid` | the network the radio is **configured for**, which is a different question from whether it joined |
+| `sta.stored` | credentials are in NVS and will be rejoined at the next boot |
+| `sta.bars` | 0–4, from the same thresholds the page draws (`-55` / `-67` / `-75` / `-85` dBm) |
+| `sta.attempts` | failures since the last success |
+| `sta.retry_ms` | remaining backoff. A device waiting 60 s is not a device that gave up |
+| `sta.reason` / `reason_text` | the 802.11 reason code and a sentence for it. `15` is the wrong passphrase; `201` is no such network in range |
+| `sta.auth_failed` | the reason code was an authentication failure, so the page can say "retype the password" rather than "not connected" |
+| `button.armed` | the BOOT watcher has seen a release and would act on a hold. **False with a serial monitor attached**: this board's reset lines are inverted, so opening a port pulls GPIO0 low |
+| `nvs` | the settings partition is usable. `false` means anything saved is lost at the next boot |
+
+### `POST /api/wifi`
+
+Form-encoded, like `/api/mqtt`, and the same partial-update rule: **an empty
+`password` keeps the stored one**, so the page can submit the form without ever having
+held the secret.
+
+| Field | Values |
+| --- | --- |
+| `action` | `forget` or `reconnect`. Without it the body is a connect |
+| `ssid` | ≤ 32 **bytes**. Any byte except a control character — 802.11 says an SSID is 32 arbitrary octets, so a name in Khmer or with an accent is fine and costs two or three bytes per character |
+| `password` | 8–63 characters of ASCII, which is what WPA2-PSK allows. Sent only when non-empty |
+| `open` | `1` for a network with no passphrase. **Explicit rather than inferred**, so the stored passphrase from the last network is never handed to an access point anybody can stand up |
+
+`action=forget` erases the credentials from NVS and blanks the radio's copy, in that
+order — a reset interrupted between the two comes back provisioning rather than
+rejoining the network somebody just asked it to forget. It touches **nothing else**:
+the broker settings, the device identity, the CA certificate and the stored captures
+survive, and the access point does not blink.
+
+`action=reconnect` retries now instead of waiting out the backoff.
+
+The response is the same document as `GET`. A rejection is **400** with the field
+named (`ssid` or `password`), so the page highlights the input.
+
+```bash
+curl -X POST http://192.168.4.1/api/wifi \
+  --data-urlencode ssid=KDSB-Office \
+  --data-urlencode 'password=correct horse battery'
+
+curl -X POST http://192.168.4.1/api/wifi --data-urlencode action=forget
+```
+
+### `GET /api/wifi/scan`
+
+The last scan, and whether one is running. Never blocks: a scan takes two to three
+seconds inside the radio, and this returns whatever the previous one found.
+
+```json
+{"scanning": false, "age_ms": 1200,
+ "networks": [{"ssid": "KDSB-Office", "rssi": -46, "bars": 4, "channel": 6,
+               "auth": "wpa2", "open": false}]}
+```
+
+Strongest first, de-duplicated by SSID (a mesh answers on several channels), hidden
+networks dropped — one with no name in its beacon cannot be picked from a list, and
+its SSID has to be typed in anyway. At most 24.
+
+SSIDs are escaped twice on the way here, in two different alphabets: by the firmware
+for JSON and by the page for HTML. An SSID is 32 bytes chosen by whoever owns the
+access point and anybody in radio range can broadcast one, so bytes that are not valid
+UTF-8 are escaped as `\u00XX` rather than passed through — a raw high byte would make
+the whole document undecodable, and the operator would see an empty list on the one
+page they are using to recover the device.
+
+### `POST /api/wifi/scan`
+
+Starts a scan and returns immediately with `{"scanning": true}`; poll the `GET` for
+results. **409** when a scan is already running or the radio is mid-association —
+a state to retry, not an error to report.
+
+!!! warning "A scan interrupts the access point"
+    One radio, one antenna, and a scan walks every channel. The page stalls for two or
+    three seconds and then carries on. Nothing is disconnected, and the camera, the
+    detector and the alert path are untouched — they run on the other core and never
+    wait on the radio.
 
 ### The alert payload { #the-alert-payload }
 

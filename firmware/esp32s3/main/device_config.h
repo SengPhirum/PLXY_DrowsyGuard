@@ -104,6 +104,25 @@ size_t settings_slug(const char *in, char *out, size_t out_cap);
 // quotes in the remark - moves the problem onto the operator for no gain.
 bool settings_json_escape(const char *s, char *out, size_t out_cap);
 
+// The same thing for text that did NOT come from a validator.
+//
+// An SSID is 0-32 arbitrary octets chosen by whoever owns the access point, and
+// anybody in radio range of this device can broadcast one. settings_json_escape()
+// passes bytes >= 0x80 through untouched, which is correct for the fields it was
+// written for - they are all validated to printable ASCII first - and wrong here: a
+// high byte that is not part of a well-formed UTF-8 sequence makes the whole document
+// undecodable, so the page's JSON.parse throws and the operator sees an empty scan
+// list on the one page they are using to recover the device.
+//
+// So: well-formed UTF-8 passes through, and a network really called "cafe" with an
+// accent reads as itself. Anything else - a lone continuation byte, a truncated
+// sequence, an overlong encoding, a surrogate half - is escaped byte by byte as
+// \u00XX, which is always valid JSON and always renders something.
+//
+// Same contract as settings_json_escape otherwise: 6 bytes of output per input byte
+// in the worst case, and false when the escaped form did not fit.
+bool settings_json_escape_utf8(const char *s, char *out, size_t out_cap);
+
 // Copies at most out_cap-1 bytes and always NUL-terminates. Returns false when the
 // input had to be truncated, which every caller treats as a validation failure
 // rather than silently storing half a hostname.

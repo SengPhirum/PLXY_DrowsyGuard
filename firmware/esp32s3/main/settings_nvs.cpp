@@ -122,6 +122,26 @@ bool settings_save_wifi(const WifiStaConfig &sta) {
     return write_blob(KEY_WIFI, buf, n);
 }
 
+bool settings_clear_wifi() {
+    if (!s_ready) return false;
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return false;
+    esp_err_t err = nvs_erase_key(h, KEY_WIFI);
+    if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;   // already absent is success
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "erase \"%s\": %s", KEY_WIFI, esp_err_to_name(err));
+        return false;
+    }
+    // Named explicitly, because the whole point of this function is what it does not
+    // do, and a log line that says so is what somebody reads after pressing the
+    // button by accident.
+    ESP_LOGW(TAG, "station credentials erased; mqtt, device identity and the CA "
+                  "certificate are untouched");
+    return true;
+}
+
 // --- mqtt ------------------------------------------------------------------
 bool settings_load_mqtt(MqttConfig *out) {
     if (out == nullptr) return false;

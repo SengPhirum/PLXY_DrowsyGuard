@@ -153,7 +153,11 @@ Run `./plxy.sh help` for the same list in the terminal.
 | Command | Does |
 | --- | --- |
 | `port` (`ports`) | list serial ports, say which will be used |
-| `wifi` | print SSID, password and URL |
+| `wifi` | print the SoftAP SSID, password and URL, and how to join the board to a network |
+| `wifi status` | the station side: state, address, signal, failures, and whether the reset button is armed |
+| `wifi scan` | list nearby networks. The board's own access point pauses for a moment while it looks |
+| `wifi reconnect` | retry now instead of waiting out the backoff |
+| `wifi forget` | erase the saved network, after a confirmation. Nothing else is touched |
 | `open` | open the preview in a browser |
 | `status` | pretty-print `GET /api/status` |
 | `watch` | poll the risk/PERCLOS line once a second |

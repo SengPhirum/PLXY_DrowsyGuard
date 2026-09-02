@@ -7,6 +7,7 @@ idf_component_register(SRCS "main.cpp" "risk_filter.cpp" "model_adapter.cpp"
                             "presence.cpp"
                             "device_config.cpp" "mqtt_config.cpp"
                             "settings_nvs.cpp" "mqtt_publisher.cpp"
+                            "wifi_provision.cpp" "board_button.cpp"
                        INCLUDE_DIRS "."
                        # mqtt is esp-mqtt, which ships with ESP-IDF - no managed
                        # component was added for it. mbedtls is here for
@@ -18,7 +19,7 @@ idf_component_register(SRCS "main.cpp" "risk_filter.cpp" "model_adapter.cpp"
                        REQUIRES esp_http_server esp_wifi esp_netif nvs_flash
                                 esp_timer driver fatfs
                                 esp_driver_sdmmc sdmmc
-                                mqtt mbedtls esp_hw_support
+                                mqtt mbedtls esp_hw_support esp_driver_gpio
                        # EMBED_TXTFILES for the page, because the text form appends
                        # a NUL and that is what lets web_server.cpp compute its
                        # length as (end - start - 1). EMBED_FILES for the favicon

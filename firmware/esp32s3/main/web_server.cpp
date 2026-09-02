@@ -13,6 +13,8 @@
 #include "mqtt_config.h"
 #include "mqtt_publisher.h"
 #include "settings_nvs.h"
+#include "board_button.h"
+#include "wifi_provision.h"
 #include "esp_camera.h"
 #include "esp_heap_caps.h"
 #include "esp_http_server.h"
@@ -375,7 +377,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
     // letting the page parse half an object, which is how it was caught last time
     // this grew past its buffer. Sized with roughly 40% headroom over the widest
     // case for exactly that reason: this object has now outgrown its buffer twice.
-    static char buf[5376];
+    static char buf[5632];
     const int n = snprintf(buf, sizeof(buf),
         "{"
         "\"uptime_ms\":%llu,"
@@ -413,7 +415,8 @@ static esp_err_t status_handler(httpd_req_t *req) {
                               "\"sneeze\":\"%s\",\"no_driver\":\"%s\"}},"
         "\"stream\":{\"viewers\":%d,\"quality\":%d,\"fps\":%d,\"port\":%d},"
         "\"net\":{\"ssid\":\"%s\",\"ip\":\"%s\",\"clients\":%d,\"sta\":%s,"
-                 "\"sta_ip\":\"%s\",\"rssi\":%d},"
+                 "\"sta_ip\":\"%s\",\"rssi\":%d,\"sta_state\":\"%s\","
+                 "\"sta_bars\":%d,\"sta_retry_ms\":%lu,\"button_armed\":%s},"
         "\"image\":{\"luma\":%.0f,\"min\":%d,\"max\":%d,\"peak\":%d},"
         "\"mem\":{\"heap\":%u,\"psram\":%u},"
         "\"card\":{\"mounted\":%s,\"events\":%d,\"free_mb\":%llu,\"stored\":%lu},"
@@ -486,7 +489,10 @@ static esp_err_t status_handler(httpd_req_t *req) {
         s_quality.load(), s_stream_fps.load(), WEB_PORT_STREAM,
         net.ap_ssid, net.ap_ip, net.ap_clients,
         net.sta_connected ? "true" : "false", net.sta_ip,
-        static_cast<int>(net.sta_rssi),
+        static_cast<int>(net.sta_rssi), wifi_sta_state_name(net.sta_state),
+        net.sta_connected ? wifi_rssi_bars(net.sta_rssi) : 0,
+        static_cast<unsigned long>(net.sta_retry_ms),
+        net.button_armed ? "true" : "false",
         json_float(st.luma), st.luma_min, st.luma_max, st.luma_peak,
         static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
         static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
@@ -891,8 +897,6 @@ static esp_err_t mqtt_settings_handler(httpd_req_t *req) {
     MqttConfig cfg{};
     DeviceIdentity id{};
     mqtt_publisher_config(&cfg, &id);
-    WifiStaConfig sta{};
-    settings_load_wifi(&sta);
 
     const char *body = s_mqtt_body;
     char v[32];
@@ -1020,28 +1024,11 @@ static esp_err_t mqtt_settings_handler(httpd_req_t *req) {
         cfg.ca_present = true;
     }
 
-    // Station credentials, same partial-update rule.
-    bool sta_changed = false;
-    if (form_flag(body, "sta_enabled", &sta.enabled)) sta_changed = true;
-    // Decoded into the larger buffer on purpose: reading straight into a 33-byte one
-    // would truncate a 40-character SSID to 32 and then store it happily, which is
-    // the one thing every other field here refuses to do.
-    if (settings_form_field(body, "sta_ssid", cred, sizeof(cred))) {
-        if (!settings_copy(sta.ssid, sizeof(sta.ssid), cred)) {
-            return mqtt_bad_request(req, "sta_ssid", "at most 32 characters");
-        }
-        sta_changed = true;
-    }
-    if (settings_form_field(body, "sta_password", cred, sizeof(cred)) && cred[0] != '\0') {
-        if (!settings_copy(sta.password, sizeof(sta.password), cred)) {
-            return mqtt_bad_request(req, "sta_password", "at most 63 characters");
-        }
-        sta_changed = true;
-    }
-    if (form_flag(body, "clear_sta_password", &flag) && flag) {
-        sta.password[0] = '\0';
-        sta_changed = true;
-    }
+    // Station credentials are NOT here. They were, until the Wi-Fi Settings card
+    // gained its own form: two pages writing one NVS record meant that saving the
+    // broker with a stale copy of the page open would silently re-send whichever
+    // SSID that page was rendered with. /api/wifi owns the station record now, and
+    // owns it alone.
 
     // Everything validated together, before anything is applied. A configuration
     // that is half-stored is worse than one that was rejected: the operator sees a
@@ -1050,21 +1037,6 @@ static esp_err_t mqtt_settings_handler(httpd_req_t *req) {
     SettingsError err{};
     if (!mqtt_config_validate(cfg, id, &err)) {
         return mqtt_bad_request(req, err.field, err.reason);
-    }
-    if (!wifi_sta_validate(sta, &err)) {
-        return mqtt_bad_request(req, err.field, err.reason);
-    }
-
-    bool sta_needs_reboot = false;
-    if (sta_changed) {
-        if (!settings_save_wifi(sta)) {
-            return mqtt_bad_request(req, "sta_ssid", "could not be stored");
-        }
-        WifiStaOverride over{};
-        over.enabled = sta.enabled;
-        over.ssid = sta.ssid;
-        over.password = sta.password;
-        sta_needs_reboot = !board_wifi_apply_station(over);
     }
 
     if (!mqtt_publisher_apply(cfg, id)) {
@@ -1080,9 +1052,6 @@ static esp_err_t mqtt_settings_handler(httpd_req_t *req) {
     // either - "username changed" is itself a small disclosure in a shared room.
     ESP_LOGI(TAG, "mqtt settings applied (%s, %s)",
              cfg.enabled ? "enabled" : "disabled", mqtt_transport_name(cfg.transport));
-    if (sta_needs_reboot) {
-        ESP_LOGW(TAG, "station credentials stored; a reboot is needed to join");
-    }
     return mqtt_respond(req);
 }
 
@@ -1103,6 +1072,241 @@ static esp_err_t mqtt_test_handler(httpd_req_t *req) {
     httpd_resp_set_type(req, "application/json");
     if (!queued) httpd_resp_set_status(req, "409 Conflict");
     return httpd_resp_send(req, buf, n);
+}
+
+// ---------------------------------------------------------------------------
+// Wi-Fi provisioning
+// ---------------------------------------------------------------------------
+// GET  /api/wifi        status: where it is joined, why it is not, and the button
+// POST /api/wifi        connect / reconnect / forget, form-encoded
+// GET  /api/wifi/scan   the last scan, and whether one is running
+// POST /api/wifi/scan   start one; returns immediately
+//
+// Split from /api/mqtt on purpose. They write the same NVS record - the station
+// credentials - but they are two different jobs done at two different moments, and a
+// single form covering "which broker" and "which Wi-Fi" is a form nobody can be
+// walked through over a phone.
+//
+// NOTHING HERE BLOCKS. A scan takes two to three seconds; it is started and left to
+// the Wi-Fi event task, and the results are collected by a later request. The
+// control server serves one request at a time on a 6 kB stack, so a handler that
+// waited for a scan would stall /api/status - which is what the page uses to decide
+// whether the device is alive.
+
+// The worst case, which is also the cheapest denial of service anybody in radio
+// range can mount: 24 networks, each with a 32-byte SSID of bytes that are not valid
+// UTF-8, so every one of them escapes to six characters. That is 24 x (32 x 6 + ~72)
+// = about 6.3 kB, and a document that does not fit produces no document at all - an
+// empty scan list on the page somebody is using to recover the device. 8 kB, in
+// PSRAM: the control task's whole stack is 6 kB, and 8 kB of internal RAM for a
+// buffer used by one endpoint is 8 kB the detector does not get.
+#define WIFI_JSON_MAX 8192
+static char *s_wifi_json = nullptr;      // WIFI_JSON_MAX, in PSRAM
+
+static esp_err_t wifi_respond(httpd_req_t *req) {
+    WifiStatus net{};
+    board_wifi_status(&net);
+    WifiStaConfig sta{};
+    const bool stored = settings_load_wifi(&sta);
+
+    char ssid[WIFI_SSID_LEN * 6 + 1];
+    char ap_ssid[WIFI_SSID_LEN * 6 + 1];
+    // An SSID reaches this page from two places an operator does not control: the
+    // stored record, and the radio. Escaped in both cases.
+    if (!settings_json_escape_utf8(net.sta_ssid, ssid, sizeof(ssid)) ||
+        !settings_json_escape_utf8(net.ap_ssid, ap_ssid, sizeof(ap_ssid))) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_sendstr(req, "{\"error\":\"ssid could not be encoded\"}");
+    }
+
+    // Small enough for the control task's 6 kB stack, and per-call rather than static:
+    // wifi_disconnect_reason_text() builds into it for codes it has no sentence for,
+    // and the wi-fi event task is doing the same thing at the same moment.
+    char reason_text[WIFI_REASON_TEXT_MAX];
+
+    static char buf[1024];
+    const int n = snprintf(buf, sizeof(buf),
+        "{\"ap\":{\"ssid\":\"%s\",\"ip\":\"%s\",\"clients\":%d,\"up\":%s},"
+        "\"sta\":{\"state\":\"%s\",\"ssid\":\"%s\",\"stored\":%s,\"connected\":%s,"
+                 "\"ip\":\"%s\",\"rssi\":%d,\"bars\":%d,\"attempts\":%lu,"
+                 "\"retry_ms\":%lu,\"reason\":%u,\"reason_text\":\"%s\","
+                 "\"password_set\":%s,\"auth_failed\":%s},"
+        "\"button\":{\"gpio\":%d,\"armed\":%s,\"held_ms\":%lu,\"hold_ms\":%d},"
+        "\"nvs\":%s}",
+        ap_ssid, net.ap_ip, net.ap_clients, net.ap_up ? "true" : "false",
+        wifi_sta_state_name(net.sta_state), ssid,
+        stored && sta.enabled ? "true" : "false",
+        net.sta_connected ? "true" : "false", net.sta_ip,
+        static_cast<int>(net.sta_rssi),
+        net.sta_connected ? wifi_rssi_bars(net.sta_rssi) : 0,
+        static_cast<unsigned long>(net.sta_attempts),
+        static_cast<unsigned long>(net.sta_retry_ms),
+        static_cast<unsigned>(net.sta_reason),
+        // The reason strings are ours, from wifi_provision.cpp, and contain no
+        // quotes or backslashes - which is why they can go into JSON unescaped.
+        net.sta_state == WifiStaState::Failed
+            ? wifi_disconnect_reason_text(net.sta_reason, reason_text,
+                                          sizeof(reason_text)) : "",
+        stored && sta.password[0] != '\0' ? "true" : "false",
+        wifi_reason_is_auth_failure(net.sta_reason) &&
+            net.sta_state == WifiStaState::Failed ? "true" : "false",
+        BUTTON_GPIO, net.button_armed ? "true" : "false",
+        static_cast<unsigned long>(net.button_held_ms), WIFI_BUTTON_HOLD_MS,
+        settings_store_ready() ? "true" : "false");
+    if (n <= 0 || static_cast<size_t>(n) >= sizeof(buf)) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_sendstr(req, "{\"error\":\"status document too large\"}");
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, buf, n);
+}
+
+static esp_err_t wifi_scan_handler(httpd_req_t *req) {
+    if (req->method == HTTP_POST) {
+        const bool started = board_wifi_scan_start();
+        httpd_resp_set_type(req, "application/json");
+        if (!started) {
+            // 409 rather than 500: a scan already running, or a radio mid-association,
+            // is a state the page should retry rather than an error it should report.
+            httpd_resp_set_status(req, "409 Conflict");
+            return httpd_resp_sendstr(req,
+                "{\"scanning\":false,\"error\":\"a scan is already running, or the "
+                "radio is mid-connection - try again in a moment\"}");
+        }
+        return httpd_resp_sendstr(req, "{\"scanning\":true}");
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    if (s_wifi_json == nullptr) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "{\"error\":\"scan buffer unavailable\"}");
+    }
+    static WifiScanEntry entries[WIFI_SCAN_MAX];
+    uint32_t age_ms = 0;
+    const int n = board_wifi_scan_results(entries, &age_ms);
+    const size_t len = wifi_scan_json(entries, n, board_wifi_scan_busy(), age_ms,
+                                      s_wifi_json, WIFI_JSON_MAX);
+    if (len == 0) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req, "{\"error\":\"scan document too large\"}");
+    }
+    return httpd_resp_send(req, s_wifi_json, len);
+}
+
+static esp_err_t wifi_settings_handler(httpd_req_t *req) {
+    if (req->method == HTTP_GET) return wifi_respond(req);
+
+    if (s_mqtt_body == nullptr) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_sendstr(req, "{\"error\":\"settings buffer unavailable\"}");
+    }
+    // Far smaller than the MQTT body - an SSID and a passphrase - but it shares the
+    // buffer because only one request is served at a time and a second 6 kB of PSRAM
+    // for two text fields would be waste.
+    if (req->content_len == 0 || req->content_len > 1024) {
+        return mqtt_bad_request(req, "body",
+                                req->content_len == 0 ? "empty request" : "too large");
+    }
+    size_t got = 0;
+    while (got < req->content_len) {
+        const int r = httpd_req_recv(req, s_mqtt_body + got, req->content_len - got);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;
+        if (r <= 0) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_set_type(req, "application/json");
+            return httpd_resp_sendstr(req, "{\"error\":\"could not read the body\"}");
+        }
+        got += static_cast<size_t>(r);
+    }
+    s_mqtt_body[got] = '\0';
+    const char *body = s_mqtt_body;
+
+    char action[16] = {0};
+    settings_form_field(body, "action", action, sizeof(action));
+
+    // --- forget ------------------------------------------------------------
+    if (strcmp(action, "forget") == 0) {
+        // Both halves, in this order: the record first, so that a reset interrupted
+        // between them comes back provisioning rather than rejoining the network the
+        // operator just asked it to forget.
+        const bool cleared = settings_clear_wifi();
+        board_wifi_forget();
+        ESP_LOGW(TAG, "station credentials cleared from the web page; the access "
+                      "point is unaffected and mqtt settings are untouched");
+        if (!cleared) {
+            httpd_resp_set_status(req, "500 Internal Server Error");
+            httpd_resp_set_type(req, "application/json");
+            return httpd_resp_sendstr(req,
+                "{\"error\":\"disconnected, but the stored credentials could not be "
+                "erased - they will come back on the next reboot\"}");
+        }
+        return wifi_respond(req);
+    }
+
+    // --- reconnect ---------------------------------------------------------
+    if (strcmp(action, "reconnect") == 0) {
+        board_wifi_reconnect();
+        return wifi_respond(req);
+    }
+
+    // --- connect -----------------------------------------------------------
+    // Starts from the stored record, so that submitting the form with the password
+    // box left alone keeps the stored passphrase - the same rule as /api/mqtt, and
+    // for the same reason: the page is never given the secret to hand back.
+    WifiStaConfig sta{};
+    settings_load_wifi(&sta);
+
+    char ssid[128];
+    if (settings_form_field(body, "ssid", ssid, sizeof(ssid))) {
+        // Bytes, not characters, and the decode buffer is deliberately larger than
+        // the field: reading straight into a 33-byte one would truncate a 40-byte
+        // SSID to 32 and then store it happily, which is the one thing every other
+        // field here refuses to do.
+        if (!settings_copy(sta.ssid, sizeof(sta.ssid), ssid)) {
+            return mqtt_bad_request(req, "ssid", "at most 32 bytes - an ssid in a "
+                                                 "non-latin script costs two or "
+                                                 "three bytes per character");
+        }
+    }
+    char pass[128];
+    if (settings_form_field(body, "password", pass, sizeof(pass)) && pass[0] != '\0') {
+        if (!settings_copy(sta.password, sizeof(sta.password), pass)) {
+            return mqtt_bad_request(req, "password", "at most 63 characters");
+        }
+    }
+    char flag[8];
+    // An open network has no passphrase, and the stored one from a previous network
+    // would be sent to it. Explicit rather than inferred: the page ticks this when
+    // the selected network reports `open`.
+    if (settings_form_field(body, "open", flag, sizeof(flag)) && flag[0] == '1') {
+        sta.password[0] = '\0';
+    }
+    sta.enabled = true;
+
+    SettingsError err{};
+    if (!wifi_sta_validate(sta, &err)) return mqtt_bad_request(req, err.field, err.reason);
+
+    if (!settings_save_wifi(sta)) {
+        return mqtt_bad_request(req, "ssid", "could not be stored");
+    }
+    WifiStaOverride over{};
+    over.enabled = sta.enabled;
+    over.ssid = sta.ssid;
+    over.password = sta.password;
+    if (!board_wifi_apply_station(over)) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_sendstr(req,
+            "{\"error\":\"saved, but the radio refused the change - reboot to apply\"}");
+    }
+    // The SSID is logged and the passphrase is not, here as everywhere.
+    ESP_LOGI(TAG, "joining \"%s\" from the web page", sta.ssid);
+    return wifi_respond(req);
 }
 
 // One JPEG per request. Lives on the stream port rather than the control port so
@@ -1229,6 +1433,14 @@ static bool alloc_buffers() {
     if (s_mqtt_body == nullptr || s_mqtt_ca == nullptr) {
         ESP_LOGW(TAG, "mqtt settings buffers unavailable; /api/mqtt POST is disabled");
     }
+    // Same reasoning for the scan document. A failure here costs the network list and
+    // nothing else: the SSID can still be typed in by hand, which is the path a hidden
+    // network takes anyway.
+    s_wifi_json = static_cast<char *>(heap_caps_malloc(WIFI_JSON_MAX, MALLOC_CAP_SPIRAM));
+    if (s_wifi_json == nullptr) {
+        ESP_LOGW(TAG, "wi-fi scan buffer unavailable; the network list is disabled "
+                      "and an ssid has to be typed in");
+    }
 
     // Event capture buffers are only worth their PSRAM if there is somewhere to
     // put the result, so they follow the card.
@@ -1261,7 +1473,7 @@ bool web_server_start() {
     httpd_config_t control = HTTPD_DEFAULT_CONFIG();
     control.server_port = WEB_PORT_CONTROL;
     control.ctrl_port = 32768;
-    control.max_uri_handlers = 16;
+    control.max_uri_handlers = 20;
     control.lru_purge_enable = true;
     control.max_open_sockets = 5;
     // Formatting the status object costs a few hundred bytes of stack on its own
@@ -1290,6 +1502,10 @@ bool web_server_start() {
         {.uri = "/api/mqtt",      .method = HTTP_GET,  .handler = mqtt_settings_handler, .user_ctx = nullptr},
         {.uri = "/api/mqtt",      .method = HTTP_POST, .handler = mqtt_settings_handler, .user_ctx = nullptr},
         {.uri = "/api/mqtt/test", .method = HTTP_POST, .handler = mqtt_test_handler,   .user_ctx = nullptr},
+        {.uri = "/api/wifi",      .method = HTTP_GET,  .handler = wifi_settings_handler, .user_ctx = nullptr},
+        {.uri = "/api/wifi",      .method = HTTP_POST, .handler = wifi_settings_handler, .user_ctx = nullptr},
+        {.uri = "/api/wifi/scan", .method = HTTP_GET,  .handler = wifi_scan_handler,  .user_ctx = nullptr},
+        {.uri = "/api/wifi/scan", .method = HTTP_POST, .handler = wifi_scan_handler,  .user_ctx = nullptr},
     };
     for (const httpd_uri_t &r : routes) httpd_register_uri_handler(s_control, &r);
 

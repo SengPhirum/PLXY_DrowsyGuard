@@ -114,6 +114,86 @@ bool settings_json_escape(const char *s, char *out, size_t out_cap) {
     return true;
 }
 
+// How many bytes of a well-formed UTF-8 sequence start at `s`, or 0 if none does.
+// The checks are the full set rather than the lead-byte shape alone: an overlong
+// encoding of '/' and a surrogate half are both rejected by every JSON parser worth
+// the name, so passing them through would produce exactly the document this exists
+// to avoid. Reads stop at the first byte that fails, and the string is
+// NUL-terminated, so a truncated sequence at the end is rejected without reading
+// past it.
+static int utf8_len(const unsigned char *s) {
+    const unsigned char c = s[0];
+    if (c < 0x80) return 1;
+    if ((c & 0xE0) == 0xC0) {
+        if (c < 0xC2) return 0;                              // overlong
+        return (s[1] & 0xC0) == 0x80 ? 2 : 0;
+    }
+    if ((c & 0xF0) == 0xE0) {
+        if ((s[1] & 0xC0) != 0x80) return 0;
+        if (c == 0xE0 && s[1] < 0xA0) return 0;              // overlong
+        if (c == 0xED && s[1] >= 0xA0) return 0;             // surrogate half
+        return (s[2] & 0xC0) == 0x80 ? 3 : 0;
+    }
+    if ((c & 0xF8) == 0xF0) {
+        if (c > 0xF4) return 0;                              // beyond U+10FFFF
+        if ((s[1] & 0xC0) != 0x80) return 0;
+        if (c == 0xF0 && s[1] < 0x90) return 0;              // overlong
+        if (c == 0xF4 && s[1] >= 0x90) return 0;             // beyond U+10FFFF
+        if ((s[2] & 0xC0) != 0x80) return 0;
+        return (s[3] & 0xC0) == 0x80 ? 4 : 0;
+    }
+    return 0;                                                // continuation byte
+}
+
+bool settings_json_escape_utf8(const char *s, char *out, size_t out_cap) {
+    if (out == nullptr || out_cap == 0) return false;
+    out[0] = '\0';
+    if (s == nullptr) return true;
+
+    size_t at = 0;
+    const char *hex = "0123456789abcdef";
+    for (size_t i = 0; s[i] != '\0';) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        if (c < 0x80) {
+            // One ASCII byte at a time, through the escaper that already knows the
+            // five JSON characters and the control range.
+            char one[2] = {static_cast<char>(c), '\0'};
+            char esc[7];
+            if (!settings_json_escape(one, esc, sizeof(esc))) return false;
+            const size_t n = strlen(esc);
+            if (at + n + 1 > out_cap) { out[at] = '\0'; return false; }
+            memcpy(out + at, esc, n);
+            at += n;
+            i += 1;
+            continue;
+        }
+        const int len = utf8_len(reinterpret_cast<const unsigned char *>(s) + i);
+        if (len > 1) {
+            if (at + static_cast<size_t>(len) + 1 > out_cap) {
+                out[at] = '\0';
+                return false;
+            }
+            memcpy(out + at, s + i, static_cast<size_t>(len));
+            at += static_cast<size_t>(len);
+            i += static_cast<size_t>(len);
+            continue;
+        }
+        // Not UTF-8. Escaped as the Latin-1 code point of that one byte: wrong text,
+        // certainly, but a document that parses and a row the operator can still see
+        // and pick - which is the whole point.
+        if (at + 6 + 1 > out_cap) { out[at] = '\0'; return false; }
+        out[at++] = '\\';
+        out[at++] = 'u';
+        out[at++] = '0';
+        out[at++] = '0';
+        out[at++] = hex[(c >> 4) & 0xF];
+        out[at++] = hex[c & 0xF];
+        i += 1;
+    }
+    out[at] = '\0';
+    return true;
+}
+
 // --- form fields -----------------------------------------------------------
 static int hex_nibble(char c) {
     if (c >= '0' && c <= '9') return c - '0';
@@ -331,9 +411,18 @@ bool wifi_sta_validate(const WifiStaConfig &sta, SettingsError *err) {
     if (!sta.enabled) return true;      // the fields are ignored when it is off
     const size_t ssid_len = strlen(sta.ssid);
     if (ssid_len == 0) return fail(err, "sta_ssid", "required when station mode is on");
-    if (ssid_len >= WIFI_SSID_MAX) return fail(err, "sta_ssid", "at most 32 characters");
-    if (!settings_is_printable(sta.ssid, WIFI_SSID_MAX - 1)) {
-        return fail(err, "sta_ssid", "printable ASCII only");
+    if (ssid_len >= WIFI_SSID_MAX) return fail(err, "sta_ssid", "at most 32 bytes");
+    // Deliberately NOT printable-ASCII, unlike every other field here. 802.11 says an
+    // SSID is 0-32 arbitrary octets, and networks named in Khmer, or with an accent,
+    // or with an emoji, are ordinary things that this device has to be able to join -
+    // a validator that refused them would refuse the network and blame the operator.
+    // Control bytes are still refused: they would land in the serial log, where they
+    // are terminal escape sequences rather than text.
+    for (size_t i = 0; i < ssid_len; ++i) {
+        const unsigned char c = static_cast<unsigned char>(sta.ssid[i]);
+        if (c < 0x20 || c == 0x7F) {
+            return fail(err, "sta_ssid", "no control characters");
+        }
     }
     const size_t pass_len = strlen(sta.password);
     if (pass_len >= WIFI_PASS_MAX) return fail(err, "sta_password", "at most 63 characters");
