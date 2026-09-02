@@ -234,7 +234,10 @@ HOST="${PLXY_HOST:-192.168.4.1}"
 api() {
     local method="$1"; shift
     command -v curl >/dev/null || die "curl not found"
-    curl -sS --max-time 5 -X "$method" "http://$HOST$1" || return 1
+    # Anything after the path is passed to curl, which is what lets `mqtt on` post a
+    # form field. Everything else here is a bare GET or POST with no body.
+    local path="$1"; shift || true
+    curl -sS --max-time 5 -X "$method" "http://$HOST$path" "$@" || return 1
 }
 
 reachable() { curl -sS --max-time 3 -o /dev/null "http://$HOST/api/status" 2>/dev/null; }
@@ -270,6 +273,7 @@ ${B}device${Z}
   snapshot [file]    save one JPEG frame                  ${DIM}default: snapshot.jpg${Z}
   alert [reason]     play a warning: drowsy|microsleep|yawn|nod
   mute | unmute      silence or restore the speaker
+  mqtt [sub]         broker status                        ${DIM}status|test|topic|on|off${Z}
 
 ${B}project${Z}
   test               python test suite
@@ -492,6 +496,74 @@ cmd_alert() {
         *) die "reason must be one of: drowsy microsleep yawn nod sneeze no_driver" ;;
     esac
     api POST "/api/alert-test?reason=$reason" && echo
+}
+
+# The broker, from the dev loop. Read-only by default and deliberately: the settings
+# are twenty fields and the modal is where they belong, but "is it publishing, and is
+# the broker taking it" is worth being able to ask without a browser - and
+# `./plxy.sh mqtt test` is what makes a broker testable without anyone falling asleep
+# in front of the camera.
+#
+# The formatting below uses % rather than f-strings, and that is not a style choice:
+# the whole program is inside bash single quotes, so every Python string in it has to
+# be double-quoted, and nesting double quotes inside an f-string expression needs
+# Python 3.12. This runs on whatever interpreter is on PATH.
+cmd_mqtt() {
+    local py=""
+    for c in python python3; do
+        command -v "$c" >/dev/null 2>&1 && { py="$c"; break; }
+    done
+
+    case "${1:-status}" in
+        status|"")
+            local j; j="$(api GET /api/mqtt)" \
+                || die "no answer from $HOST - join the board Wi-Fi first (./plxy.sh wifi)"
+            if [ -z "$py" ]; then echo "$j"; return 0; fi
+            # The response carries no password at all - see docs/security.md - so it
+            # is safe to print whole. The username comes back masked.
+            echo "$j" | "$py" -c '
+import json, sys
+d = json.load(sys.stdin)
+c, s = d["config"], d["status"]
+out = []
+out.append("  publishing   %s  (%s)" % ("on" if c["enabled"] else "off", s["state"]))
+out.append("  broker       %s  mqtt %s  qos %s" % (c["uri"], c["protocol"], c["qos"]))
+out.append("  credentials  user %s  password %s  ca %s%s" % (
+    c["username_masked"] or "none",
+    "stored" if c["password_set"] else "none",
+    ("%d B" % c["ca_bytes"]) if c["ca_present"] else "root bundle",
+    "  VERIFICATION OFF" if c["tls_insecure"] else ""))
+out.append("  identity     %s in %s  [%s]" % (
+    c["device_id"], c["fleet_id"], c["remark"]))
+out.append("  alerts to    %s" % c["topics"]["alerts"])
+out.append("  fleet sub    %s" % c["topics"]["fleet_alerts"])
+out.append("  status to    %s" % c["topics"]["status"])
+out.append("  published    %d handed over, %d acknowledged" % (
+    s["published"], s["acked"]))
+out.append("  buffered     %d/%d  dropped %d  duplicates %d  rejected %d" % (
+    s["queued"], s["capacity"], s["dropped"], s["suppressed"], s["rejected"]))
+if s["error"]:
+    out.append("  last error   %s" % s["error"])
+if s["retry_ms"]:
+    out.append("  next attempt in %.0f s" % (s["retry_ms"] / 1000.0))
+if not d.get("nvs", True):
+    out.append("  WARNING: nvs is unavailable - these settings will not survive a reboot")
+print("\n".join(out))'
+            ;;
+        test)
+            api POST /api/mqtt/test && echo
+            ;;
+        topic|topics)
+            # Just the fleet subscription, for piping straight into a subscriber:
+            #   mosquitto_sub -h broker.emqx.io -t "$(./plxy.sh mqtt topic)" -v
+            [ -n "$py" ] || die "python not found"
+            api GET /api/mqtt | "$py" -c \
+                'import json, sys; print(json.load(sys.stdin)["config"]["topics"]["fleet_alerts"])'
+            ;;
+        on)  api POST /api/mqtt -d enabled=1 >/dev/null && ok "publishing enabled" ;;
+        off) api POST /api/mqtt -d enabled=0 >/dev/null && ok "publishing disabled" ;;
+        *)   die "usage: ./plxy.sh mqtt [status|test|topic|on|off]" ;;
+    esac
 }
 
 cmd_mute()   { api POST "/api/settings?muted=1" && echo; }
@@ -748,6 +820,7 @@ case "${1:-help}" in
     watch)        shift; cmd_watch "$@" ;;
     snapshot|snap) shift; cmd_snapshot "$@" ;;
     alert)        shift; cmd_alert "$@" ;;
+    mqtt)         shift; cmd_mqtt "$@" ;;
     mute)         shift; cmd_mute "$@" ;;
     unmute)       shift; cmd_unmute "$@" ;;
     test)         shift; cmd_test "$@" ;;

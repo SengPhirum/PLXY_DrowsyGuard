@@ -1,5 +1,176 @@
 # Changelog
 
+## 2026-09-01 - the alerts leave the vehicle, without the detector noticing
+
+MQTT alerting. Every confirmed alert is now also published to a broker as one
+versioned JSON document, there is a settings modal on the device to configure it, and
+the documentation site carries a live fleet dashboard that subscribes to it. The
+detection loop is byte-for-byte unaffected on the paths that matter, and that was the
+constraint the whole design was built around rather than a claim made afterwards.
+
+### The rule, first, because everything else follows from it
+
+This device has one job: to wake a drowsy driver. The capture loop has a ~23 ms frame
+budget; a TLS handshake is seconds and a blocked socket write is unbounded. So the
+capture loop's entire involvement in publishing is one call that takes a mutex with a
+**zero** tick timeout, copies a 96-byte struct into a 16-deep ring, and returns:
+
+```text
+capture loop ──push──▶ MqttOutbox ──publisher task──▶ esp-mqtt ──▶ broker
+  (bounded memcpy)      (16 deep)   (connect, backoff, retry, dedup)
+```
+
+`mqtt_publish_alert()` cannot allocate, cannot fail in a way the caller has to handle,
+and does not care whether there is a broker, a network or a configuration. It sits
+third at each of the three alert sites in `main.cpp`, after `voice_alert_trigger()` and
+after the SD capture, and the order is the documentation: the speaker is the safety
+output, the card is the evidence, this is telemetry.
+
+The same rule the browser preview already followed (`web_server.h`), for the same
+reason. `docs/DEPLOYMENT.md` now has an acceptance test for it - M3 - whose pass
+criterion is that `fps` does not move with the broker dead.
+
+### Where the logic lives, and why the split is the point
+
+Two new files hold everything about this feature that can be wrong without a broker in
+the room, and neither includes a single ESP-IDF header:
+
+| File | Owns |
+| --- | --- |
+| `main/device_config.{h,cpp}` | device identity, station credentials, validation, percent-decoding, the versioned NVS blob codec |
+| `main/mqtt_config.{h,cpp}` | the broker config, validation, topic and URI generation, the alert and status payloads, redaction, the backoff schedule, `MqttDedup`, `MqttOutbox` |
+
+Two more hold what genuinely cannot run on a host, and they own no logic of their own:
+`main/mqtt_publisher.{h,cpp}` is a state machine over the three data structures above,
+and `main/settings_nvs.{h,cpp}` is `nvs_set_blob` around the serialisers.
+
+`tests/test_mqtt_config.py` compiles the two pure files with the host compiler and
+drives them through 155 cases. It is not a smoke test - it is where the decisions are
+checked:
+
+- **failure isolation.** 10 000 pushes into the outbox with nothing draining it. Every
+  one is accepted, memory stays bounded at 16, and the count of discards is exactly
+  9 984. A broker that has been down for a week costs the detection loop one memcpy per
+  alert.
+- **the blob format.** Every single byte of each stored record is flipped, and every
+  one has to be rejected; then every truncation length; then a version bump. A raw
+  struct in flash is a promise never to reorder a field, and the first time it is broken
+  the device reads a hostname out of the middle of a password.
+- **topic generation**, including the injection attempts. `a/b`, `a+b`, `#` and an empty
+  id all produce **no topic at all** rather than a plausible one, because a topic is the
+  one field where a wrong value does not fail - it goes somewhere else, possibly
+  somewhere a stranger is subscribed to.
+- **no secrets through the API.** The redacted document is searched for the password
+  rather than inspected field by field, so a future field that happened to include it
+  would fail this test and pass a field-by-field one.
+- **the payload schema**, field by field, plus a remark full of quotes and backslashes,
+  plus a NaN, plus a buffer too small (which produces nothing rather than half a
+  document).
+- **the backoff**, the de-duplication ring's eviction, the CA shape check, and the
+  form decoder against the malformed escapes a hand-written client sends.
+
+### What was found by building it, rather than after
+
+Two bugs the ESP-IDF build caught that a host compile could not: `snprintf` into the
+radio's 32-byte SSID field is a `-Werror=format-truncation` error once the source is a
+runtime string rather than a literal (fixed with the bounded-copy idiom the AP path
+already used), and a `%s` in the status JSON with no argument behind it.
+
+One the host tests caught in the *tests*: `printf`'s argument evaluation order is
+unspecified, so reading a counter in the same call that mutates it reported the state
+from before the call as often as after it - which made the de-duplication counter look
+permanently stuck at zero.
+
+And one in `fleet.js`, from a test written to fail: `Number(null)`, `Number([])` and
+`Number('')` are all `0`, so the obvious coercion turns a missing `risk` into a
+confident zero - which on a dashboard reads as "this driver is fine" rather than "this
+message told us nothing".
+
+### The device UI
+
+An MQTT card and a settings modal on the device page: enable, transport
+(TCP/TLS/WS/WSS), MQTT 3.1.1 or 5, host, port, WebSocket path, client id, credentials,
+CA certificate, QoS, keepalive, Last Will, the driver remark, automatic or manual
+topics with copy buttons for all three, Wi-Fi station credentials, and a test publish.
+
+The credential handling is the part worth reading. `GET /api/mqtt` returns
+`password_set` and **no password field at all** - not masked, absent; the username
+comes back masked (`fl*********r`) so an operator can tell which account is configured
+without the value being readable off a screenshot. The page's password boxes therefore
+open empty with a placeholder, an empty box submits nothing (which the firmware reads
+as "keep the stored one"), and erasing takes an explicit Clear button. The page never
+holds a secret it did not just receive from the operator's own keyboard.
+
+`POST /api/mqtt` takes a form-encoded body rather than a query string, because a CA
+certificate is 1-2 kB and `CONFIG_HTTPD_MAX_URI_LEN` is 512 - and rather than JSON,
+because every field is a scalar and the percent-decoder is then a pure function a host
+test can drive on malformed input.
+
+### Wi-Fi station mode became a runtime setting
+
+It had to. The board's own access point has no route to the internet, so a device that
+could only be its own AP could only ever publish to something on the same island, and a
+demonstration has to be able to point it at a phone hotspot in the room without a
+rebuild. `WIFI_STA_SSID` is now a default rather than the only route; credentials in
+NVS win, and are applied without a reboot when the radio came up in AP+STA mode.
+
+**The access point comes up either way and never comes down.** A wrong hotspot
+password, a dead uplink or a broker refusing the credentials all degrade to "no
+telemetry", never to "no dashboard" and never to "no alarm".
+
+### The fleet monitor, in the documentation
+
+`docs/fleet-monitoring.md` is a working dashboard: WSS connection, a Configure MQTT
+modal, connection status, searchable driver cards with risk and last-seen, an event
+timeline, counters, severity filters, browser and audio notifications, and copy-topic
+controls. It runs entirely in the reader's browser - no backend, nothing proxied.
+
+It speaks MQTT over WebSocket itself, in about two hundred lines, rather than loading a
+client from a CDN. The page's only job is to display a driver's alertness state, and a
+third-party script on it means a third party can change what it does for every reader,
+forever; SRI pins a version but not the decision to depend on one. The subset needed is
+small and closed - CONNECT, SUBSCRIBE, receive PUBLISH, acknowledge, ping, disconnect -
+and `tests/fleet_page_harness.mjs` drives it against byte sequences from the MQTT 3.1.1
+and MQTT 5 specifications, which a wrapped library would have turned into "we called
+the library correctly".
+
+Everything below the socket is treated as hostile, because on the default broker it is:
+strings are length-capped and stripped of control characters, C1 codes and the
+bidirectional overrides that would otherwise let a remark reverse the rendering of the
+rest of the page; numbers are clamped; a document that is not a `drowsyguard.alert.*`
+object is rejected and **counted** (a steady rejection rate means somebody else is
+publishing to that topic); and every value reaches the DOM through `textContent`. There
+is no `innerHTML` in the file and `tests/test_fleet_page.py` fails the build if one
+appears. It never publishes, and it never stores a password.
+
+### The public broker is labelled everywhere it appears
+
+`broker.emqx.io` is preconfigured - TLS 8883, TCP 1883, WS 8083/mqtt, WSS 8084/mqtt -
+because a thesis demonstration has to work in a room with no broker in it. It is
+**demonstration and testing only** and says so on the device modal, in the API
+response, on the fleet page, in the security document and in the deployment
+checklist: there is no authentication, no isolation, the topics are guessable, and
+anyone who subscribes reads every alert including the driver remark.
+
+No images are ever published. The JPEG captures stay on the card, and the remark - the
+one field that names a person - is deliberately **not** part of any topic, where it
+would be visible to any wildcard subscriber and retained in broker state.
+
+### Everything unchanged, stated explicitly
+
+The sneeze suppression is untouched. A closure `BehaviorAnalyzer` reclassified as a
+sneeze still never reaches the risk filter, so it still produces no drowsiness alert -
+here or on the speaker. What is published is the sneeze itself with `severity: "info"`,
+because a second-long eye closure went by and the alarm deliberately did not fire, and
+without a record of that decision the silence looks like a fault.
+
+Face detection, the eye model, PERCLOS, the behaviour fusion, the risk filter, the
+voice alerts, the event captures and the MJPEG preview are all byte-for-byte as they
+were. The only changes outside the four new modules are: three `mqtt_publish_alert()`
+calls in `main.cpp`, the settings load before `board_wifi_init()`, the station override
+in `board_wifi.cpp`, and the `/api/mqtt` handlers plus a compact `mqtt` object in
+`/api/status`.
+
 ## 2026-09-01 - what counts as a driver, saying so when there is none, and a browser installer
 
 Four things, and the first three are one argument: the pipeline could not tell the

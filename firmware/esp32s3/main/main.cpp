@@ -11,10 +11,13 @@
 #include "board_camera.h"
 #include "board_sdcard.h"
 #include "board_wifi.h"
+#include "device_config.h"
 #include "face_gate.h"
 #include "model_adapter.h"
+#include "mqtt_publisher.h"
 #include "presence.h"
 #include "risk_filter.h"
+#include "settings_nvs.h"
 #include "voice_alert.h"
 #include "web_server.h"
 
@@ -25,6 +28,8 @@ Headless build. There is no SPI panel: the device is a camera, a speaker and an
 access point.
 
   camera -> face + landmarks -> eye state -> behaviour fusion -> risk -> speaker
+                             |                                        \-> SD capture
+                             |                                        \-> MQTT outbox
                              \-> JPEG snapshot -> browser preview + telemetry
 
 Two consequences of dropping the panel that are worth stating explicitly, because
@@ -38,6 +43,12 @@ they shaped everything below:
      someone has the page open, so the pipeline must never depend on it. It does
      not - web_server_publish_frame() copies and returns, and skips entirely when
      nobody is watching.
+
+The same rule now covers a third output. mqtt_publish_alert() is one bounded memcpy
+into a 16-deep buffer and returns whether or not there is a network, a broker or a
+configuration; every socket, handshake and retry happens on the publisher task on
+core 1. A broker that is down, slow, or refusing credentials costs this loop
+nothing - see mqtt_publisher.h.
 */
 
 // Frame budget. The loop now measures itself - ui.ms_detect and ui.ms_eye are on the
@@ -179,10 +190,40 @@ static void bench_eye_model(void) {
 extern "C" void app_main(void) {
     ESP_LOGI(TAG, "DrowsyGuard ESP32-S3 firmware starting (headless, web preview)");
 
+    // Settings before the radio, because the radio needs them: station credentials
+    // are what give this board a route off its own access point, which is the only
+    // way it can reach a broker at all.
+    settings_store_init();
+    WifiStaConfig sta{};
+    const bool sta_stored = settings_load_wifi(&sta);
+
     // Radio first. If everything after this fails, the page still loads and says so,
     // which is the whole point of having a network on a board with no screen.
-    const bool net_up = board_wifi_init();
+    //
+    // The access point comes up regardless of the station side and never comes down.
+    // That is deliberate and it is what makes the MQTT feature safe to ship: a wrong
+    // hotspot password, a dead uplink or a broker that refuses the credentials all
+    // degrade to "no telemetry", never to "no dashboard" and never to "no alarm".
+    WifiStaOverride over{};
+    over.enabled = sta.enabled;
+    over.ssid = sta.ssid;
+    over.password = sta.password;
+    const bool net_up = board_wifi_init(sta_stored ? &over : nullptr);
     if (!net_up) ESP_LOGE(TAG, "Wi-Fi bring-up failed; alerts still work, preview does not");
+
+    // The identity the topics and the payload are built from. Defaulted off the
+    // SoftAP name - which is MAC-derived, so it is unique per board with no
+    // provisioning step - and overridden by whatever was stored.
+    WifiStatus net0{};
+    board_wifi_status(&net0);
+    DeviceIdentity ident = device_identity_defaults(net0.ap_ssid);
+    if (settings_load_identity(&ident)) {
+        ESP_LOGI(TAG, "device \"%s\" in fleet \"%s\" (%s)", ident.device_id,
+                 ident.fleet_id, ident.remark);
+    } else {
+        ESP_LOGI(TAG, "no stored identity; defaulting to \"%s\" in fleet \"%s\"",
+                 ident.device_id, ident.fleet_id);
+    }
 
     // Before voice_alert_init() and before web_server_start(), and both matter:
     // the alert controller reports at boot which clip each reason resolves to, and
@@ -227,6 +268,14 @@ extern "C" void app_main(void) {
         ESP_LOGI(TAG, "boot chime played on I2S");
     } else {
         ESP_LOGW(TAG, "no audio output available; boot chime skipped");
+    }
+
+    // Started before the camera and before the models, and with MQTT possibly
+    // disabled, on purpose: the task has to exist for the web UI to be able to
+    // switch publishing on without a reboot, and starting it early means a
+    // configuration change is never waiting on a subsystem that failed.
+    if (!mqtt_publisher_start(ident)) {
+        ESP_LOGW(TAG, "mqtt publisher unavailable; local alerting is unaffected");
     }
 
     const bool web_up = web_server_start();
@@ -492,6 +541,14 @@ extern "C" void app_main(void) {
                     web_server_capture_event(fb->buf, fb->width, fb->height, fb->len,
                                              st.score, st.perclos,
                                              voice_alert_clip_name(last_reason), now_ms);
+                    // And off the vehicle, for whoever is watching the fleet. Third
+                    // in this sequence and never first: the speaker is the safety
+                    // output, the card is the evidence, and this is telemetry. It
+                    // returns immediately in every case - no broker, no network, no
+                    // configuration, buffer full - so its position here costs the
+                    // loop nothing but the order still says which one matters.
+                    mqtt_publish_alert(voice_alert_clip_name(last_reason), st.score,
+                                       st.perclos, voice_alert_count(), now_ms);
                 }
 
                 // 4b. The sneeze announcement, which deliberately does NOT go through
@@ -516,6 +573,16 @@ extern "C" void app_main(void) {
                     web_server_capture_event(fb->buf, fb->width, fb->height, fb->len,
                                              st.score, st.perclos,
                                              voice_alert_clip_name(last_reason), now_ms);
+                    // Published like the others, and it carries severity "info"
+                    // rather than a drowsiness grade - see mqtt_severity_for(). The
+                    // suppression itself is untouched: a sneeze that BehaviorAnalyzer
+                    // reclassified never reaches the risk filter, so it never
+                    // produces a drowsiness message here either. What a fleet
+                    // dashboard gets is the record that the device saw a second-long
+                    // eye closure and decided it was not drowsiness - which is
+                    // exactly the silence that would otherwise look like a fault.
+                    mqtt_publish_alert(voice_alert_clip_name(last_reason), st.score,
+                                       st.perclos, voice_alert_count(), now_ms);
                 }
             }
 
@@ -537,6 +604,8 @@ extern "C" void app_main(void) {
                 web_server_capture_event(fb->buf, fb->width, fb->height, fb->len,
                                          st.score, st.perclos,
                                          voice_alert_clip_name(last_reason), now_ms);
+                mqtt_publish_alert(voice_alert_clip_name(last_reason), st.score,
+                                   st.perclos, voice_alert_count(), now_ms);
                 ESP_LOGW(TAG, "no driver for %.1f s (announcement %u)",
                          static_cast<double>(pres.absent_s),
                          static_cast<unsigned>(pres.alerts));

@@ -8,6 +8,12 @@ DrowsyGuard is a research prototype that carries a camera pointed at a person's
 face, an open radio, and an unauthenticated HTTP API. None of that is an
 accident, and none of it is safe to deploy unchanged.
 
+Since [MQTT alerting](guide/mqtt.md) was added it can also send a named driver's
+alertness state off the vehicle, which is a different kind of exposure from
+everything above it: the others need somebody within radio range, and this one does
+not. It is **off by default** and stays off until somebody turns it on, and the
+section below is what to read before doing that.
+
 ## Safety and limitations
 
 !!! danger "Not a safety device"
@@ -84,12 +90,144 @@ There is no login, no token, and no TLS. Anyone on the AP can:
 - delete the whole capture history (`POST /api/events/clear`)
 - play alerts through the speaker (`POST /api/alert-test`)
 - mute the alerts (`POST /api/settings?muted=1`)
+- read the broker configuration, minus the passwords (`GET /api/mqtt`)
+- **change** the broker configuration, including the topic and the Wi-Fi station
+  credentials (`POST /api/mqtt`)
 
-That last one matters: **an unauthenticated client can silence the alarm.** Treat
-the AP password as the only access control there is, and change it.
+The mute matters most: **an unauthenticated client can silence the alarm.** The
+second-worst is the one MQTT added - an unauthenticated client can redirect the
+telemetry to a broker of its own, or read the SSID the device is joining. Both
+follow from the same fact: the AP password is the only access control there is.
+Change it.
 
 In station mode the board is exposed to everything on that network instead. Only
 join networks you control.
+
+## MQTT alerting leaves the vehicle { #mqtt-alerting-leaves-the-vehicle }
+
+Everything else on this page needs an attacker within Wi-Fi range. Publishing to a
+broker does not: it takes the one genuinely sensitive fact this device produces -
+that a named person is falling asleep - and puts it on the internet, addressed to
+whoever holds the subscription.
+
+**It is off by default, and turning it on is an act rather than an inherited
+setting.** That is why there is no "enabled" default to override and no environment
+variable that switches it on.
+
+### The preconfigured broker is public
+
+`broker.emqx.io` is the [official EMQX public broker][emqx]. It is filled in on the
+device's settings modal and on the [fleet monitor](fleet-monitoring.md) so that a
+demonstration works in a room with no broker in it, and it is
+**demonstration and testing only**:
+
+- there is **no authentication**. Anyone can subscribe, and anyone can publish;
+- there is **no isolation**. The topic tree is shared with the whole internet;
+- the topics are **guessable**. `plxy/drowsyguard/#` is one subscription;
+- so anyone watching reads every alert, including the **driver remark** - which is
+  the field that names a person.
+
+Point both ends at a broker you control before any real vehicle, and before any
+demonstration where the remark is a real person's name rather than "Driver A".
+
+[emqx]: https://www.emqx.com/en/mqtt/public-mqtt5-broker
+
+### What is in a published message, and what is not
+
+| In the payload | In the topic |
+| --- | --- |
+| `device_id`, `fleet_id`, `remark`, `alert`, `severity`, `risk`, `perclos`, `alert_count`, `uptime_ms`, `ts`, `event_id`, `seq` | `plxy/drowsyguard/{fleet-id}/{device-id}/alerts` |
+
+**No images.** The JPEG captures stay on the SD card and are never published; a
+camera frame of somebody's face is the one thing on this device that must not leave
+it over a shared broker, and there is no code path that would.
+
+**The remark is deliberately not in the topic.** A driver's name has no business in a
+broker's subscription tree, where it is visible to anyone holding a wildcard, is
+retained in broker state, and cannot be changed without orphaning the topic. It
+travels in the payload, where it is at least addressed to a subscriber rather than
+published as an address.
+
+`device_id` and `fleet_id` *are* in the topic, so treat them as public: use
+`van-3`, not the registration plate.
+
+### TLS, and the one setting that turns it off
+
+| Configuration | Confidentiality | Authenticity |
+| --- | --- | --- |
+| TLS or WSS, no certificate pasted | yes | yes - verified against the Mozilla root bundle in flash |
+| TLS or WSS, a CA certificate pasted | yes | yes - verified against that one root |
+| **Skip certificate verification** | yes | **no** - anything on the path can present itself as your broker |
+| TCP or WS | **no** | no |
+
+The third row is reachable on purpose and labelled in red on the modal, in the API
+response and here. The alternative is an operator with a self-signed broker turning
+TLS off altogether, which is strictly worse. Use it to get a broker working, paste
+that broker's CA, and turn it back on.
+
+A pasted certificate is shape-checked before it is stored, and one check is a
+security check rather than a convenience: **a private key in the CA box is refused**.
+It would otherwise be stored, be useless, and leave the operator believing their
+broker was authenticated.
+
+### Credentials never come back out
+
+The broker password and the Wi-Fi station password are write-only through the API:
+
+- `GET /api/mqtt` returns `password_set: true` and **no password field at all** - not
+  masked, not truncated, absent. The value that is never formatted is the value that
+  cannot be logged by accident;
+- the username comes back **masked** (`fl*********r`), because an operator has to be
+  able to tell which account is configured without the value being readable over a
+  shoulder or out of a screenshot. Below four characters nothing is kept: `a*b`
+  discloses two thirds of `ab`;
+- the device page's password boxes open **empty**, with a placeholder saying whether
+  one is stored. An empty box submits nothing, which the firmware reads as "keep the
+  stored one"; erasing takes an explicit Clear button;
+- nothing is logged. `board_wifi.cpp` logs the SSID and never the passphrase,
+  `mqtt_publisher.cpp` logs the URI and the masked username, and the error strings it
+  publishes to the page are built from `esp_err_t` names and numeric codes only. That
+  is a rule rather than a coincidence: `./plxy.sh monitor` puts the serial log on a
+  screen in a room with other people in it, and it is what gets pasted into bug
+  reports.
+
+`tests/test_mqtt_config.py` checks the last point by searching the whole API document
+for the secret rather than by inspecting named fields - a future field that happened
+to include the password would pass a field-by-field check and fail that one.
+
+### The fleet monitor is a page, not a service
+
+The [fleet monitor](fleet-monitoring.md) in this documentation runs entirely in the
+reader's browser. There is no backend, nothing is proxied, and no message reaches
+this project's infrastructure. Two consequences worth being explicit about:
+
+- **it never stores a password.** The host, port, path, topic and client id are kept
+  in the browser's local storage so that a demonstration does not begin with
+  retyping; the password is held in a variable for the life of the tab, the field is
+  emptied on connect, and nothing writes it anywhere;
+- **everything it receives is treated as hostile.** On a shared broker, anyone can
+  publish anything to the topic being watched. Every string is length-capped and
+  stripped of control characters, C1 codes and the bidirectional overrides that would
+  otherwise let a remark reverse the rendering of the rest of the page; every number
+  is clamped; a document that is not a `drowsyguard.alert.*` object is rejected and
+  counted rather than rendered; and every value reaches the DOM through
+  `textContent`. There is no `innerHTML` in `docs/assets/js/fleet.js`, and
+  `tests/test_fleet_page.py` fails the build if one appears.
+
+It also **never publishes**. The page subscribes and acknowledges; it sends no
+commands to any device, which is the same decision the firmware makes in the other
+direction - see below.
+
+### The device does not subscribe
+
+The firmware publishes and takes **no commands over MQTT**. There is no subscription,
+no command topic, and nothing a broker can ask it to do. A drowsiness alarm a broker
+can reconfigure - or mute - would put the mute button from the section above on the
+whole internet, and on a shared broker that is not a threat model this project can
+defend.
+
+The unauthenticated HTTP mute is still there, and the AP password is still the only
+control over it. MQTT does not widen that.
 
 ## The dashboard streams your webcam
 
@@ -133,11 +271,17 @@ that face to the SD card** whenever an alert fires.
 
 ## Secrets and the repository
 
-There are no runtime secrets in this project, and there should not be any:
+There are no runtime secrets **in the repository**, and there should not be any:
 
 - The Wi-Fi AP password is a **compiled-in default**, not a secret, and is
   documented as such.
 - Nothing in the build reads an API key or a token.
+- The broker password, the broker username and the Wi-Fi station passphrase are
+  genuine runtime secrets, and they live only in the device's NVS partition. They are
+  never in a source file, never in `sdkconfig.defaults`, never returned by an API and
+  never logged. NVS is **not encrypted** on this build, so anybody holding the board
+  holds them - the same caveat as the SD-card captures above. Erase them with
+  `./plxy.sh erase` before handing a board on.
 - The documentation pipeline runs a **credential scan** over both the sources and
   the generated site, and fails the build on a hit — see
   [Documentation pipeline](operations/documentation.md#validation).

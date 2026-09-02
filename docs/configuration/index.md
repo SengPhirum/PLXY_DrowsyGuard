@@ -4,7 +4,7 @@ title: Configuration
 
 # Configuration
 
-DrowsyGuard has four places where behaviour is configured. Nothing else in the
+DrowsyGuard has five places where behaviour is configured. Nothing else in the
 tree holds a tunable number.
 
 | Layer | Lives in | Applied |
@@ -13,6 +13,11 @@ tree holds a tunable number.
 | [Firmware pins](#firmware-pins) | `firmware/esp32s3/main/board_*.h` | at compile time |
 | [Firmware behaviour](#firmware-behaviour) | `main.cpp`, `risk_filter.h`, `face_gate.h`, `presence.h`, `behavior.h` | at compile time |
 | [Build](#build-configuration) | `sdkconfig.defaults` | at `idf.py set-target` |
+| [MQTT alerting](#mqtt-alerting) | the device's NVS partition | at runtime, from the web UI |
+
+The last row is the only one that is **not** in the repository, and that is
+deliberate: it holds a broker password. See
+[Persisted settings](#persisted-settings).
 
 !!! warning "Several of these are mirrored, and the mirrors are tested"
     `behavior.h`, `face_gate.h`, `presence.h` and `risk_filter.h` each have a Python
@@ -215,6 +220,117 @@ session where an empty seat is the normal state.
 `./plxy.sh wifi` reads these straight out of the header, so it always prints what
 the firmware will actually do. See [Security](../security.md#the-access-point-is-open-by-default).
 
+`WIFI_STA_SSID` is now a **default rather than the only route**: station credentials
+stored in NVS take precedence over it, and the settings modal writes them. That is
+what MQTT needed — the board's own access point has no route to the internet, so a
+device that could only be its own AP could only ever publish to something on the same
+island, and a demonstration has to be able to point it at a phone hotspot in the room
+without a rebuild.
+
+The access point comes up either way and never comes down. A wrong hotspot password
+costs you the broker, never the dashboard and never the alarm.
+
+## MQTT alerting { #mqtt-alerting }
+
+Every field here is set from the device's web UI and stored in its NVS partition. None
+of it is compiled in, and none of it is in this repository — one of the values is a
+broker password.
+
+Full walkthrough: [Fleet alerting over MQTT](../guide/mqtt.md). API:
+[`POST /api/mqtt`](../reference/device-api.md#post-apimqtt).
+
+### Connection
+
+| Setting | Default | Range / notes |
+| --- | --- | --- |
+| enabled | **off** | Off by default and deliberately: switching it on sends a named driver's alertness state to a third party, which has to be an act rather than an inherited setting |
+| transport | `tls` | `tcp`, `tls`, `ws`, `wss`. Changing it moves the port, but only when the port was still the default for the old transport |
+| protocol | `3.1.1` | or `5`. Both are compiled in (`CONFIG_MQTT_PROTOCOL_5`) |
+| host | `broker.emqx.io` | hostname or IPv4, ≤ 95 chars. IPv6 is not supported and says so rather than failing at connect time |
+| port | `8883` | 1–65535. EMQX: 1883 TCP, 8883 TLS, 8083 WS, 8084 WSS |
+| WebSocket path | `/mqtt` | required for `ws`/`wss`, must start with `/` |
+| client ID | derived | `drowsyguard-{device_id}` when blank. Two devices sharing one knock each other off the broker in turn, and both look intermittently broken rather than misconfigured |
+| username / password | empty | write-only through the API; an empty field on save keeps the stored value |
+| QoS | `1` | `0` or `1`. **2 is refused**: the alert path is at-least-once with event-ID de-duplication at both ends, which is what QoS 2 would be paying for |
+| keepalive | `30` s | 5–300 |
+| Last Will | on | the retained online/offline document. The only way a dashboard can tell "no alerts because the driver is fine" from "no alerts because the device is in a tunnel" |
+| skip TLS verification | off | encrypted but unauthenticated. Reachable on purpose, labelled in red everywhere — see [Security](../security.md#mqtt-alerting-leaves-the-vehicle) |
+| CA certificate | none | one PEM root, ≤ 4 kB. With none, TLS verifies against the Mozilla root bundle in flash |
+
+### Identity
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| device ID | a slug of the SoftAP name | e.g. `drowsyguard-c5e019`. Already MAC-derived, so unique per board with no provisioning step |
+| fleet ID | `demo-fleet` | the level a dashboard subscribes to with one wildcard |
+| remark | `Driver A` | printable ASCII, ≤ 47 chars. The only field that says who is being monitored, and **not** part of any topic |
+
+`device_id` and `fleet_id` are constrained to lowercase letters, digits, `-`, `_` and
+`.`, starting and ending alphanumeric. That is not pedantry: they become topic
+segments, and a `/`, `+` or `#` in either one silently restructures the tree. A topic
+is the one field where a wrong value does not fail — it goes somewhere else.
+
+### Topics
+
+| Setting | Default |
+| --- | --- |
+| topic mode | `auto` |
+| topic (manual mode) | empty |
+
+Auto mode builds `plxy/drowsyguard/{fleet-id}/{device-id}/alerts` and `/status`, plus
+the `+`-wildcard forms a dashboard subscribes to. Manual mode takes a topic verbatim,
+refusing `+` and `#` (subscription syntax), a leading `$` (broker-reserved), a leading
+or trailing `/`, and empty levels. It also refuses a topic long enough that the
+derived `/status` topic would not fit — the Last Will uses it, and a silently
+truncated will topic means a retained message on a topic nobody subscribes to.
+
+### Wi-Fi station
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| enabled | off | falls back to `WIFI_STA_SSID` |
+| SSID | empty | ≤ 32 chars |
+| password | empty | empty (open network) or 8–63 chars. 1–7 is always a typo, and the radio would otherwise reject it with an error that reads like a bad SSID |
+
+### Not settable, on purpose
+
+| Constant | Value | Where |
+| --- | --- | --- |
+| `MQTT_OUTBOX_DEPTH` | 16 | `mqtt_config.h`. About eight minutes of drowsiness alerts at the 30 s channel cooldown, and 1.6 kB. Past it the **oldest** is discarded: after twenty minutes offline what an operator needs is the last few minutes of a deteriorating driver, not the first |
+| `MQTT_DEDUP_SLOTS` | 24 | `mqtt_config.h`. Full strings rather than hashes — under a kilobyte, and a hash collision would silently drop a real alert |
+| `MQTT_BACKOFF_BASE_MS` / `MQTT_BACKOFF_MAX_MS` | 1000 / 60000 | `mqtt_config.h`. Doubling, capped, with up to 25 % additive jitter. esp-mqtt's own auto-reconnect is switched off in favour of it |
+| `MQTT_TOPIC_ROOT` | `plxy/drowsyguard` | `mqtt_config.h`. Two fixed levels so a shared broker cannot collide with us by accident |
+| `MQTT_PAYLOAD_MAX` | 768 | `mqtt_config.h`. A document that will not fit produces nothing rather than half of one |
+
+These are compile-time because they are safety and memory bounds rather than
+preferences, and because a bound that can drift at runtime cannot be reported in a
+thesis. Every one of them is exercised by `tests/test_mqtt_config.py`.
+
+## Persisted settings { #persisted-settings }
+
+Three records and a certificate, in the NVS namespace `dgsettings` — kept separate
+from `voice_alert.cpp`'s `drowsyguard` namespace so that erasing one subsystem to
+recover it cannot silently reset the others.
+
+| Key | Holds |
+| --- | --- |
+| `device` | device ID, fleet ID, remark |
+| `wifi` | station enabled, SSID, passphrase |
+| `mqtt` | everything in [Connection](#mqtt-alerting) above except the certificate |
+| `mqtt_ca` | the CA certificate, up to 4 kB |
+
+Each record is a **versioned byte stream with a magic and a CRC**, not a struct
+`memcpy`. A raw struct in flash is a promise never to reorder a field, never to change
+a capacity and never to compile with different padding, and the first time one of
+those is broken the device reads a plausible-looking hostname out of the middle of a
+password. A record that fails any of the three checks — or that no longer passes
+validation — is discarded and the defaults are used, which is also what a fresh board
+does. `tests/test_mqtt_config.py` flips **every byte** of each record and requires
+every one to be rejected.
+
+NVS is not encrypted on this build: anybody holding the board holds the passwords.
+`./plxy.sh erase` clears them.
+
 ## Build configuration
 
 `firmware/esp32s3/sdkconfig.defaults` seeds `sdkconfig` at
@@ -229,6 +345,9 @@ The settings that are not optional:
 | `CONFIG_ESPTOOLPY_FLASHSIZE_16MB` | the N16R8 module |
 | `CONFIG_PARTITION_TABLE_CUSTOM` | `partitions.csv` |
 | `CONFIG_OV5640_SUPPORT` + `CONFIG_OV3660_SUPPORT` | the board is sold with an OV3660 but ships an OV5640; both are pinned so a driver change cannot look like a dead camera |
+| `CONFIG_MQTT_TRANSPORT_SSL`, `CONFIG_MQTT_TRANSPORT_WEBSOCKET`, `CONFIG_MQTT_TRANSPORT_WEBSOCKET_SECURE` | three of the four transports are behind Kconfig options that default to off, and a transport that is compiled out fails at connect time with a generic transport error rather than "not built" |
+| `CONFIG_MQTT_PROTOCOL_5` | MQTT 5 is offered in the settings modal, so it has to be in the binary |
+| `CONFIG_MBEDTLS_CERTIFICATE_BUNDLE` | the Mozilla root bundle in flash. This is what makes the preconfigured public broker reachable over TLS **with** verification and nothing pasted in — the alternative is shipping a default that only works with verification off |
 
 The `ov3660: Mismatch PID=0x5640` line on the way to a working camera is
 expected, not a fault.
@@ -257,6 +376,8 @@ The only things settable on a running device, over HTTP:
 | Stream rate | 1–20 fps | `POST /api/settings?fps=N` |
 | Mute | `0` / `1` | `POST /api/settings?muted=N` |
 | Alert language | `en` or `km` | `POST /api/settings?lang=xx` |
+| Everything in [MQTT alerting](#mqtt-alerting) | see the tables above | `POST /api/mqtt` (form-encoded body) |
+| One test publish | — | `POST /api/mqtt/test` |
 
 Risk thresholds are **not** runtime-settable — they are compiled in, by design:
 a threshold that can drift at runtime cannot be reported in a thesis. Full

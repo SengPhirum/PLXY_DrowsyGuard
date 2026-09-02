@@ -116,6 +116,33 @@ two, so the API reports the source explicitly.
 See [Voice alert hardware](../VOICE_ALERT_HARDWARE.md) for the amplifier, the
 clip set and the alert state machine.
 
+## Fleet alerting
+
+The **Fleet alerting (MQTT)** card publishes every confirmed alert to a broker, so a
+supervisor can watch a fleet without being in the cab. It is off until you switch it
+on, and nothing about the speaker, the dashboard or the captures depends on it.
+
+Press **Configure MQTT**, and the modal covers the whole feature: transport
+(TCP/TLS/WS/WSS), MQTT 3.1.1 or 5, host, port, WebSocket path, client id, credentials,
+a CA certificate, QoS, the driver remark, automatic or manual topics, and Wi-Fi station
+credentials — because the board's own access point has no route to the internet.
+
+Three things on that card are worth watching:
+
+- the state pill: anything but `online` while it is enabled means alerts are being
+  buffered rather than published;
+- `published / acked`: a gap that does not close means the broker is not acknowledging
+  QoS 1 messages;
+- `buffered`: alerts waiting. Sixteen is the limit, past which the oldest is dropped
+  and counted.
+
+**Test publish** sends one synthetic alert through the real path, which is the only way
+to test a broker that does not involve making somebody fall asleep. The **copy** buttons
+beside the three topics are there because the fleet-wide one is sixty characters of
+slashes — paste it into the [fleet monitor](../fleet-monitoring.md).
+
+Full walkthrough: [Fleet alerting over MQTT](mqtt.md).
+
 ## Captures on the SD card
 
 When an alert fires the board writes the frame to the SD card, and the page

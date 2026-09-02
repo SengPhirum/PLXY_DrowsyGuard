@@ -21,6 +21,17 @@ Everything the project does, grouped by what you are holding.
 | [Firmware dev loop](dev-loop.md) | `plxy.sh` end to end: build, flash, monitor, and the two hardware quirks it works around |
 | [Using the device](device.md) | Joining the access point, reading the live page, alerts, snapshots and SD-card events |
 
+<div class="grid cards" markdown>
+
+-   :material-cloud-upload-outline:{ .lg .middle } **[Fleet alerting over MQTT](mqtt.md)**
+
+    ---
+
+    Publishing every confirmed alert to a broker: transports, topics, the payload
+    schema, offline buffering, and what happens when the broker is not there.
+
+</div>
+
 ## Desktop toolkit
 
 | Page | What it covers |

@@ -62,6 +62,7 @@ do not work the way their documentation assumes:
 | `snapshot [file]` | save one JPEG frame (default `snapshot.jpg`) |
 | `alert [reason]` | play a warning: `drowsy`, `microsleep`, `yawn`, `nod` |
 | `mute` / `unmute` | silence or restore the speaker |
+| `mqtt [sub]` | broker state, a test publish, or the fleet topic — `status`, `test`, `topic`, `on`, `off` |
 
 ### Project
 

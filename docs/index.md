@@ -34,6 +34,12 @@ There is no cloud dependency and no display to distract the driver. The board
 raises its own Wi-Fi access point for diagnostics, while the safety-critical
 audio alert remains local and continues to work when the dashboard is closed.
 
+Detection stays on the device. What can *optionally* leave it is a one-line summary of
+each confirmed alert, published to an MQTT broker so that a fleet can be watched from
+the [fleet monitor](fleet-monitoring.md) — off by default, and structurally incapable
+of stalling the detection loop. See
+[Fleet alerting over MQTT](guide/mqtt.md).
+
 !!! warning "Research prototype"
     DrowsyGuard is a thesis research project. It is **not** a certified
     automotive safety device and must not be relied on to keep anyone awake.
@@ -47,6 +53,8 @@ camera -> YuNet face + 5 landmarks -> crop both eyes (32x32)
        -> face geometry: jaw drop, head pitch, roll -> yawn / nod
        -> behaviour fusion (+ sneeze suppression)   -> risk score
        -> RiskFilter (sustained + cooldown)         -> spoken alert
+                                                    -> SD-card capture
+                                                    -> MQTT alert (optional)
 ```
 
 Risk is measured from **eyelid closure over time**, not from a whole-face

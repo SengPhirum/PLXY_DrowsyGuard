@@ -228,6 +228,119 @@ chosen as durations, so `main.cpp` re-derives them from the measured rate once a
 second. If you bypassed `retune_for_fps()`, that coupling is back. See
 [Configuration](configuration/index.md#risk-and-timing-mainmaincpp).
 
+## MQTT and the fleet monitor { #mqtt-and-the-fleet-monitor }
+
+### The MQTT card says "off" and nothing publishes
+
+Publishing is off until it is switched on — that is the default, and deliberately so.
+Open **Configure MQTT**, tick *Publish alerts to a broker*, and save. The card then
+shows a connection state instead of "off".
+
+### It never leaves `connecting`, or the state flips between `connecting` and `backoff`
+
+The device cannot reach the broker. Check in this order, because each answer rules out
+the ones below it:
+
+1. **Is there a route at all?** The board's own access point has no path to the
+   internet. `net.sta` in `/api/status` must be `true` for a broker that is not on the
+   same Wi-Fi. Fill in **Wi-Fi station** at the bottom of the same modal.
+2. **Did the station side actually join?** `net.sta_ip` should not be `0.0.0.0`. A
+   wrong passphrase looks identical to a wrong SSID from here; the serial log names the
+   SSID it is trying.
+3. **Is the port right for the transport?** TLS on 1883 fails with a transport error
+   that names TLS rather than the port. EMQX: 1883 TCP, 8883 TLS, 8083 WS, 8084 WSS.
+4. **Read `mqtt.error`.** `broker refused the connection (return code 5)` is *not
+   authorised* — wrong credentials, or a broker that requires them. `return code 4` is
+   a bad username or password. A `transport error` with an `esp-tls` code is the
+   handshake, not the credentials.
+
+### `transport error (esp-tls 0x8010, ...)` on a private broker
+
+Certificate verification failed. With no certificate pasted, TLS verifies against the
+Mozilla root bundle in flash, which will not have signed a self-signed or internal CA.
+Paste that broker's **CA certificate** into the modal. To confirm that is the cause
+first, tick *Skip TLS certificate verification* — if it connects, the certificate is
+the problem. Untick it afterwards; that setting is
+[encrypted but unauthenticated](security.md#mqtt-alerting-leaves-the-vehicle).
+
+### "that is a private key, not a certificate"
+
+You pasted a key into the CA box. It is refused rather than stored, because a stored
+key is useless and would leave you believing the broker was authenticated. Paste the
+broker's CA certificate — the `-----BEGIN CERTIFICATE-----` block.
+
+### `buffered: N waiting` and the number keeps growing
+
+The device is queuing alerts because it cannot publish. Everything local still works —
+the speaker sounds, captures are written. When the count reaches 16 the **oldest**
+alert is discarded and `dropped` starts climbing; that is the designed behaviour, not
+a fault. Fix the connection and the buffer flushes on the next successful connect.
+
+### `dropped / dup` is non-zero
+
+`dropped` counts alerts evicted from a full outbox: the broker has been unreachable for
+long enough to fill sixteen slots. `dup` counts duplicates suppressed by event ID,
+which is normal after a reconnect — QoS 1 is at-least-once by definition.
+
+A non-zero `rejected` (shown in brackets) means the capture loop could not hand an
+alert over because the outbox lock was busy. It should be zero always; the critical
+section is a 96-byte copy. If it is not, something is holding that mutex far longer
+than it should.
+
+### The fleet monitor says "The connection failed" immediately
+
+Three causes, in order of likelihood:
+
+1. **`ws://` from an HTTPS page.** The published documentation is served over HTTPS, so
+   a plaintext WebSocket is blocked before it is attempted. Use **WSS**. The page warns
+   about this in the modal.
+2. **Wrong port or path.** EMQX serves WSS on 8084 at `/mqtt`.
+3. **The broker does not offer WebSocket.** A broker with only 1883 and 8883 open
+   cannot be reached from a browser at all — a browser cannot open a raw MQTT socket.
+
+The browser deliberately does not say which; a detailed WebSocket error would be a
+cross-origin information leak. That is why the page cannot be more specific either.
+
+### The fleet monitor connects, but no cards appear
+
+The topic does not match. Copy it from the device's modal rather than retyping — the
+middle of the three, with a `+` where the device id goes. A `+` in the wrong level
+matches nothing, silently, which is exactly what this looks like.
+
+Then press **Test publish** on the device. If a card appears, the device is fine and
+the earlier silence was simply no alerts firing.
+
+### "The broker refused the subscription"
+
+The broker allowed the connection but not that topic. On a shared broker that is a
+topic restriction; use your own.
+
+### "messages rejected" is climbing on the fleet monitor
+
+Something is publishing to that topic that is not a DrowsyGuard alert. On the public
+broker, that is somebody else's project — the topics are guessable and the tree is
+shared. It is counted rather than hidden precisely so that it is visible.
+
+### A device card is stuck at "no status message seen"
+
+The grey dot means no status document has arrived. Either the device's **Last Will** is
+switched off, or the page's status topic is not the one the device publishes to. The
+device's modal shows all three topics; the third is the status one.
+
+### Alerts arrive but `ts` is empty and the timeline shows an uptime
+
+Expected. There is no real-time clock on the board, so unless something has set the
+clock the device publishes `"ts": ""` and `"ts_source": "uptime"` rather than a
+timestamp in 1970. `uptime_ms` is always present and is what to order events by.
+
+### Browser notifications do nothing
+
+The switch asks for permission the first time. If it snaps back off, the browser has
+already denied notifications for the site — that has to be reset in the browser's own
+site settings; a page cannot re-ask. Sound is independent and needs no permission,
+but most browsers only allow audio to start from a click, which is why toggling it
+plays one tone immediately.
+
 ## The desktop toolkit
 
 ### The webcam runs at 1 fps
@@ -256,6 +369,12 @@ adjacent frames of one video — in both train and test. Use `import-ddd`, then
 ### `esp_ppq: OPTIONAL/MISSING`
 
 Expected until you need `.espdl` quantization. Nothing else requires it.
+
+### `./plxy.sh test` skips `test_mqtt_config.py`
+
+It needs a host C++ compiler to build `mqtt_config.cpp` and `device_config.cpp`. Same
+cause and same fix as the parity tests below: install a compiler, or
+`pip install -e ".[dev]"` for `ziglang`.
 
 ### `./plxy.sh test` skips the firmware tests
 

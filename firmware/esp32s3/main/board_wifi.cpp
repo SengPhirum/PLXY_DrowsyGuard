@@ -19,6 +19,15 @@ static bool s_ap_up = false;
 static bool s_sta_enabled = false;
 static bool s_sta_connected = false;
 static char s_ap_ssid[33] = {0};
+// The SSID actually joined, whichever source it came from. Held so the log line and
+// the disconnect handler name the right network - they used to print WIFI_STA_SSID
+// unconditionally, which would have been a lie for every runtime-configured device.
+static char s_sta_ssid[33] = {0};
+// Whether a station connection is currently *wanted*. Separate from s_sta_enabled,
+// which says whether the interface exists: switching station mode off at runtime has
+// to stop the reconnect timer, and without this flag the disconnect handler would
+// dutifully redial the network the operator just removed, forever.
+static bool s_sta_wanted = false;
 
 static bool sta_configured() { return sizeof(WIFI_STA_SSID) > 1; }
 
@@ -67,7 +76,7 @@ static void on_wifi_event(void *, esp_event_base_t base, int32_t id, void *data)
                 // require the board to be power-cycled. The AP side is unaffected
                 // either way, so the retry loop can never take the preview down.
                 s_sta_connected = false;
-                schedule_sta_retry(2 * 1000 * 1000);
+                if (s_sta_wanted) schedule_sta_retry(2 * 1000 * 1000);
                 break;
             default:
                 break;
@@ -75,7 +84,7 @@ static void on_wifi_event(void *, esp_event_base_t base, int32_t id, void *data)
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         auto *e = static_cast<ip_event_got_ip_t *>(data);
         s_sta_connected = true;
-        ESP_LOGI(TAG, "joined \"%s\"; preview also at http://" IPSTR "/", WIFI_STA_SSID,
+        ESP_LOGI(TAG, "joined \"%s\"; preview also at http://" IPSTR "/", s_sta_ssid,
                  IP2STR(&e->ip_info.ip));
     }
 }
@@ -96,14 +105,39 @@ static bool nvs_ready() {
     return true;
 }
 
-bool board_wifi_init() {
+// A bounded copy into one of the radio's fixed-width credential fields, matching the
+// idiom the AP path above already uses and for the same reason: the fields are 32 and
+// 64 bytes and are *not* required to be NUL-terminated when full, so snprintf's
+// truncation semantics are both wrong here and something GCC rejects outright
+// (-Werror=format-truncation) once the source is a runtime string rather than a
+// literal. The caller's structs are zero-initialised, so the tail is already NUL.
+static void radio_field(uint8_t *field, size_t cap, const char *src) {
+    if (src == nullptr) return;
+    const size_t n = strnlen(src, cap);
+    memcpy(field, src, n);
+}
+
+bool board_wifi_init(const WifiStaOverride *sta_override) {
     if (!nvs_ready()) return false;
+
+    // The stored configuration wins over the compile-time one when it is enabled,
+    // and is ignored entirely when it is not - so a board that has never been
+    // configured behaves exactly as it did before this existed.
+    const bool have_override = sta_override != nullptr && sta_override->enabled &&
+                               sta_override->ssid != nullptr &&
+                               sta_override->ssid[0] != '\0';
 
     if (esp_netif_init() != ESP_OK) return false;
     if (esp_event_loop_create_default() != ESP_OK) return false;
 
     s_ap_netif = esp_netif_create_default_wifi_ap();
-    s_sta_enabled = sta_configured();
+    s_sta_enabled = have_override || sta_configured();
+    s_sta_wanted = s_sta_enabled;
+    if (have_override) {
+        snprintf(s_sta_ssid, sizeof(s_sta_ssid), "%s", sta_override->ssid);
+    } else if (sta_configured()) {
+        snprintf(s_sta_ssid, sizeof(s_sta_ssid), "%s", WIFI_STA_SSID);
+    }
     if (s_sta_enabled) s_sta_netif = esp_netif_create_default_wifi_sta();
 
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
@@ -149,10 +183,11 @@ bool board_wifi_init() {
 
     if (s_sta_enabled) {
         wifi_config_t sta = {};
-        snprintf(reinterpret_cast<char *>(sta.sta.ssid), sizeof(sta.sta.ssid), "%s",
-                 WIFI_STA_SSID);
-        snprintf(reinterpret_cast<char *>(sta.sta.password), sizeof(sta.sta.password),
-                 "%s", WIFI_STA_PASSWORD);
+        const char *pass = have_override ? (sta_override->password != nullptr
+                                                ? sta_override->password : "")
+                                         : WIFI_STA_PASSWORD;
+        radio_field(sta.sta.ssid, sizeof(sta.sta.ssid), s_sta_ssid);
+        radio_field(sta.sta.password, sizeof(sta.sta.password), pass);
         if (esp_wifi_set_config(WIFI_IF_STA, &sta) != ESP_OK) return false;
     }
 
@@ -171,7 +206,49 @@ bool board_wifi_init() {
     ESP_LOGI(TAG, "SoftAP \"%s\" up on channel %d, %s", s_ap_ssid, WIFI_AP_CHANNEL,
              sizeof(WIFI_AP_PASSWORD) > 1 ? "WPA2" : "OPEN");
     ESP_LOGI(TAG, "join it, then open http://%s/", st.ap_ip);
-    if (s_sta_enabled) ESP_LOGI(TAG, "also joining \"%s\"", WIFI_STA_SSID);
+    // The SSID is logged; the password never is. That is not paranoia about this
+    // one value - it is that `./plxy.sh monitor` puts this log on a screen in a room
+    // with other people in it, and the serial log is the least protected surface on
+    // the device.
+    if (s_sta_enabled) {
+        ESP_LOGI(TAG, "also joining \"%s\" (%s)", s_sta_ssid,
+                 have_override ? "from the stored settings" : "compiled in");
+    }
+    return true;
+}
+
+bool board_wifi_apply_station(const WifiStaOverride &sta) {
+    // No station interface, so there is nothing to configure. Reported rather than
+    // faked: esp_netif_create_default_wifi_sta() after esp_wifi_start() means
+    // reworking the mode of a running radio, and a half-applied radio change on the
+    // device that is also serving the page is not a trade worth making.
+    if (!s_sta_enabled || s_sta_netif == nullptr) return false;
+
+    s_sta_wanted = sta.enabled && sta.ssid != nullptr && sta.ssid[0] != '\0';
+    if (s_sta_retry != nullptr) esp_timer_stop(s_sta_retry);
+
+    if (!s_sta_wanted) {
+        esp_wifi_disconnect();
+        s_sta_connected = false;
+        s_sta_ssid[0] = '\0';
+        ESP_LOGI(TAG, "station mode switched off; the access point is unaffected");
+        return true;
+    }
+
+    snprintf(s_sta_ssid, sizeof(s_sta_ssid), "%s", sta.ssid);
+    wifi_config_t cfg = {};
+    radio_field(cfg.sta.ssid, sizeof(cfg.sta.ssid), s_sta_ssid);
+    radio_field(cfg.sta.password, sizeof(cfg.sta.password), sta.password);
+    if (esp_wifi_set_config(WIFI_IF_STA, &cfg) != ESP_OK) return false;
+    // Disconnect first: esp_wifi_connect() on an already-associated radio returns
+    // ESP_ERR_WIFI_CONN rather than switching networks, which would look like the new
+    // credentials had been accepted and quietly kept the old association.
+    esp_wifi_disconnect();
+    s_sta_connected = false;
+    // The SSID is logged; the password is not, here or anywhere else. `./plxy.sh
+    // monitor` puts this log on a screen in a room with other people in it.
+    ESP_LOGI(TAG, "joining \"%s\" (applied without a reboot)", s_sta_ssid);
+    schedule_sta_retry(200 * 1000);
     return true;
 }
 
