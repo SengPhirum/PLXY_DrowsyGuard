@@ -1,5 +1,35 @@
 # Changelog
 
+## 2026-09-05 - saving MQTT settings no longer reboots the board
+
+First hardware contact for the whole MQTT path (gap 13), and it found what host
+tests structurally cannot: a task stack. Saving the MQTT settings - and sometimes
+merely opening them - rebooted the board, *after* the new configuration had reached
+NVS, so every save "took" and crashed at the same time. Publishing itself worked on
+the very first try: three real alerts reached `broker.emqx.io` with distinct event
+ids on the first boot with a route to it.
+
+The crash: the control httpd task ran on a 6144-byte stack, and the `/api/mqtt`
+handler chain is the deepest on the device - `mqtt_config_json()` is a 2768-byte
+frame, `mqtt_respond()` 1632, the POST handler another 1024 (all measured with
+`-fstack-usage` on the xtensa toolchain), plus httpd's own frames: ~6 kB for a GET,
+~7 kB for a POST. GET overflowed by inches and intermittently; POST - the save -
+overflowed every time. The stack is 8192 now, with the measured arithmetic in the
+comment next to it.
+
+Verified on hardware the same day, after the fix and a Wi-Fi re-provision: `state:
+online` against `broker.emqx.io:1883` (TCP, QoS 1), **50 alerts published and
+PUBACKed over 2+ hours with no reboot**, `dropped` 0, and `GET /api/mqtt` answering
+in 0.17 s. TLS/WSS and the M3/M9 fps measurements are the remaining hardware gate -
+see gap 13.
+
+Also observed on hardware, worth knowing: attaching a serial listener to the CH343
+port while the app runs can read as a BOOT press (the bridge drives GPIO0), and
+five seconds of that cleared the stored Wi-Fi credentials through the button path -
+exactly the W10 hazard, from software instead of a finger. The credentials then had
+to be re-entered from the device page. The BOOT watcher's arming rules protect a
+monitor attached *at boot*, not one attached mid-run.
+
 ## 2026-09-04 - the MQTT client stops being able to freeze the detector
 
 An audit of the MQTT runtime ahead of its first hardware run against a broker

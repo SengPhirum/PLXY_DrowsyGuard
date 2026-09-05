@@ -1471,9 +1471,15 @@ bool web_server_start() {
     control.max_uri_handlers = 20;
     control.lru_purge_enable = true;
     control.max_open_sockets = 5;
-    // Formatting the status object costs a few hundred bytes of stack on its own
-    // (soft-float %f is not cheap), on top of httpd's own frames.
-    control.stack_size = 6144;
+    // 8192, and the number is measured, not padded: the deepest handler chain is
+    // GET/POST /api/mqtt, where mqtt_respond() is a 1632-byte frame on top of
+    // mqtt_config_json()'s 2768 (both from -fstack-usage on the real toolchain),
+    // plus the POST handler's 1024 and httpd's own frames - about 7 kB end to end.
+    // At the old 6144 every save of the MQTT settings overflowed this task's stack
+    // and rebooted the board *after* the settings had reached NVS, which read as
+    // "saving MQTT reboots the device but the config sticks". First hit on hardware
+    // 2026-09-05; host tests cannot see a stack.
+    control.stack_size = 8192;
     // Pinned away from core 0, where app_main runs the capture loop and ESP-DL runs
     // inference. Serving a page must not cost the detector a frame.
     control.core_id = 1;

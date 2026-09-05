@@ -13,13 +13,15 @@ I2S chime, `SoftAP "DrowsyGuard-C5E019"` on 192.168.4.1, face detector loaded, a
 **19.7 fps** with no viewer attached. The browser preview itself, the alert path and
 everything downstream of the (still unbound) eye model remain unverified.
 
-**MQTT alerting added 2026-09-01.** Every confirmed alert is also published to a
-broker as one versioned JSON document, configured from a modal on the device page and
-persisted in NVS; the documentation site carries a live fleet dashboard that
-subscribes to it. Off by default. Builds clean against ESP-IDF v5.5.5 in CI -
-3 662 000 B of the 6 291 456 B app partition, 41.8 % free, +251 kB over the pre-MQTT
-baseline - and passes 158 host-compiled tests, but **no part of it has touched a
-broker on hardware** - see gap 13.
+**MQTT alerting added 2026-09-01, working on hardware since 2026-09-05.** Every
+confirmed alert is also published to a broker as one versioned JSON document,
+configured from a modal on the device page and persisted in NVS; the documentation
+site carries a live fleet dashboard that subscribes to it. Off by default. The first
+hardware run against `broker.emqx.io` (TCP, QoS 1) published on the first try and
+found the one bug host tests structurally cannot: saving the settings overflowed the
+control server's task stack and rebooted the board - fixed 2026-09-05, verified with
+2+ hours online, 50 alerts published and acked, and `GET /api/mqtt` answering in
+0.17 s. What remains unexercised is in gap 13.
 
 **Wi-Fi provisioning added 2026-09-02.** The board no longer needs a rebuild to join a
 network: the device page scans, joins, shows the state, IP and signal, and forgets,
@@ -259,33 +261,40 @@ hardware** - see gap 14.
    behaviour cues against an actual yawn or nod (the logic is now correct and the signs
    are now right, but no one has yawned in front of it), and heap over hours.
 
-13. **MQTT alerting has never met a broker on hardware.** As of 2026-09-01 it
-   compiles and links against ESP-IDF v5.5.1 with the real xtensa toolchain, and every
-   decision in it is covered by `tests/test_mqtt_config.py` (155 cases) and
-   `tests/test_fleet_page.py` + `fleet_page_harness.mjs` (83 checks). What that does
-   **not** establish is anything about a real connection: the TLS handshake against
-   `broker.emqx.io`, whether the certificate bundle verifies it, WSS from the fleet
-   page, the reconnect after a real disconnection, the Last Will actually firing, the
-   flush after an outage, and the one number that matters - `fps` with the broker dead
-   versus alive. `docs/DEPLOYMENT.md` has these as tests M1-M8 with pass criteria that
-   do not depend on anybody's judgement. Run M3 first and record it.
+13. **MQTT alerting works on hardware over TCP; TLS/WSS and the isolation
+   measurements are still open.** The logic is covered by `tests/test_mqtt_config.py`
+   (162 cases) and `tests/test_fleet_page.py` + `fleet_page_harness.mjs` (83 checks),
+   and since 2026-09-05 by a real run: connected to `broker.emqx.io:1883` (TCP,
+   QoS 1, MQTT 3.1.1, auto topics), 50 alerts published and PUBACKed over 2+ hours
+   with no reboot, `dropped` 0, real alerts arriving with distinct event ids, and the
+   settings page saving and answering normally.
 
-   One further thing is untested by construction rather than by omission: NVS
-   behaviour on a partition that is genuinely full.
+   Getting there took two rounds of fixes, both worth remembering because neither
+   was reachable from a host test:
 
-   **Audited 2026-09-04, before the first hardware run.** Five defects found and
-   fixed, all on the reconnect/failure paths a bench test never exercises: the
-   esp-mqtt client task was the only network task not pinned to core 1, so a TLS
-   handshake could preempt the capture loop on core 0 for its full duration on
-   every backoff retry (the "freeze"); an alert queued mid-handshake woke the
-   connect-wait early and tore the half-connected client down, so a burst of
-   alerts could keep the client from ever connecting; the dedup ring recorded ids
-   before delivery, so a failed enqueue's retry was dropped as its own duplicate;
-   the outbox could commit an event evicted-and-replaced between peek and commit,
-   losing the replacement unsent; and the CONNACK never woke the publisher, adding
-   a silent 8 s before every flush. The two data-structure races are host-tested
-   (`test_mqtt_config.py`, 162 cases); the core-placement and burst claims are
-   DEPLOYMENT.md tests M9-M13, which join M1-M8 as the hardware gate.
+   * **Audited 2026-09-04, before the first hardware run.** Five defects on the
+     reconnect/failure paths: the esp-mqtt client task was the only network task not
+     pinned to core 1, so a TLS handshake could preempt the capture loop on core 0
+     for its full duration on every backoff retry (the "freeze"); an alert queued
+     mid-handshake woke the connect-wait early and tore the half-connected client
+     down; the dedup ring recorded ids before delivery, so a failed enqueue's retry
+     was dropped as its own duplicate; the outbox could commit an event
+     evicted-and-replaced between peek and commit; and the CONNACK never woke the
+     publisher, adding a silent 8 s before every flush. The two data-structure races
+     are host-tested; the rest are DEPLOYMENT.md tests M9-M13.
+   * **First broker contact 2026-09-05.** Publishing worked immediately, but every
+     *save* of the settings rebooted the board: POST /api/mqtt overflowed the
+     control httpd task's 6144-byte stack (the handler chain measures ~7 kB with
+     `-fstack-usage`), just after the config reached NVS - so the save "took" and
+     crashed at once. Stack is 8192 now; see the 2026-09-05 CHANGELOG entry.
+
+   Still unexercised on hardware: **TLS** (the handshake against the broker, the
+   certificate bundle verifying it, a pasted CA) and **WSS from the fleet page**;
+   the Last Will actually firing (M6); the flush after a real outage (M4); and the
+   measurements that carry the safety argument - M3 and M9, `fps` with the broker
+   dead and *during* TLS reconnect attempts. One further thing is untested by
+   construction rather than by omission: NVS behaviour on a partition that is
+   genuinely full.
 
 14. **Wi-Fi provisioning has not been exercised on hardware.** As of 2026-09-02 it
    compiles and links against ESP-IDF v5.5.5 with the real xtensa toolchain, and the
@@ -310,11 +319,15 @@ an ESP32-S3, which is why the eye-closure route was chosen.
 Wi-Fi: run `docs/DEPLOYMENT.md` tests W1-W11, and record W2 - `fps`, `ms_detect` and
 `ms_eye` during a scan against the same three when idle. That, and W4 (a wrong
 password must leave 192.168.4.1 serving), are the two claims a host test cannot make.
-MQTT: run `docs/DEPLOYMENT.md` tests M1-M8 against a broker, in that order, and
-record M3 - `fps`, `ms_detect` and `ms_eye` with the broker dead against the same
-three with it live. That measurement is the entire safety argument for the feature and
-it is the one thing a host test cannot produce. `./plxy.sh mqtt` prints the state and
-the counters; `./plxy.sh mqtt test` publishes one alert through the real path.
+MQTT: M1/M2 have effectively passed on hardware over TCP (2026-09-05: online, 50
+published and acked, test publishes arriving). What is left of `docs/DEPLOYMENT.md`
+M1-M13 is: switch the transport to **TLS** and repeat (the certificate bundle has
+never verified a real broker from this board), then record **M3 and M9** - `fps`,
+`ms_detect` and `ms_eye` with the broker dead, and during TLS reconnect attempts.
+Those two measurements are the entire safety argument for the feature and the one
+thing a host test cannot produce. Then M4 (outage flush), M6 (the will), M10-M13.
+`./plxy.sh mqtt` prints the state and the counters; `./plxy.sh mqtt test` publishes
+one alert through the real path.
 Hardware: the board is flashed and running; `./plxy.sh` drives the loop. What is
 left is to point it at a face - join `DrowsyGuard-C5E019`, open 192.168.4.1, and
 check that the face box tracks and that `fps` holds up with the stream open. Then

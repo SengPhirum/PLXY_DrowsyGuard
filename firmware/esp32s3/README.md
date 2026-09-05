@@ -82,6 +82,14 @@ idf.py -p COM9 flash monitor
 > BOOT pressed". So opening the port just to read the log drops the chip into the
 > loader and it goes silent. Use `python scripts/board_reset.py COM9` to boot the
 > application, or `--download` to put it back in the loader.
+>
+> **And one sharper edge** (observed 2026-09-05): opening the port while the app is
+> *running* can hold GPIO0 in the "BOOT pressed" state for as long as the port is
+> open — and five seconds of that is the deliberate Wi-Fi-reset gesture, so a
+> long-lived passive listener can silently erase the stored station credentials.
+> Only Wi-Fi is cleared (that is the button's whole contract), but the board then
+> drops off your network. Reset-then-read is safe: a pin that is low from boot
+> never arms the button watcher. Keep mid-run listening sessions short.
 
 `curl` is often faster than a browser for checking a change:
 
