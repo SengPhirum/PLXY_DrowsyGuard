@@ -839,3 +839,15 @@ body {
 #dg-build code {
   overflow-wrap: anywhere;
 }
+
+/* Header repo link: the GitHub icon alone. Material renders repo_name (and the
+   star/fork facts it fetches) next to the icon, which crowds the header on a
+   phone for information the icon's link already carries. The name stays in
+   mkdocs.yml because Material uses it for the link's accessible title. */
+.md-header__source .md-source__repository {
+  display: none;
+}
+.md-header__source {
+  width: auto;
+  max-width: none;
+}
