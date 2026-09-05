@@ -268,11 +268,10 @@ extern "C" void app_main(void) {
 
     VoiceAlertConfig alert_config{};
     alert_config.language = AlertLanguage::English; // switch to Khmer once the clip is approved
-    // Per channel, not global. A sneeze acknowledgement or a "no driver" warning
-    // held back by a drowsiness cooldown is a message that silently never arrives,
-    // and silence is the one failure this device must not have - see voice_alert.h.
+    // Per channel, not global. A "no driver" warning held back by a drowsiness
+    // cooldown is a message that silently never arrives, and silence is the one
+    // failure this device must not have - see voice_alert.h.
     alert_config.drowsiness = {30000, 3, 300000};
-    alert_config.sneeze = {2000, 0, 0};
     alert_config.presence = {5000, 0, 0};
     alert_config.buzzer_fallback = true;
     if (!voice_alert_init(alert_config)) {
@@ -512,7 +511,7 @@ extern "C" void app_main(void) {
                 p_closed = 0.5f * (p_eye[0] + p_eye[1]);
             }
 
-            // 3. Behaviour fusion: PERCLOS + long blinks + yawn + nod, sneeze-suppressed.
+            // 3. Behaviour fusion: PERCLOS + long blinks + yawn + nod.
             //    Still runs without the eye model: the geometry half (jaw drop, mouth
             //    width, both pitch channels, roll) is real and worth showing. Only the
             //    eye-derived half is missing, and PERCLOS reads a flat zero because
@@ -574,39 +573,6 @@ extern "C" void app_main(void) {
                                        st.perclos, voice_alert_count(), now_ms);
                 }
 
-                // 4b. The sneeze announcement, which deliberately does NOT go through
-                //     the risk filter.
-                //
-                //     A sneeze is not drowsiness - the entire reason it is detected is
-                //     to suppress the microsleep alarm it would otherwise trigger - so
-                //     routing it through an accumulator that measures drowsiness would
-                //     be wrong twice over: it would never reach the trigger on its own,
-                //     and if it did it would be announcing the wrong thing. It is an
-                //     edge, already de-duplicated and rate-limited inside
-                //     BehaviorAnalyzer by SNEEZE_ALERT_COOLDOWN_S, and it lands on its
-                //     own alert channel so a drowsiness cooldown cannot swallow it.
-                //
-                //     Announcing it at all is a decision worth defending. The driver
-                //     has just closed their eyes for a second and heard nothing; the
-                //     alternative is a system that appears to have missed it. One short
-                //     acknowledgement says the device saw the event and classified it.
-                if (st.sneeze_alert) {
-                    last_reason = AlertReason::Sneeze;
-                    voice_alert_trigger(now_ms, last_reason);
-                    web_server_capture_event(fb->buf, fb->width, fb->height, fb->len,
-                                             st.score, st.perclos,
-                                             voice_alert_clip_name(last_reason), now_ms);
-                    // Published like the others, and it carries severity "info"
-                    // rather than a drowsiness grade - see mqtt_severity_for(). The
-                    // suppression itself is untouched: a sneeze that BehaviorAnalyzer
-                    // reclassified never reaches the risk filter, so it never
-                    // produces a drowsiness message here either. What a fleet
-                    // dashboard gets is the record that the device saw a second-long
-                    // eye closure and decided it was not drowsiness - which is
-                    // exactly the silence that would otherwise look like a fault.
-                    mqtt_publish_alert(voice_alert_clip_name(last_reason), st.score,
-                                       st.perclos, voice_alert_count(), now_ms);
-                }
             }
 
             // 4c. Nobody there.

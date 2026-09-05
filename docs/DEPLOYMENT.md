@@ -26,15 +26,13 @@ Do not leave these floating for thesis experiments. Setup and flashing procedure
 Camera (240x240 RGB565) -> ESP-DL face detect + 5 landmarks, every 3rd frame ->
 **plausibility gate and track confirmation** -> one 32x32 eye crop per frame,
 alternating -> eye-closed probability -> PERCLOS + long blinks + yawn + nod fused
-into a risk score, sneeze-suppressed -> temporal risk filter -> reason-specific voice
+into a risk score -> temporal risk filter -> reason-specific voice
 alert (buzzer fallback), with the frame and every intermediate number served to a
 browser over Wi-Fi.
 
-Two decisions run alongside that chain rather than inside it, because neither is a
+One decision runs alongside that chain rather than inside it, because it is not a
 drowsiness measurement:
 
-- **Sneeze**: an edge, announced on its own channel, which also suppresses the
-  drowsiness score for `SNEEZE_MAX_S`.
 - **Presence**: `PresenceMonitor` takes the track's verdict *and* a `PipelineHealth`,
   and announces "no driver detected" once per absence episode - never when the camera
   or the models are down, because that would be a claim about the cabin drawn from a
@@ -89,9 +87,17 @@ Each of these has a pass criterion that does not depend on anybody's judgement:
 | M6 | Pull power without a clean shutdown | the broker publishes the will: `online: false`, `reason: "last-will"` |
 | M7 | Reconfigure while connected | the client is torn down and rebuilt on the publisher task; no alert is lost from the outbox |
 | M8 | `GET /api/mqtt` and search the response | no password anywhere in it, and the username is masked |
+| M9 | Point TLS at a host that drops SYNs (a LAN address with no broker) and watch the log for ten minutes | reconnect attempts follow the 1 s → 60 s jittered backoff; **`fps` holds through every attempt** — the handshake runs on core 1 (`CONFIG_MQTT_USE_CORE_1`), so a retrying TLS client must cost the detector nothing |
+| M10 | With the broker dead, fire more than 16 alerts (`/api/mqtt/test` in a loop) | `depth` caps at 16, `dropped` counts every eviction, the board neither reboots nor slows; restore the broker and the **newest** 16 arrive |
+| M11 | Fire `/api/mqtt/test` repeatedly *while* the client is mid-connect (during the TLS handshake window) | the connection still completes: queued alerts must not abort a handshake in progress, and all of them flush once `online` |
+| M12 | Buffered alerts + a reconnect | the flush starts within a second of `mqtt.state` reaching `online` (the CONNACK wakes the publisher; there is no fixed 8 s wait), and no event id arrives twice at the subscriber |
+| M13 | Soak: broker live, viewer streaming, 8+ hours | the `heap`/`psram` figures in the once-a-second log line are flat after the first minutes; `connects` is not climbing while the network is stable |
 
 M3 is the one to run first and the one to record. It is the whole safety argument:
 `fps`, `ms_detect` and `ms_eye` must be the same with a dead broker as with a live one.
+M9 is its CPU-side twin: the same three numbers must hold *during* connection attempts,
+not just between them, because the TLS handshake is a second or more of arithmetic and
+only core placement keeps it off the capture loop.
 
 ### Acceptance tests for Wi-Fi provisioning
 
@@ -158,8 +164,8 @@ the network and nothing else.
 | Detection hit rate with someone in frame | 20/20 at score 1.00 |
 | Gate rejections on real candidates | 0 over every logged interval |
 
-Against the same tree before the gate, the presence monitor and the sneeze
-announcement: **+276,128 B of flash** (259 kB of that is the four new voice clips;
+Against the same tree before the gate and the presence monitor: **+276,128 B of
+flash** (259 kB of that is the new voice clips;
 the logic is 5.4 kB of code) and **+1,120 B of internal RAM** (1,024 B of that is the
 status JSON buffer, grown to fit the new `presence` and `alert.counts` objects).
 Nothing new is allocated from PSRAM, and there is no measurable change in detection

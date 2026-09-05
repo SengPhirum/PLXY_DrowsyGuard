@@ -68,12 +68,6 @@ PHRASES = {
         'microsleep': 'Wake up! Wake up!',
         'yawning': 'You seem tired. Take a break.',
         'head_nod': 'Stay alert. Eyes on the road.',
-        # Not a warning, and it is worded so it cannot be mistaken for one. A sneeze
-        # closes the eyes for about a second, which the closure detector cannot
-        # distinguish from a microsleep on its own - so the device suppresses the
-        # drowsiness alarm and says this instead. The driver needs to know the alarm
-        # stayed quiet on purpose rather than because the device stopped working.
-        'sneeze': 'Sneeze detected.',
         # The one message this device has about itself, so it says what stopped
         # rather than what to do: there may be nobody there to be told what to do.
         'no_driver': 'No driver detected.',
@@ -88,7 +82,6 @@ PHRASES = {
         'microsleep': 'ភ្ញាក់ឡើង! ភ្ញាក់ឡើង!',
         'yawning': 'អ្នកអស់កម្លាំង។ សូមសម្រាក។',
         'head_nod': 'ប្រុងប្រយ័ត្ន! មើលផ្លូវ។',
-        'sneeze': 'រកឃើញការកណ្ដាស់។',
         'no_driver': 'រកមិនឃើញអ្នកបើកបរ។',
     },
 }

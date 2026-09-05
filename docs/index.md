@@ -51,7 +51,7 @@ of stalling the detection loop. See
 camera -> YuNet face + 5 landmarks -> crop both eyes (32x32)
        -> eye-state model: P(closed) per eye        -> PERCLOS
        -> face geometry: jaw drop, head pitch, roll -> yawn / nod
-       -> behaviour fusion (+ sneeze suppression)   -> risk score
+       -> behaviour fusion                          -> risk score
        -> RiskFilter (sustained + cooldown)         -> spoken alert
                                                     -> SD-card capture
                                                     -> MQTT alert (optional)
@@ -133,13 +133,8 @@ The geometric cues come from the five landmarks already available, so they add
 so face shape and camera angle cancel out rather than becoming signal — the
 same mistake that sank the whole-face classifier.
 
-**Sneezes are detected but are not a drowsiness cue.** A sneeze slams the eyes
-shut for about a second while the head jerks, which an eye-closure detector
-would score as a microsleep. Detecting it lets the system *suppress* that false
-alert instead of counting it.
-
 !!! note "Unvalidated timings"
-    The yawn/nod/sneeze thresholds in `behavior.py` are literature-informed
+    The yawn/nod thresholds in `behavior.py` are literature-informed
     defaults, not tuned on labelled video — this project has none yet. Their
     logic is unit-tested against synthetic traces; treat the event detectors as
     unvalidated on real drivers. `yaw` is computed but not validated.

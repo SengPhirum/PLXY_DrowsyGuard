@@ -31,10 +31,10 @@ go wrong:
     characters that cannot restructure the tree, and a manual topic is checked for
     the wildcards that would turn a publish into a broadcast.
 
-The alert path itself is unchanged. voice_alert_trigger() still runs first, the
-speaker still sounds whether or not there is a broker, and the sneeze suppression
-still happens in behavior.cpp where it always did - a suppressed sneeze produces no
-drowsiness alert here for the same reason it produces none on the speaker.
+The alert path itself is unchanged. voice_alert_trigger() still runs first and the
+speaker still sounds whether or not there is a broker; a closure that behavior.cpp
+declines to call a microsleep produces no drowsiness alert here for the same reason
+it produces none on the speaker.
 */
 
 #include <cstddef>
@@ -193,7 +193,7 @@ bool mqtt_client_id(const MqttConfig &cfg, const DeviceIdentity &id, char *out,
 struct MqttAlertEvent {
     char event_id[48] = {0};
     // The clip name from voice_alert_clip_name(): drowsy, microsleep, yawning,
-    // head_nod, sneeze, no_driver. Reused rather than re-encoded so the topic
+    // head_nod, no_driver. Reused rather than re-encoded so the topic
     // payload, the SD card filename and the spoken warning cannot drift apart.
     char alert[16] = {0};
     float risk = 0.0f;
@@ -212,10 +212,9 @@ struct MqttAlertEvent {
 
 // Coarse severity, derived rather than stored so it cannot disagree with the alert
 // type. microsleep and no_driver are critical (eyes shut for over a second; nobody
-// being monitored at all), drowsy and head_nod high, yawning medium, sneeze info -
-// a sneeze is announced to explain a silence, not to warn. A sustained `drowsy`
-// above 0.85 escalates to critical, because at that point the fusion is not
-// hedging.
+// being monitored at all), drowsy and head_nod high, yawning medium. A sustained
+// `drowsy` above 0.85 escalates to critical, because at that point the fusion is
+// not hedging.
 const char *mqtt_severity_for(const char *alert, float risk);
 
 // The versioned alert document. Returns the length written, or 0 if it did not fit
@@ -305,6 +304,14 @@ class MqttDedup {
     // True when this id has been seen before (and the ring is left unchanged).
     // False when it is new, in which case it is recorded.
     bool seen_or_add(const char *event_id);
+    // The two halves of seen_or_add(), split because the publisher must not record
+    // an id it has not delivered yet: recording before esp_mqtt_client_enqueue()
+    // meant a failed enqueue's retry matched its own first attempt in this ring and
+    // was dropped as a "duplicate" without ever being published. The publisher asks
+    // first and marks only after the transport accepted the message; a "yes" from
+    // already_published() is counted in suppressed(), same as seen_or_add().
+    bool already_published(const char *event_id);
+    void mark_published(const char *event_id);   // idempotent
     int size() const { return count_; }
     int capacity() const { return MQTT_DEDUP_SLOTS; }
     uint32_t suppressed() const { return suppressed_; }
@@ -343,6 +350,13 @@ class MqttOutbox {
     // with the same event_id rather than losing it. commit() removes it.
     bool peek(MqttAlertEvent *out) const;
     void commit();
+    // commit(), but only when the head is still the event the caller just handled,
+    // identified by its seq. Between a peek and a commit the producer can push into
+    // a full ring and evict that same head; a plain commit would then remove the
+    // event that replaced it - one that was never published - and lose it without
+    // it ever being counted. False means the head had already been evicted and
+    // nothing was removed.
+    bool commit_if_seq(uint32_t seq);
     bool pop(MqttAlertEvent *out);
 
     int depth() const { return count_; }

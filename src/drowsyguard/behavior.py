@@ -4,11 +4,6 @@ Eye closure alone is not drowsiness. This module adds the behaviours that actual
 accompany it - yawning, long/slow blinks, head nodding - and fuses them into one
 risk score for the existing RiskFilter.
 
-It also detects sneezes, and that needs explaining, because a sneeze is *not* a
-drowsiness sign. A sneeze slams the eyes shut for roughly a second while the head
-jerks, which looks exactly like a microsleep to an eye-closure detector. Detecting it
-lets us suppress the false alert rather than count it as drowsiness.
-
 Everything here is derived from YuNet's five landmarks plus the eye-state probability,
 so it adds no model weight and stays affordable on an ESP32-S3. All geometric cues are
 measured against a rolling per-driver baseline, so face shape and camera angle cancel
@@ -34,7 +29,7 @@ way the previous version was wrong rather than merely imprecise:
 Validated here: roll tracks applied rotation, jaw_drop rises as the jaw opens, and the
 pitch proxy responds while staying roll-stable. Yaw is computed but NOT validated - a
 real head-turn test is still needed. Event thresholds are literature-informed defaults,
-not tuned on labelled sneeze/yawn/nod video, which this project does not yet have.
+not tuned on labelled yawn/nod video, which this project does not yet have.
 """
 from __future__ import annotations
 
@@ -46,43 +41,27 @@ from dataclasses import dataclass, field
 BLINK_MAX_S = 0.40          # longer than a blink is not a blink
 MICROSLEEP_MIN_S = 1.00     # sustained closure worth alarming about
 YAWN_MIN_S = 1.20           # yawns are slow; a brief mouth movement is speech
-SNEEZE_MAX_S = 1.20         # sneezes resolve quickly
 NOD_MAX_S = 1.50            # down-and-back head motion
 NOD_MIN_S = 0.30            # shorter than this is landmark jitter, not a nod
 
 # Deviation from the rolling baseline, in baseline-relative units.
 JAW_OPEN_DELTA = 0.10       # opening index rise that counts as an open mouth
 NOD_PITCH_DELTA = 0.06      # nose_frac drop that counts as the head pitching down
-SNEEZE_JAW_DELTA = 0.13     # sneezes involve a pronounced mouth movement
 
-# How long the mouth may already have been open when the eyes closed, for the event
-# to still be a sneeze rather than a yawn with the eyes shut.
+# How long a closure that began with the mouth flung wide open has to last before it
+# counts as a microsleep, rather than the ordinary MICROSLEEP_MIN_S.
 #
-# SNEEZE_JAW_DELTA cannot separate those two on its own, and that is not hypothetical:
-# a yawn opens the mouth wide and closes the eyes, so it clears the absolute threshold
-# comfortably - and a yawn misread as a sneeze is worse than a missed sneeze, because
-# the suppression window then silences a genuine drowsiness cue for SNEEZE_MAX_S.
-#
-# What differs is the *order* of the two movements, not their size. In a sneeze the
-# mouth and the eyes go together, in one reflex; in a yawn the mouth has been open for
-# a while by the time the eyes close - YAWN_MIN_S is 1.2 s of continuous opening, so
-# any yawn worth the name has a long lead. Measuring the lead directly is cheaper and
-# more robust than measuring how fast the mouth moved, and it does not depend on fps.
-#
-# The obvious alternative - require the opening index to *rise* during the closure -
-# was tried and is wrong, for a reason worth keeping: EyeGate's median-of-3 delays the
-# closure decision by two frames, so a mouth that opened simultaneously with the eyes
-# has already finished opening by the time the closure is declared, and the measured
-# rise is zero. It would have rejected precisely the sneezes it was meant to find.
-# 0.5 s is comfortably longer than that lag and comfortably shorter than a yawn.
-SNEEZE_MOUTH_LEAD_S = 0.50
+# This is a false-alarm guard, not a feature. An involuntary reflex shuts the eyes and
+# opens the mouth in one movement, which duration alone cannot tell from a microsleep;
+# a reflex resolves inside this window, so surviving it is itself the proof that the
+# closure was not one. Remove this and a reflex becomes a "microsleep" announcement
+# aimed at a driver who is wide awake.
+REFLEX_MAX_S = 1.20
 
-# Minimum spacing between sneeze *alerts*, as opposed to sneeze detections. One
-# sneeze is frequently two or three closures a second apart, each a real detection
-# that belongs in the counter; announcing every one of them is noise that trains a
-# driver to ignore the speaker. Detection is per closure, the announcement is
-# edge-triggered with this cooldown.
-SNEEZE_ALERT_COOLDOWN_S = 2.50
+# How wide the mouth has to be, baseline-relative, for REFLEX_MAX_S to apply instead
+# of MICROSLEEP_MIN_S. Higher than JAW_OPEN_DELTA on purpose: an ordinary slack jaw
+# must not buy a closure any extra grace.
+REFLEX_JAW_DELTA = 0.13
 
 # Peak magnitudes an event must reach, as distinct from the threshold that starts it.
 # Entering low keeps the measured *duration* honest; the peak gate is what rejects a
@@ -344,10 +323,6 @@ class BehaviorState:
     long_blink_rate: float = 0.0
     yawn_rate: float = 0.0
     nod_rate: float = 0.0
-    sneeze_count: int = 0
-    sneeze_alerts: int = 0                          # of those, how many were announced
-    sneeze_alert: bool = False                      # edge: announce one now
-    suppressed: bool = False                        # sneeze suppression active
     stale: bool = False                             # geometry was held, not detected
     closure_s: float = 0.0                          # current unbroken closure
     baselines_ready: bool = False
@@ -380,17 +355,8 @@ class BehaviorAnalyzer:
         self._nod_start = None
         self._nod_lapse = None
         self._nod_peak = 0.0
-        self._sneezes = 0
-        self._sneeze_alerts = 0
-        self._suppress_until = -1.0
-        self._sneeze_alert_until = -1.0
-        # How long the mouth had already been open when the current closure began,
-        # in seconds. Sampled once, at the closure's start, and compared against
-        # SNEEZE_MOUTH_LEAD_S. Only meaningful while _closure_start is set.
-        self._mouth_lead = 0.0
         self._yawn_fired = False
         self._micro_fired = False
-        self._sneeze_fired = False
 
     def reset(self):
         self._gate.reset()
@@ -404,12 +370,7 @@ class BehaviorAnalyzer:
         self._mouth_peak = 0.0
         self._nod_start = self._nod_lapse = None
         self._nod_peak = 0.0
-        self._sneezes = 0
-        self._sneeze_alerts = 0
-        self._suppress_until = -1.0
-        self._sneeze_alert_until = -1.0
-        self._mouth_lead = 0.0
-        self._yawn_fired = self._micro_fired = self._sneeze_fired = False
+        self._yawn_fired = self._micro_fired = False
 
     def update(self, p_closed, geometry: FaceGeometry, perclos, dt=None, fresh=True):
         """One frame.
@@ -493,54 +454,23 @@ class BehaviorAnalyzer:
 
         # --- eyes ---
         closure_s = 0.0
-        sneeze_alert = False
         if closed:
             self._closure_lapse = None
             if self._closure_start is None:
                 self._closure_start = now
-                # How long the mouth had already been open when the eyes shut. This
-                # is what separates a sneeze from a yawn that also closes the eyes:
-                # in a yawn the mouth has been wide for a second by now. Sampled
-                # once, here, because by the time the sneeze window opens at
-                # BLINK_MAX_S the mouth episode may already have ended.
-                self._mouth_lead = (now - self._mouth_start
-                                    if self._mouth_start is not None else 0.0)
-                self._sneeze_fired = False
                 self._micro_fired = False
             closure_s = now - self._closure_start
-
-            # A long closure with the mouth flung open at the same moment is a
-            # sneeze, not a microsleep. Decided while it is happening so the alert is
-            # suppressed rather than retracted afterwards, and fired once per closure.
-            # Three conditions, each rejecting a different impostor: the duration
-            # window rejects blinks and real microsleeps, the absolute level rejects a
-            # closed mouth, and the lead rejects a yawn.
-            if (not self._sneeze_fired and BLINK_MAX_S <= closure_s <= SNEEZE_MAX_S
-                    and open_index >= SNEEZE_JAW_DELTA
-                    and self._mouth_lead <= SNEEZE_MOUTH_LEAD_S):
-                self._sneezes += 1
-                self._suppress_until = now + SNEEZE_MAX_S
-                events.append('sneeze')
-                self._sneeze_fired = True
-
-                # The announcement is a separate decision from the detection. One
-                # sneeze is often several closures in a row, each a real detection;
-                # the cooldown turns that into one alert and leaves the counter honest.
-                if now >= self._sneeze_alert_until:
-                    self._sneeze_alert_until = now + SNEEZE_ALERT_COOLDOWN_S
-                    self._sneeze_alerts += 1
-                    sneeze_alert = True
 
             # Microsleep, announced WHILE THE EYES ARE STILL SHUT.
             #
             # Closures used to be classified only on release, so the alarm for "the
             # driver is asleep" was gated on the driver waking up: eyes shut for five
             # seconds produced five seconds of silence. It now fires at the threshold.
-            # The wait is longer only when the mouth says this could still be a
-            # sneeze - a sneeze resolves inside SNEEZE_MAX_S, so surviving that long
-            # is itself the proof that it was not one.
-            need = SNEEZE_MAX_S if open_index >= SNEEZE_JAW_DELTA else MICROSLEEP_MIN_S
-            if not self._micro_fired and closure_s >= need and now >= self._suppress_until:
+            # The wait is longer when the mouth was flung wide at the same instant,
+            # because an involuntary reflex looks exactly like this and resolves
+            # inside REFLEX_MAX_S. See the constant for why this guard is here.
+            need = REFLEX_MAX_S if open_index >= REFLEX_JAW_DELTA else MICROSLEEP_MIN_S
+            if not self._micro_fired and closure_s >= need:
                 self._long_blinks.add(now)
                 events.append('microsleep')
                 self._micro_fired = True
@@ -552,21 +482,18 @@ class BehaviorAnalyzer:
                 # expired - otherwise the tolerance would itself promote a 0.9 s
                 # long blink into a 1.1 s microsleep.
                 dur = self._closure_lapse - self._closure_start
-                sneezing = self._closure_lapse < self._suppress_until
                 if dur <= BLINK_MAX_S:
                     self._blinks.add(now)
                     events.append('blink')
-                elif not self._micro_fired and not sneezing:
-                    # Between a blink and a microsleep, or a microsleep that was
-                    # suppressed while it happened. Counts toward the long-blink rate
-                    # either way; _micro_fired stops it being counted twice.
+                elif not self._micro_fired:
+                    # Between a blink and a microsleep. Counts toward the long-blink
+                    # rate; _micro_fired stops it being counted twice.
                     self._long_blinks.add(now)
                     events.append('long_blink')
                 self._closure_start = self._closure_lapse = None
             else:
                 closure_s = self._closure_lapse - self._closure_start   # frozen
 
-        suppressed = now < self._suppress_until
         blink_rate = self._blinks.rate(now)
         long_rate = self._long_blinks.rate(now)
         yawn_rate = self._yawns.rate(now)
@@ -579,9 +506,6 @@ class BehaviorAnalyzer:
                  + W_LONG_BLINK * norm(long_rate, LONG_BLINK_RATE_FULL)
                  + W_YAWN * norm(yawn_rate, YAWN_RATE_FULL)
                  + W_NOD * norm(nod_rate, NOD_RATE_FULL))
-        if suppressed:
-            # Do not let an involuntary event drive an alert.
-            score = min(score, W_PERCLOS * min(max(perclos, 0.0), 1.0))
 
         return BehaviorState(
             score=round(min(score, 1.0), 4),
@@ -598,10 +522,6 @@ class BehaviorAnalyzer:
             long_blink_rate=round(long_rate, 2),
             yawn_rate=round(yawn_rate, 2),
             nod_rate=round(nod_rate, 2),
-            sneeze_count=self._sneezes,
-            sneeze_alerts=self._sneeze_alerts,
-            sneeze_alert=sneeze_alert,
-            suppressed=suppressed,
             stale=bool(geometry.valid and not fresh),
             closure_s=round(closure_s, 3),
             baselines_ready=(self._jaw.ready and self._pitch.ready

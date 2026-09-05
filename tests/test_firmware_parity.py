@@ -35,14 +35,12 @@ PAIRS = [
     ('BLINK_MAX_S', 'BLINK_MAX_S'),
     ('MICROSLEEP_MIN_S', 'MICROSLEEP_MIN_S'),
     ('YAWN_MIN_S', 'YAWN_MIN_S'),
-    ('SNEEZE_MAX_S', 'SNEEZE_MAX_S'),
+    ('REFLEX_MAX_S', 'REFLEX_MAX_S'),
     ('NOD_MAX_S', 'NOD_MAX_S'),
     ('NOD_MIN_S', 'NOD_MIN_S'),
     ('JAW_OPEN_DELTA', 'JAW_OPEN_DELTA'),
     ('NOD_PITCH_DELTA', 'NOD_PITCH_DELTA'),
-    ('SNEEZE_JAW_DELTA', 'SNEEZE_JAW_DELTA'),
-    ('SNEEZE_MOUTH_LEAD_S', 'SNEEZE_MOUTH_LEAD_S'),
-    ('SNEEZE_ALERT_COOLDOWN_S', 'SNEEZE_ALERT_COOLDOWN_S'),
+    ('REFLEX_JAW_DELTA', 'REFLEX_JAW_DELTA'),
     ('YAWN_PEAK_DELTA', 'YAWN_PEAK_DELTA'),
     ('NOD_PEAK_DELTA', 'NOD_PEAK_DELTA'),
     ('NOD_NORM_DELTA', 'NOD_NORM_DELTA'),
@@ -107,7 +105,7 @@ def test_every_behaviour_constant_in_the_header_is_checked(fw_behavior):
 # device page's buttons, and switched on by ./plxy.sh alert. Four places that must
 # agree with one enum, and nothing else would notice if they stopped.
 
-REASONS = ['drowsy', 'microsleep', 'yawning', 'head_nod', 'sneeze', 'no_driver']
+REASONS = ['drowsy', 'microsleep', 'yawning', 'head_nod', 'no_driver']
 
 VOICE_H = FW / 'voice_alert.h'
 VOICE_CPP = FW / 'voice_alert.cpp'
@@ -116,13 +114,13 @@ ASSETS = FW.parent / 'assets' / 'audio'
 
 def test_the_alert_reason_numbering_is_what_the_api_publishes():
     text = VOICE_H.read_text(encoding='utf-8')
-    # Scoped to the AlertReason block, not the whole header: AlertChannel also has a
-    # `Sneeze = 1` and a header-wide search would happily match that instead and pass
-    # or fail for the wrong reason.
+    # Scoped to the AlertReason block, not the whole header: AlertChannel numbers its
+    # own members from 0 too, and a header-wide search would happily match those
+    # instead and pass or fail for the wrong reason.
     body = text.split('enum class AlertReason', 1)[1].split('};', 1)[0]
     found = dict(re.findall(r'^\s*(\w+)\s*=\s*(\d+),', body, re.M))
     for i, name in enumerate(['Drowsy', 'Microsleep', 'Yawning', 'HeadNod',
-                              'Sneeze', 'NoDriver']):
+                              'NoDriver']):
         assert found.get(name) == str(i), f'{name} should be {i}, got {found.get(name)}'
     m = re.search(r'ALERT_REASON_COUNT\s*=\s*(\d+)', text)
     assert m and int(m.group(1)) == len(REASONS)
@@ -161,7 +159,7 @@ def test_the_shell_helper_knows_every_reason():
     """./plxy.sh alert <reason> is how the speaker gets tested on the bench."""
     plxy = (FW.parents[2] / 'plxy.sh').read_text(encoding='utf-8')
     body = plxy.split('cmd_alert()', 1)[1].split('\n}', 1)[0]
-    for token in ('microsleep', 'sneeze', 'no_driver'):
+    for token in ('microsleep', 'no_driver'):
         assert token in body, f'./plxy.sh alert cannot send {token}'
 
 

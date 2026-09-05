@@ -44,8 +44,8 @@ skipping quantization, and the observable effect is direct:
 | face held (eye model on both eyes, every frame) | 10.2-10.7 |
 | a browser streaming as well | 16-19, dipping to 10 while tracking |
 
-Re-measured on 2026-09-01, after the detection gate, the presence monitor and the
-sneeze announcement were added, on the same board:
+Re-measured on 2026-09-01, after the detection gate and the presence monitor were
+added, on the same board:
 
 ```
 nobody in frame:  fps 19.7  detect 39.2-39.6 ms  eye 17.8 ms   gate would drop 0 ok
@@ -289,9 +289,7 @@ The build is headless. `web_server.cpp` runs a SoftAP and two HTTP servers, and
   warning can be seen coming rather than only heard,
 - the PERCLOS bar, per-frame eye-closure probability and current closure length,
 - blink / long-blink / yawn / nod rates per minute, head roll, jaw drop and the
-  pitch proxy, plus `mouth open`, `head down`, `learning baselines` and
-  `sneeze filter active` — so a suppressed false alarm is visible rather than
-  mysterious,
+  pitch proxy, plus `mouth open`, `head down` and `learning baselines`,
 - a two-minute risk sparkline with the trigger drawn as a dashed line,
 - an event log, the alert count, and a mute switch and speaker self-test,
 - uptime, frame count, fps, viewer count, free heap and free PSRAM.

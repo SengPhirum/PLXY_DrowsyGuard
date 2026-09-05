@@ -19,31 +19,23 @@ enum class AlertReason : uint8_t {
     Microsleep = 1, // eyes closed for over a second: most urgent
     Yawning = 2,    // repeated yawns: early warning
     HeadNod = 3,    // head dropping
-    // A confirmed sneeze. Not a drowsiness cue - the point of detecting it is to
-    // suppress the microsleep alarm it would otherwise trigger - but it is announced
-    // in its own right, because a driver whose alarm just went quiet during a violent
-    // reflex should be told the system noticed and decided, rather than left to
-    // wonder whether it saw anything at all.
-    Sneeze = 4,
     // Nobody in front of the camera, for long enough that it is not a glance away.
     // The most important thing this device can say when it is not watching a driver:
     // a monitoring system that has silently stopped monitoring is worse than none,
     // because the driver believes they are covered.
-    NoDriver = 5,
+    NoDriver = 4,
 };
 
-constexpr uint8_t ALERT_REASON_COUNT = 6;
+constexpr uint8_t ALERT_REASON_COUNT = 5;
 
 // Alerts do not all belong to the same conversation, and giving them one shared
-// cooldown was wrong: a sneeze announcement suppressed by the drowsiness cooldown is
-// a sneeze that silently did nothing, and a no-driver alert suppressed by either of
-// them is a safety message lost to an unrelated rate limit. Each channel keeps its
-// own cooldown, its own repeat cap and its own episode timer.
+// cooldown was wrong: a no-driver alert suppressed by the drowsiness cooldown is a
+// safety message lost to an unrelated rate limit. Each channel keeps its own
+// cooldown, its own repeat cap and its own episode timer.
 enum class AlertChannel : uint8_t {
     Drowsiness = 0,   // Drowsy, Microsleep, Yawning, HeadNod
-    Sneeze = 1,
-    Presence = 2,     // NoDriver
-    Count = 3,
+    Presence = 1,     // NoDriver
+    Count = 2,
 };
 
 AlertChannel voice_alert_channel(AlertReason reason);
@@ -65,13 +57,6 @@ struct VoiceAlertConfig {
     AlertLanguage language = AlertLanguage::English;
 
     VoiceAlertChannelConfig drowsiness{30000, 3, 300000};
-
-    // The behaviour analyzer already emits at most one sneeze alert per
-    // SNEEZE_ALERT_COOLDOWN_S (2.5 s), so this is a backstop against a caller that
-    // triggers by hand rather than the primary rate limit - hence the shorter
-    // cooldown and no repeat cap. A sneeze episode is not something to nag about,
-    // but it is also not something to go quiet about after three of them.
-    VoiceAlertChannelConfig sneeze{2000, 0, 0};
 
     // PresenceMonitor fires exactly once per absence episode, so this too is a
     // backstop. No cap, because "nobody is driving" must never be a message the

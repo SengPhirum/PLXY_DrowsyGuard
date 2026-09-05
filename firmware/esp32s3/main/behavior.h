@@ -18,8 +18,17 @@
 constexpr float BLINK_MAX_S = 0.40f;
 constexpr float MICROSLEEP_MIN_S = 1.00f;
 constexpr float YAWN_MIN_S = 1.20f;
-constexpr float SNEEZE_MAX_S = 1.20f;
 constexpr float NOD_MAX_S = 1.50f;
+
+// How long a closure that began with the mouth flung wide open has to last before
+// it counts as a microsleep, rather than the ordinary MICROSLEEP_MIN_S.
+//
+// This is a false-alarm guard, not a feature. An involuntary reflex shuts the eyes
+// and opens the mouth in one movement, which duration alone cannot tell from a
+// microsleep; a reflex resolves inside this window, so surviving it is itself the
+// proof that the closure was not one. Remove this and a reflex becomes a
+// "microsleep" announcement aimed at a driver who is wide awake.
+constexpr float REFLEX_MAX_S = 1.20f;
 
 // Shortest excursion that can be a head nod. Below this it is landmark jitter:
 // the pitch proxy is a ratio of two five-point distances, so a single frame of
@@ -30,42 +39,12 @@ constexpr float NOD_MIN_S = 0.30f;
 // --- baseline-relative deviations ---
 constexpr float JAW_OPEN_DELTA = 0.10f;
 constexpr float NOD_PITCH_DELTA = 0.06f;
-constexpr float SNEEZE_JAW_DELTA = 0.13f;
 
-// How long the mouth may already have been open when the eyes closed, for the event
-// to still be a sneeze rather than a yawn with the eyes shut.
-//
-// SNEEZE_JAW_DELTA cannot separate those two on its own, and that is not a
-// hypothetical: a yawn opens the mouth wide and closes the eyes, so it clears the
-// absolute threshold comfortably - and a yawn misread as a sneeze is worse than a
-// missed sneeze, because the suppression window then silences a genuine drowsiness
-// cue for SNEEZE_MAX_S.
-//
-// What differs is the *order* of the two movements, not their size. In a sneeze the
-// mouth and the eyes go together, in one reflex; in a yawn the mouth has been open
-// for a while by the time the eyes close - YAWN_MIN_S is 1.2 s of continuous
-// opening, so any yawn worth the name has a long lead. Measuring the lead directly is
-// both cheaper and more robust than measuring how fast the mouth moved, and it does
-// not depend on the frame rate.
-//
-// The obvious alternative - require the opening index to *rise* during the closure -
-// was tried and is wrong, for a reason worth keeping: EyeGate's median-of-3 delays
-// the closure decision by two frames, so a mouth that opened simultaneously with the
-// eyes has already finished opening by the time the closure is declared, and the
-// measured rise is zero. It would have rejected precisely the sneezes it was meant to
-// find. 0.5 s is comfortably longer than that lag and comfortably shorter than a yawn.
-constexpr float SNEEZE_MOUTH_LEAD_S = 0.50f;
+// How wide the mouth has to be, baseline-relative, for REFLEX_MAX_S to apply
+// instead of MICROSLEEP_MIN_S. Higher than JAW_OPEN_DELTA on purpose: an ordinary
+// slack jaw must not buy a closure any extra grace.
+constexpr float REFLEX_JAW_DELTA = 0.13f;
 
-// Minimum spacing between sneeze *alerts*, as opposed to sneeze detections.
-//
-// One sneeze is frequently two or three closures a second apart - the reflex repeats
-// - and each one is a real detection that belongs in the counter. Announcing each of
-// them is not useful: the driver knows they sneezed, and three alerts in three
-// seconds is noise that trains them to ignore the speaker. So detection is
-// per-closure and the alert is edge-triggered with this cooldown, which turns a fit
-// of sneezing into one announcement and leaves sneezes further apart than this as
-// separate events.
-constexpr float SNEEZE_ALERT_COOLDOWN_S = 2.50f;
 
 // Peak magnitudes an event has to reach, as opposed to the threshold that starts
 // it. Two thresholds rather than one is what separates "the cue is present" from
@@ -143,7 +122,6 @@ enum BehaviorEvent : uint8_t {
     EVENT_MICROSLEEP = 1 << 2,
     EVENT_YAWN = 1 << 3,
     EVENT_NOD = 1 << 4,
-    EVENT_SNEEZE = 1 << 5,
 };
 
 struct Landmarks {
@@ -172,7 +150,6 @@ struct BehaviorState {
     bool closed = false;         // the debounced decision the events are built on
     bool mouth_open = false;
     bool head_down = false;
-    bool suppressed = false;     // sneeze suppression active
     bool baselines_ready = false;
     bool stale = false;          // geometry was held, not freshly detected
     uint8_t events = EVENT_NONE; // bitmask fired on this frame
@@ -182,16 +159,6 @@ struct BehaviorState {
     float long_blink_rate = 0.0f;
     float yawn_rate = 0.0f;
     float nod_rate = 0.0f;
-    uint16_t sneeze_count = 0;
-    // Sneezes that got past SNEEZE_ALERT_COOLDOWN_S and were therefore announced.
-    // Tracked separately from sneeze_count because "we saw four sneezes" and "we
-    // interrupted the driver twice" are different facts and the second one is the
-    // one an operator complains about.
-    uint16_t sneeze_alerts = 0;
-    // True on exactly the frame a sneeze is confirmed for announcement. An edge, so
-    // the caller triggers an alert on it directly and needs no de-duplication of its
-    // own; EVENT_SNEEZE in `events` is the detection, this is the announcement.
-    bool sneeze_alert = false;
     float closure_s = 0.0f;
 };
 
@@ -346,15 +313,6 @@ class BehaviorAnalyzer {
     float nod_start_ = -1.0f;
     float nod_lapse_ = -1.0f;
     float nod_peak_ = 0.0f;
-    float suppress_until_ = -1.0f;
-    // How long the mouth had already been open when the current closure began, in
-    // seconds. Sampled once, at the closure's start, and compared against
-    // SNEEZE_MOUTH_LEAD_S. Only meaningful while closure_start_ >= 0.
-    float mouth_lead_ = 0.0f;
-    float sneeze_alert_until_ = -1.0f;
-    uint16_t sneezes_ = 0;
-    uint16_t sneeze_alerts_ = 0;
     bool yawn_fired_ = false;
     bool micro_fired_ = false;
-    bool sneeze_fired_ = false;
 };

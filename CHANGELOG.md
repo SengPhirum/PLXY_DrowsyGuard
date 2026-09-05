@@ -1,5 +1,157 @@
 # Changelog
 
+## 2026-09-04 - the MQTT client stops being able to freeze the detector
+
+An audit of the MQTT runtime ahead of its first hardware run against a broker
+(gap 13) found one mechanism that stalls the capture loop outright, one that keeps
+the client from ever connecting under load, two that silently lose an alert, and an
+eight-second delay on every reconnect. All five are fixed; none changes the API, the
+payload schema, the NVS format, a topic, or any behaviour a subscriber can see.
+
+### The freeze: the TLS handshake could run on the inference core
+
+esp-mqtt's client task - where DNS, the TCP connect and the **entire TLS handshake**
+run - is created at priority 5 with **no core affinity** by default. When the
+scheduler placed it on core 0, a second or more of mbedtls arithmetic sat above
+`app_main` (priority 1), and the capture loop froze for the duration of every
+handshake. Worse, the reconnect backoff *repeats* that handshake for as long as a
+broker is unreachable, so a dead broker read as a detector that periodically hangs
+forever. Every other network task in this firmware was already pinned to core 1
+(both httpd servers, the event writer, the publisher task); the one that does the
+most CPU-bound work was the one left floating. `CONFIG_MQTT_TASK_CORE_SELECTION_ENABLED`
++ `CONFIG_MQTT_USE_CORE_1` pin it with the rest. DEPLOYMENT.md gained test M9, which
+measures `fps` *during* connection attempts rather than between them.
+
+### The connect abort: an alert mid-handshake tore the client down
+
+`mqtt_publish_alert()` notifies the publisher task for every queued alert, and the
+publisher's "wait for the CONNACK" was a single 8 s `ulTaskNotifyTake`. An alert
+arriving mid-handshake woke it early; the code read "still not connected", destroyed
+the half-connected client and went to backoff. Under a burst of alerts - the one load
+pattern this feature exists for - the client could never finish connecting. The wait
+is now a loop over the connection state with a deadline, the event handler notifies
+on CONNECTED/DISCONNECTED (which also removes a silent 8 s before every post-connect
+flush - test M12), and a reconfigure breaks the wait instead of queueing behind it.
+
+### Two ways to lose an alert without a counter moving
+
+* **De-duplication recorded ids it had not delivered.** `seen_or_add()` put the
+  event id into the ring *before* `esp_mqtt_client_enqueue()` ran, so when the
+  enqueue failed (client busy, outbox full) the retry matched its own first attempt
+  and was committed as a "duplicate" - dropped, unsent, uncounted. The ring now has
+  the two halves the publisher actually needs: `already_published()` asks,
+  `mark_published()` records only after the transport accepted the message.
+  `seen_or_add()` survives, expressed on the two.
+* **The outbox could commit an event it never published.** Between the publisher's
+  peek and its commit, the capture loop can push into the full ring and evict that
+  same head; the commit then removed whatever replaced it - an event nobody had
+  sent. `commit_if_seq()` removes the head only if it is still the event the
+  publisher just handled. Both are pure `mqtt_config.cpp` changes, and both have the
+  race written out as host tests (`test_mqtt_config.py` is 162 cases now, five new).
+
+### Smaller
+
+* The publisher task's stack goes 5120 → 6144: `client_stop()`'s goodbye publish
+  runs `mbedtls_ssl_write` on that stack, on top of ~1 kB of topic+body locals, and
+  a publisher stack overflow is a panic.
+* The esp-mqtt event handler no longer reads `s_live` (the publisher task's private
+  config copy) for its log line, and no longer reads `s_error` outside its lock -
+  both were benign-looking cross-task races.
+* `CONFIG_MBEDTLS_SSL_KEEP_PEER_CERTIFICATE=n`: the broker's certificate chain is
+  freed once the handshake has verified it, ~4 kB of heap back per live TLS
+  connection. Nothing reads the peer certificate after connect.
+* `CONFIG_LWIP_MAX_SOCKETS` was defined twice in `sdkconfig.defaults` (16, then 20);
+  one definition now, at 20. A stale comment still describing the Wi-Fi TX buffer
+  count as 12 (it is 8) is fixed.
+
+### Measured
+
+IDF v5.5.5, `sdkconfig` regenerated from the updated defaults (so the delta includes
+that regeneration, not only the code):
+
+|  | before (2026-09-02 build) | after |
+| --- | --- | --- |
+| app image | 3 560 496 B | 3 574 928 B (+14.4 kB, 43 % of the partition free) |
+| static D/IRAM | — | 235 575 B used, 106 185 B free (68.9 %) |
+| host tests | 158 passed | 588 passed, 5 failed — the same five UTF-8-SSID cases that fail on this Windows harness before the change (codepage artefact, not firmware) |
+
+The runtime numbers this change is actually about - `fps` during a TLS reconnect
+(M9), flush latency after a CONNACK (M12), heap over a soak (M13) - need a broker
+and the board, and are the first thing to record when gap 13's hardware run happens.
+
+## 2026-09-02 - the board stops rebooting when you join it, and the sneeze feature is gone
+
+Two things, found in that order: the device rebooted the moment anything associated
+with its access point, and once that was fixed it turned out to be short of internal
+RAM in a way that was crashing the HTTP handlers.
+
+### The reboot loop
+
+A phone joining `DrowsyGuard-XXXXXX` panicked the board:
+
+```
+I (5096) wifi:station: 92:01:f3:ca:38:24 join, AID=1, bgn, 20
+I (5123) wifi: client joined: 92:01:f3:ca:38:24 (aid 1)
+
+***ERROR*** A stack overflow in task sys_evt has been detected.
+```
+
+`on_wifi_event()` declared `WifiScanEntry staged[WIFI_SCAN_MAX]` - 24 x 36 = 864
+bytes - on the event task's stack. Xtensa allocates a function's frame in its
+prologue, so **every** Wi-Fi event paid for the scan buffer whether or not a scan had
+happened. Measured with `-fstack-usage`: 944 bytes of frame against a 2304-byte task
+stack, before `ESP_LOGI`'s `vsnprintf` and the netif frames on top. The array is
+`static` now (the default event loop is single-threaded, so this handler is its only
+writer) and the frame is 144 bytes. The irony is three lines above it, where `records`
+was already static with a comment saying the event task's stack "is not generous".
+
+### Then it would not let anyone in
+
+With the crash gone, associations started failing outright - `wifi:m f auth`,
+`removing station after unsuccessful auth/assoc` - because the driver could not
+allocate per-station state. A boot-time census found why:
+
+```
+At 0x3fcc8814 len 32767 free 32031 allocated 0      <- the DMA reserve, untouched
+At 0x3fcc2180 len 161168 free 10916 allocated 148288
+At 0x3fce9710 len 22308 free 4 allocated 21132      <- exhausted
+```
+
+`CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` was IDF's default 32768, and that pool is
+created with DMA/internal capabilities only - so generic `malloc`, which is what
+newlib, lwIP and esp-mqtt use, cannot draw on it however starved it gets. It sat at
+`allocated 0` while `fopen()` aborted inside newlib's `lock_init_generic()` and
+`lwip_send()` faulted on a socket mutex. Now 8192.
+
+Also from measurement rather than estimate: `main` had **136 bytes** of stack
+headroom out of 8192 while running the capture loop and behaviour fusion, so
+`CONFIG_ESP_MAIN_TASK_STACK_SIZE` went **up** to 12288. Wi-Fi static TX buffers 24 ->
+8, lwIP TCP window and send buffer 65534 -> 16384, recv mailboxes 64 -> 16/32.
+
+One thing that looked like a win and was not: dropping
+`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` to 1024 frees a useful amount of internal RAM
+and crashes the detector within seconds, in `dl_tie728_s8_conv2d.S` and
+`eye_model_infer()`. ESP-DL allocates its layer buffers with plain `malloc` and its
+SIMD kernels cannot run against PSRAM. It stays at 4096, with a comment saying so.
+
+### Sneeze detection is removed
+
+The feature is gone: the detector, both counters, the `sneeze_alert` edge, the alert
+channel, the reason, the two voice clips, the API fields, the page readouts, the MQTT
+severity case and the docs. `AlertReason::NoDriver` is now `4`, not `5`, and
+`ALERT_REASON_COUNT` is `5` - so `/api/alert-test?reason=N` and `./plxy.sh alert`
+renumber with it. The firmware binary is 126 kB smaller.
+
+**One piece deliberately survives.** Sneeze detection did two jobs: it was a feature,
+and it was a false-alarm guard. A closure that begins with the mouth flung wide open
+still has to outlast `REFLEX_MAX_S` (1.2 s) rather than `MICROSLEEP_MIN_S` (1.0 s)
+before it counts as a microsleep, because an involuntary reflex shuts the eyes and
+opens the mouth in one movement and duration alone cannot tell it from a microsleep.
+Removing that too would have made every sneeze a "microsleep" announcement aimed at a
+driver who is wide awake. It keeps no state, counts nothing and reports nothing;
+`REFLEX_MAX_S` and `REFLEX_JAW_DELTA` in `behavior.h` are all that is left, mirrored
+in `behavior.py` and checked by `test_firmware_parity.py`.
+
 ## 2026-09-02 - the board can be told which network to join, and told to forget it
 
 Wi-Fi provisioning. The device page scans, joins, reports, and forgets; a five-second

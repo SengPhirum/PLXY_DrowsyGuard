@@ -164,6 +164,12 @@ bool mqtt_publisher_test() {
 }
 
 // --- the client ------------------------------------------------------------
+// Runs on esp-mqtt's own task. It touches only the atomics and the error string,
+// and it wakes the publisher task on every state edge: without the notify, a
+// successful CONNACK sat unnoticed until the connect-wait timed out, which cost
+// every reconnection eight silent seconds before the outbox flushed. s_live is NOT
+// read here - it belongs to the publisher task, and a reconfigure can rewrite it
+// while this handler runs.
 static void mqtt_event_handler(void *, esp_event_base_t, int32_t event_id, void *data) {
     auto *e = static_cast<esp_mqtt_event_handle_t>(data);
     switch (static_cast<esp_mqtt_event_id_t>(event_id)) {
@@ -173,9 +179,7 @@ static void mqtt_event_handler(void *, esp_event_base_t, int32_t event_id, void 
             s_attempt.store(0);
             s_state.store(static_cast<int>(MqttState::Online));
             clear_error();
-            ESP_LOGI(TAG, "broker connected (%s, qos %u)",
-                     mqtt_transport_name(s_live.transport),
-                     static_cast<unsigned>(s_live.qos));
+            if (s_task != nullptr) xTaskNotifyGive(s_task);
             break;
         case MQTT_EVENT_DISCONNECTED:
             s_connected.store(false);
@@ -185,6 +189,7 @@ static void mqtt_event_handler(void *, esp_event_base_t, int32_t event_id, void 
             if (s_state.load() == static_cast<int>(MqttState::Online)) {
                 s_state.store(static_cast<int>(MqttState::Backoff));
             }
+            if (s_task != nullptr) xTaskNotifyGive(s_task);
             break;
         case MQTT_EVENT_PUBLISHED:
             // The QoS 1 PUBACK. Counted apart from `published` because the gap
@@ -192,25 +197,33 @@ static void mqtt_event_handler(void *, esp_event_base_t, int32_t event_id, void 
             // accepting what it is being sent rather than dropping it.
             s_acked.fetch_add(1);
             break;
-        case MQTT_EVENT_ERROR:
+        case MQTT_EVENT_ERROR: {
+            // Formatted into a local first so the log line cannot race another
+            // writer of s_error; set_error() still serialises the shared copy.
+            char msg[sizeof(s_error)];
             if (e != nullptr && e->error_handle != nullptr) {
                 const esp_mqtt_error_codes_t *er = e->error_handle;
                 if (er->error_type == MQTT_ERROR_TYPE_TCP_TRANSPORT) {
                     // Codes only. mbedtls error strings occasionally embed the peer
                     // name, and this string is rendered on a web page.
-                    set_error("transport error (esp-tls 0x%x, socket errno %d)",
-                              er->esp_tls_last_esp_err, er->esp_transport_sock_errno);
+                    snprintf(msg, sizeof(msg),
+                             "transport error (esp-tls 0x%x, socket errno %d)",
+                             er->esp_tls_last_esp_err, er->esp_transport_sock_errno);
                 } else if (er->error_type == MQTT_ERROR_TYPE_CONNECTION_REFUSED) {
-                    set_error("broker refused the connection (return code %d)",
-                              er->connect_return_code);
+                    snprintf(msg, sizeof(msg),
+                             "broker refused the connection (return code %d)",
+                             er->connect_return_code);
                 } else {
-                    set_error("mqtt error type %d", static_cast<int>(er->error_type));
+                    snprintf(msg, sizeof(msg), "mqtt error type %d",
+                             static_cast<int>(er->error_type));
                 }
             } else {
-                set_error("mqtt error");
+                snprintf(msg, sizeof(msg), "mqtt error");
             }
-            ESP_LOGW(TAG, "%s", s_error);
+            set_error("%s", msg);
+            ESP_LOGW(TAG, "%s", msg);
             break;
+        }
         default:
             break;
     }
@@ -358,13 +371,18 @@ static void publish_online() {
                             s_live.retain_status ? 1 : 0);
 }
 
-// Removes the head of the outbox. Split out because it happens on three paths and
-// forgetting it on one of them would wedge the queue behind an event that can never
-// be sent.
-static void commit_head() {
+// Removes the head of the outbox, but only if it is still the event the caller just
+// handled. Between the peek and this call the capture loop can push into a full ring
+// and evict that head; a plain commit would then remove whatever replaced it - an
+// event that was never published. (The handled event itself was delivered before it
+// was evicted, so the eviction's `dropped` count over-reports by one in that corner;
+// losing an unsent alert silently would be the worse book-keeping error.) Split out
+// because it happens on three paths and forgetting it on one of them would wedge the
+// queue behind an event that can never be sent.
+static void commit_head(uint32_t seq) {
     if (s_lock == nullptr) return;
     if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(50)) == pdTRUE) {
-        s_outbox.commit();
+        s_outbox.commit_if_seq(seq);
         xSemaphoreGive(s_lock);
     }
 }
@@ -383,10 +401,13 @@ static bool publish_head() {
     mqtt_event_id(s_live_id, s_boot_id, ev.seq, ev.event_id, sizeof(ev.event_id));
 
     // A duplicate is committed rather than published: it has already been sent, and
-    // leaving it at the head would block everything behind it forever.
-    if (s_dedup.seen_or_add(ev.event_id)) {
+    // leaving it at the head would block everything behind it forever. Asked as a
+    // question, not recorded: the id goes into the ring only after the transport
+    // has accepted the message, so a failed attempt below can be retried without
+    // this check mistaking the retry for a duplicate and dropping it unsent.
+    if (s_dedup.already_published(ev.event_id)) {
         ESP_LOGW(TAG, "event %s already published; dropping the duplicate", ev.event_id);
-        commit_head();
+        commit_head(ev.seq);
         return true;
     }
 
@@ -408,7 +429,7 @@ static bool publish_head() {
         // Not a network condition: the payload cannot be built at all, so retrying
         // forever would block the queue. Drop it loudly.
         ESP_LOGE(TAG, "alert payload would not fit; dropping event %s", ev.event_id);
-        commit_head();
+        commit_head(ev.seq);
         return true;
     }
 
@@ -418,10 +439,11 @@ static bool publish_head() {
     const int msg = esp_mqtt_client_enqueue(s_client, topic, body, static_cast<int>(n),
                                             s_live.qos, 0, true);
     if (msg < 0) return false;      // client busy or full: keep the event, retry
+    s_dedup.mark_published(ev.event_id);
     s_published.fetch_add(1);
     if (s_live.qos == 0) s_acked.fetch_add(1);   // there is no PUBACK to wait for
     s_last_publish_ms.store(static_cast<uint32_t>(esp_timer_get_time() / 1000));
-    commit_head();
+    commit_head(ev.seq);
     ESP_LOGI(TAG, "published %s (%s) to %s", ev.event_id, ev.alert, topic);
     return true;
 }
@@ -504,8 +526,23 @@ static void publisher_task(void *) {
                 continue;
             }
             // Give the handshake a moment before calling it a failure. 8 s covers a
-            // TLS handshake on this radio with room to spare.
-            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(8000));
+            // TLS handshake on this radio with room to spare. A LOOP over the
+            // condition, not a single wait: mqtt_publish_alert() notifies this task
+            // for every queued alert, and a single 8 s take was woken early by any
+            // alert that fired mid-handshake - the code below then read "still not
+            // connected", tore the half-connected client down and went to backoff.
+            // Under a burst of alerts the client could never finish connecting,
+            // which is the one load pattern this feature exists for. The handler
+            // notifies on CONNECTED, so success still exits immediately, and a
+            // reconfigure breaks out so a settings change is never 8 s stale.
+            {
+                const int64_t deadline = esp_timer_get_time() + 8000 * 1000;
+                while (!s_connected.load() && !s_reconfigure.load() &&
+                       esp_timer_get_time() < deadline) {
+                    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
+                }
+            }
+            if (s_reconfigure.load()) continue;
             if (!s_connected.load()) {
                 client_stop();
                 const uint32_t a = s_attempt.fetch_add(1) + 1;
@@ -534,6 +571,11 @@ static void publisher_task(void *) {
         }
 
         if (!was_online) {
+            // Logged here rather than in the event handler: this task owns s_live,
+            // so the transport and qos it prints cannot be torn by a reconfigure.
+            ESP_LOGI(TAG, "broker connected (%s, qos %u)",
+                     mqtt_transport_name(s_live.transport),
+                     static_cast<unsigned>(s_live.qos));
             publish_online();
             was_online = true;
             const int depth = outbox_depth();
@@ -603,7 +645,12 @@ bool mqtt_publisher_start(const DeviceIdentity &id) {
     // Priority 4, core 1. Above the SD-card event writer (3), which is never urgent;
     // below the alert task, which is the only thing on this device that genuinely is;
     // and on the other core from app_main's capture loop and ESP-DL inference.
-    if (xTaskCreatePinnedToCore(publisher_task, "mqtt_pub", 5120, nullptr, 4, &s_task,
+    //
+    // 6144, up from 5120: client_stop()'s goodbye publish runs mbedtls_ssl_write on
+    // THIS task's stack (esp_mqtt_client_publish sends on the caller for a connected
+    // client), on top of ~1 kB of topic+body locals - and a publisher stack overflow
+    // is a panic, which for this subsystem is the definition of failing its one job.
+    if (xTaskCreatePinnedToCore(publisher_task, "mqtt_pub", 6144, nullptr, 4, &s_task,
                                 1) != pdPASS) {
         ESP_LOGE(TAG, "publisher task failed to start; mqtt alerting is off");
         s_task = nullptr;

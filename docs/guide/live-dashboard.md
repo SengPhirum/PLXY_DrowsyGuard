@@ -134,23 +134,6 @@ applies:
 python -m drowsyguard.cli live --no-face-detect --zoom 0.45
 ```
 
-## Sneezes
-
-The **sneezes** readout shows two numbers — detected, and announced. They are
-deliberately different: one sneeze is often two or three closures a second apart, each
-a real detection, and announcing every one of them is noise. Detection is per closure;
-the announcement is edge-triggered with a 2.5 s cooldown, so a fit becomes one alert.
-
-Each detection also suppresses the drowsiness score for `SNEEZE_MAX_S`, which is the
-original reason the cue exists — a sneeze slams the eyes shut for about a second, and
-an eye-closure detector would otherwise record a microsleep. Watch the **sneeze filter
-active** pill during one: a suppressed false alarm is visible rather than silent.
-
-To see the discrimination working, try a deliberate yawn with the eyes closed. It must
-*not* register as a sneeze, and the microsleep must still fire — a yawn misread as a
-sneeze would silence a genuine drowsiness cue. What separates them is when the mouth
-opened relative to the eyes closing, not how wide.
-
 ## Replaying a recording
 
 ```bash

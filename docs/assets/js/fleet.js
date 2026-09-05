@@ -268,7 +268,7 @@
   }
 
   const SEVERITIES = ['critical', 'high', 'medium', 'info'];
-  const ALERTS = ['drowsy', 'microsleep', 'yawning', 'head_nod', 'sneeze',
+  const ALERTS = ['drowsy', 'microsleep', 'yawning', 'head_nod',
                   'no_driver', 'test'];
 
   // One published document into one alert, or null. Rejecting is the normal path for

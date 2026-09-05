@@ -399,20 +399,19 @@ static esp_err_t status_handler(httpd_req_t *req) {
         "\"risk\":{\"score\":%.3f,\"trigger\":%.3f,\"streak\":%d,\"required\":%d},"
         "\"eyes\":{\"closed\":%.3f,\"smooth\":%.3f,\"shut\":%s,\"perclos\":%.3f,"
                   "\"closure_s\":%.2f},"
-        "\"cues\":{\"mouth_open\":%s,\"head_down\":%s,\"suppressed\":%s,"
+        "\"cues\":{\"mouth_open\":%s,\"head_down\":%s,"
                   "\"baselines_ready\":%s,\"stale\":%s,\"events\":%u,"
                   "\"open_index\":%.3f,\"pitch_dev\":%.3f},"
-        "\"rates\":{\"blink\":%.1f,\"long_blink\":%.1f,\"yawn\":%.1f,\"nod\":%.1f,"
-                   "\"sneeze\":%u,\"sneeze_alerts\":%u},"
+        "\"rates\":{\"blink\":%.1f,\"long_blink\":%.1f,\"yawn\":%.1f,\"nod\":%.1f},"
         "\"geom\":{\"valid\":%s,\"roll\":%.1f,\"jaw_drop\":%.3f,\"nose_frac\":%.3f,"
                   "\"nose_norm\":%.3f,\"mouth_ratio\":%.3f,\"eye_dist\":%.1f},"
         "\"alert\":{\"active\":%s,\"text\":\"%s\",\"reason\":\"%s\",\"count\":%lu,"
                    "\"muted\":%s,\"lang\":\"%s\",\"lang_stored\":%s,"
                    "\"counts\":{\"drowsy\":%lu,\"microsleep\":%lu,\"yawning\":%lu,"
-                                "\"head_nod\":%lu,\"sneeze\":%lu,\"no_driver\":%lu},"
+                                "\"head_nod\":%lu,\"no_driver\":%lu},"
                    "\"clips\":{\"drowsy\":\"%s\",\"microsleep\":\"%s\","
                               "\"yawning\":\"%s\",\"head_nod\":\"%s\","
-                              "\"sneeze\":\"%s\",\"no_driver\":\"%s\"}},"
+                              "\"no_driver\":\"%s\"}},"
         "\"stream\":{\"viewers\":%d,\"quality\":%d,\"fps\":%d,\"port\":%d},"
         "\"net\":{\"ssid\":\"%s\",\"ip\":\"%s\",\"clients\":%d,\"sta\":%s,"
                  "\"sta_ip\":\"%s\",\"rssi\":%d,\"sta_state\":\"%s\","
@@ -455,14 +454,12 @@ static esp_err_t status_handler(httpd_req_t *req) {
         json_float(st.state.perclos), json_float(st.state.closure_s),
         st.state.mouth_open ? "true" : "false",
         st.state.head_down ? "true" : "false",
-        st.state.suppressed ? "true" : "false",
         st.state.baselines_ready ? "true" : "false",
         st.state.stale ? "true" : "false",
         static_cast<unsigned>(st.state.events),
         json_float(st.state.open_index), json_float(st.state.pitch_dev),
         json_float(st.state.blink_rate), json_float(st.state.long_blink_rate), json_float(st.state.yawn_rate),
-        json_float(st.state.nod_rate), static_cast<unsigned>(st.state.sneeze_count),
-        static_cast<unsigned>(st.state.sneeze_alerts),
+        json_float(st.state.nod_rate),
         st.geom.valid ? "true" : "false", json_float(st.geom.roll), json_float(st.geom.jaw_drop),
         json_float(st.geom.nose_frac), json_float(st.geom.nose_norm),
         json_float(st.geom.mouth_ratio), json_float(st.geom.eye_dist),
@@ -477,13 +474,11 @@ static esp_err_t status_handler(httpd_req_t *req) {
         static_cast<unsigned long>(voice_alert_count_for(AlertReason::Microsleep)),
         static_cast<unsigned long>(voice_alert_count_for(AlertReason::Yawning)),
         static_cast<unsigned long>(voice_alert_count_for(AlertReason::HeadNod)),
-        static_cast<unsigned long>(voice_alert_count_for(AlertReason::Sneeze)),
         static_cast<unsigned long>(voice_alert_count_for(AlertReason::NoDriver)),
         voice_clip_source_name(voice_clip_probe(voice_alert_language_code(), "drowsy")),
         voice_clip_source_name(voice_clip_probe(voice_alert_language_code(), "microsleep")),
         voice_clip_source_name(voice_clip_probe(voice_alert_language_code(), "yawning")),
         voice_clip_source_name(voice_clip_probe(voice_alert_language_code(), "head_nod")),
-        voice_clip_source_name(voice_clip_probe(voice_alert_language_code(), "sneeze")),
         voice_clip_source_name(voice_clip_probe(voice_alert_language_code(), "no_driver")),
         web_server_has_viewer() ? (s_viewers.load() > 0 ? s_viewers.load() : 1) : 0,
         s_quality.load(), s_stream_fps.load(), WEB_PORT_STREAM,
@@ -595,9 +590,9 @@ static esp_err_t alert_test_handler(httpd_req_t *req) {
     int reason = 0;
     query_int(req, "reason", &reason);
     // Clamped against the enum's own size rather than a literal. That literal was 3
-    // and stayed 3 when Sneeze and NoDriver were added, which would have made the
-    // two newest clips the only ones with no way to audition them - on a device
-    // whose only speaker test is this endpoint.
+    // and stayed 3 when NoDriver was added, which would have made the newest clip
+    // the only one with no way to audition it - on a device whose only speaker test
+    // is this endpoint.
     const AlertReason r =
         static_cast<AlertReason>(clamp_int(reason, 0, ALERT_REASON_COUNT - 1));
     const bool played = voice_alert_test(r);

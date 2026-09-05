@@ -405,7 +405,6 @@ const char *mqtt_severity_for(const char *alert, float risk) {
     if (strcmp(alert, "drowsy") == 0) return risk >= 0.85f ? "critical" : "high";
     if (strcmp(alert, "head_nod") == 0) return "high";
     if (strcmp(alert, "yawning") == 0) return "medium";
-    if (strcmp(alert, "sneeze") == 0) return "info";
     return "info";
 }
 
@@ -723,7 +722,7 @@ void MqttDedup::reset() {
     for (int i = 0; i < MQTT_DEDUP_SLOTS; ++i) slot_[i][0] = '\0';
 }
 
-bool MqttDedup::seen_or_add(const char *event_id) {
+bool MqttDedup::already_published(const char *event_id) {
     if (event_id == nullptr || event_id[0] == '\0') return false;
     for (int i = 0; i < count_; ++i) {
         if (strncmp(slot_[i], event_id, sizeof(slot_[0])) == 0) {
@@ -731,9 +730,23 @@ bool MqttDedup::seen_or_add(const char *event_id) {
             return true;
         }
     }
+    return false;
+}
+
+void MqttDedup::mark_published(const char *event_id) {
+    if (event_id == nullptr || event_id[0] == '\0') return;
+    for (int i = 0; i < count_; ++i) {
+        if (strncmp(slot_[i], event_id, sizeof(slot_[0])) == 0) return;
+    }
     settings_copy(slot_[at_], sizeof(slot_[0]), event_id);
     at_ = (at_ + 1) % MQTT_DEDUP_SLOTS;
     if (count_ < MQTT_DEDUP_SLOTS) ++count_;
+}
+
+bool MqttDedup::seen_or_add(const char *event_id) {
+    if (event_id == nullptr || event_id[0] == '\0') return false;
+    if (already_published(event_id)) return true;
+    mark_published(event_id);
     return false;
 }
 
@@ -773,6 +786,12 @@ void MqttOutbox::commit() {
     if (count_ == 0) return;
     head_ = (head_ + 1) % MQTT_OUTBOX_DEPTH;
     --count_;
+}
+
+bool MqttOutbox::commit_if_seq(uint32_t seq) {
+    if (count_ == 0 || slot_[head_].seq != seq) return false;
+    commit();
+    return true;
 }
 
 bool MqttOutbox::pop(MqttAlertEvent *out) {

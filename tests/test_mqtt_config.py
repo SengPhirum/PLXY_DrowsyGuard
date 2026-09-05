@@ -431,6 +431,16 @@ int main() {
             // made the suppression counter look permanently stuck at zero.
             const bool seen = g_dedup.seen_or_add(g_val);
             printf("%d %d %u\n", seen ? 1 : 0, g_dedup.size(), g_dedup.suppressed());
+        } else if (strcmp(cmd, "dedup_check") == 0) {
+            // The publisher's pre-flight question: already delivered? Never records.
+            field(q, "id");
+            const bool seen = g_dedup.already_published(g_val);
+            printf("%d %d %u\n", seen ? 1 : 0, g_dedup.size(), g_dedup.suppressed());
+        } else if (strcmp(cmd, "dedup_mark") == 0) {
+            // The publisher's post-delivery record. Idempotent.
+            field(q, "id");
+            g_dedup.mark_published(g_val);
+            printf("%d %u\n", g_dedup.size(), g_dedup.suppressed());
         } else if (strcmp(cmd, "outbox_reset") == 0) {
             g_outbox.reset();
             printf("ok\n");
@@ -448,6 +458,11 @@ int main() {
         } else if (strcmp(cmd, "outbox_commit") == 0) {
             g_outbox.commit();
             printf("%d\n", g_outbox.depth());
+        } else if (strcmp(cmd, "outbox_commit_if") == 0) {
+            long s = 0;
+            num(q, "seq", &s);
+            const bool did = g_outbox.commit_if_seq(static_cast<uint32_t>(s));
+            printf("%d %d\n", did ? 1 : 0, g_outbox.depth());
         } else if (strcmp(cmd, "outbox_pop") == 0) {
             MqttAlertEvent e{};
             if (!g_outbox.pop(&e)) { printf("empty\n"); goto flushed; }
@@ -910,10 +925,8 @@ def test_the_payload_says_when_it_does_not_know_the_time(mq):
     ('drowsy', 0.9, 'critical'),
     ('head_nod', 0.6, 'high'),
     ('yawning', 0.6, 'medium'),
-    # A sneeze is announced to EXPLAIN a silence, not to warn: the drowsiness alarm
     # deliberately did not fire. Grading it as a drowsiness event would undo the whole
     # point of detecting it.
-    ('sneeze', 0.9, 'info'),
     ('test', 0.0, 'info'),
     ('something-new', 0.99, 'info'),
 ])
@@ -1445,6 +1458,94 @@ def test_the_outbox_carries_the_facts_rather_than_the_rendered_message(mq):
     head = mq(script)[-1].split(' ')
     assert head[1] == 'head_nod'
     assert head[2] == '3'
+
+
+# --------------------------------------------------------------------------- #
+# the peek/publish/commit race: eviction between the two must not eat an alert
+# --------------------------------------------------------------------------- #
+def test_commit_if_seq_removes_the_event_it_was_asked_about(mq):
+    """The ordinary case: peek, publish, commit the same event. The seq matches the
+    head, so the commit removes exactly one slot."""
+    script = 'outbox_reset\n'
+    script += _cmd('outbox_push', alert='drowsy', seq=7) + '\n'
+    script += _cmd('outbox_push', alert='yawning', seq=8) + '\n'
+    script += _cmd('outbox_commit_if', seq=7) + '\n'
+    script += 'outbox_peek\n'
+    script += 'quit\n'
+    lines = mq(script)
+    did, depth = lines[3].split(' ')
+    assert (did, depth) == ('1', '1')
+    assert lines[4].split(' ')[2] == '8', 'the next event is now the head'
+
+
+def test_commit_if_seq_refuses_when_the_head_was_evicted_mid_publish(mq):
+    """The race the publisher actually runs: it peeks the head (seq 0), renders and
+    sends it, and while it is doing that the capture loop pushes into the FULL ring,
+    which evicts that same head. A plain commit() would then remove seq 1 - an event
+    nobody ever published - and it would vanish uncounted. commit_if_seq(0) must
+    notice the head is no longer seq 0 and remove nothing."""
+    n = OUTBOX_DEPTH
+    script = 'outbox_reset\n'
+    script += ''.join(_cmd('outbox_push', alert='drowsy', seq=i) + '\n'
+                      for i in range(n))                       # full, head is seq 0
+    script += _cmd('outbox_push', alert='microsleep', seq=n) + '\n'  # evicts seq 0
+    script += _cmd('outbox_commit_if', seq=0) + '\n'           # the stale commit
+    script += 'outbox_peek\n'
+    script += 'quit\n'
+    lines = mq(script)
+    # line 0: reset; 1..n: the filling pushes; n+1: the evicting push;
+    # n+2: the stale commit; n+3: the peek.
+    did, depth = lines[n + 2].split(' ')
+    assert did == '0', 'the stale commit must be refused'
+    assert depth == str(n), 'nothing was removed'
+    assert lines[n + 3].split(' ')[2] == '1', 'seq 1 is still queued, not eaten'
+
+
+# --------------------------------------------------------------------------- #
+# the dedup halves: a failed publish attempt must stay retryable
+# --------------------------------------------------------------------------- #
+def test_a_failed_publish_attempt_is_not_its_own_duplicate(mq):
+    """The publisher asks already_published() before an attempt and calls
+    mark_published() only after the transport accepts the message. The old single
+    seen_or_add() recorded the id on the ASK, so when esp_mqtt_client_enqueue()
+    failed and the event was retried, the retry matched its own first attempt and
+    was committed unsent - a silently lost alert."""
+    script = 'dedup_reset\n'
+    script += _cmd('dedup_check', id='dev-aaaa-000001') + '\n'   # attempt 1: new
+    # enqueue fails here: nothing is marked.
+    script += _cmd('dedup_check', id='dev-aaaa-000001') + '\n'   # retry: still new
+    script += _cmd('dedup_mark', id='dev-aaaa-000001') + '\n'    # retry succeeded
+    script += _cmd('dedup_check', id='dev-aaaa-000001') + '\n'   # now a duplicate
+    script += 'quit\n'
+    lines = mq(script)
+    assert lines[1].split(' ')[0] == '0', 'first attempt is not a duplicate'
+    assert lines[2].split(' ')[0] == '0', 'a retry after a failed enqueue must not be'
+    assert lines[4].split(' ')[0] == '1', 'after a delivery it is'
+    assert lines[4].split(' ')[2] == '1', 'and the suppression is counted'
+
+
+def test_mark_published_is_idempotent(mq):
+    script = 'dedup_reset\n'
+    script += _cmd('dedup_mark', id='dev-aaaa-000009') + '\n'
+    script += _cmd('dedup_mark', id='dev-aaaa-000009') + '\n'
+    script += _cmd('dedup_mark', id='dev-aaaa-000009') + '\n'
+    script += 'quit\n'
+    lines = mq(script)
+    assert lines[3].split(' ')[0] == '1', 'one slot, however many times it is marked'
+
+
+def test_seen_or_add_still_behaves_as_one_call(mq):
+    """The combined form survives (the ring is also used through it), and it must be
+    exactly ask-then-mark: same recording, same suppression count."""
+    script = 'dedup_reset\n'
+    script += _cmd('dedup', id='dev-bbbb-000001') + '\n'
+    script += _cmd('dedup', id='dev-bbbb-000001') + '\n'
+    script += _cmd('dedup_check', id='dev-bbbb-000001') + '\n'
+    script += 'quit\n'
+    lines = mq(script)
+    assert lines[1].split(' ')[0] == '0'
+    assert lines[2].split(' ')[0] == '1'
+    assert lines[3] == '1 1 2', 'both suppressions counted, one slot used'
 
 
 # --------------------------------------------------------------------------- #

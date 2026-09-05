@@ -52,7 +52,7 @@ The engine snapshot, polled by the page.
 | `config` | trigger, required, cooldown, zoom, PERCLOS window, eye threshold |
 | `history` | the rolling p(drowsy) trace behind the chart |
 | `alerts` | the last 10, newest first. Each carries `kind` (the banner text) and `reason` (the clip name), because a log of forty undifferentiated alerts says nothing about what happened |
-| `alert_counts` | announcements per reason: `drowsy`, `microsleep`, `yawning`, `head_nod`, `sneeze`, `no_driver` |
+| `alert_counts` | announcements per reason: `drowsy`, `microsleep`, `yawning`, `head_nod`, `no_driver` |
 | `behavior_events` | the last 12 cue events, newest first |
 | `alert_count`, `frames`, `fps`, `infer_ms` | counters |
 | `mode` | `eye` or `face` |
@@ -61,7 +61,6 @@ The engine snapshot, polled by the page.
 | `image_size`, `crop` | preprocessing geometry |
 | `camera` | backend, index/source, capture timing |
 | `face`, `face_detect` | tracker state, and whether detection is on. `face.present` is the gate's confirmed verdict — not the same as `found`, which is only about this frame — and `face.reject` names which check refused a candidate, which is what separates "nobody is there" from "something is there and it is not a face" |
-| `eyes.sneeze_count`, `eyes.sneeze_alerts` | sneezes detected, and of those how many were announced. A fit of sneezing is several detections and one announcement |
 
 ## `POST /config`
 
