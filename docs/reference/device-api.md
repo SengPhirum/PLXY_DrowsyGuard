@@ -228,8 +228,10 @@ firmware. `nvs` is whether the settings partition is usable at all — a device 
 is unavailable publishes perfectly well until it is power-cycled and then silently
 reverts.
 
-Sent chunked: the two halves together are up to ~3.5 kB and the control task has a
-6 kB stack.
+Sent chunked: the two halves together are up to ~3.5 kB and the control task has an
+8 kB stack - raised from 6 kB on 2026-09-05, when this endpoint's handler chain
+(~6-7 kB of measured frames) turned out to overflow the old size and reboot the
+board on every save.
 
 ### `POST /api/mqtt`
 

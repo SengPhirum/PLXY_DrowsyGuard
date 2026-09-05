@@ -67,6 +67,23 @@ Two traps compound it:
 
 `./plxy.sh port` says which interface the cable is in. Prefer the CH343 bridge.
 
+### The saved Wi-Fi network vanished after using a serial monitor
+
+Attaching a serial listener to the CH343 port **while the application is running**
+can register as a BOOT press: the bridge drives GPIO0, and depending on how the
+port is opened the line can sit in the "pressed" state for as long as the port is
+held. After five seconds that is exactly the deliberate BOOT-hold gesture, and the
+board clears its stored station credentials — the log says so
+(`BOOT held 5 s - clearing the Wi-Fi credentials`). Observed from software on
+2026-09-05; only Wi-Fi is cleared, never MQTT settings, identity, or captures.
+
+The protection in the button watcher covers a monitor attached *at boot* (the pin
+never rises, so no press is believed) but not one attached mid-run. Until that
+changes: read logs by resetting first (`python scripts/board_reset.py COM9` boots
+the app and prints the banner), keep passive listening sessions short, and if the
+board drops off your network after a serial session, re-enter the credentials on
+the Wi-Fi card at `http://192.168.4.1/`.
+
 ### `ov3660: Mismatch PID=0x5640` in the boot log
 
 **Expected, not a fault.** The board is sold with an OV3660 but ships an OV5640;
@@ -323,6 +340,15 @@ came up provisioning on purpose: a half-read passphrase is a device that will no
 and cannot say why.
 
 ## MQTT and the fleet monitor { #mqtt-and-the-fleet-monitor }
+
+### Saving the MQTT settings reboots the board
+
+Fixed on 2026-09-05 — update the firmware. On builds before that date the control
+web server ran on a 6 kB task stack and the `/api/mqtt` handler chain needs ~7 kB,
+so every save (and occasionally just opening the settings) overflowed it and
+panicked the board. The confusing half of the symptom is that the settings *stick*:
+they reach NVS before the crash, so after the reboot the new configuration is in
+force even though the page never showed success. The stack is 8 kB now.
 
 ### The MQTT card says "off" and nothing publishes
 

@@ -170,3 +170,19 @@ the logic is 5.4 kB of code) and **+1,120 B of internal RAM** (1,024 B of that i
 status JSON buffer, grown to fit the new `presence` and `alert.counts` objects).
 Nothing new is allocated from PSRAM, and there is no measurable change in detection
 latency at equal candidate counts.
+
+### Measured, 2026-09-05 (first MQTT hardware run, after the reliability fixes)
+
+| | value |
+| --- | --- |
+| App binary | 3,574,928 B, 43% of the 6 MB partition free |
+| DIRAM used | 235,575 B (68.9%), 106,185 B free |
+| MQTT | `online` against broker.emqx.io:1883, TCP, QoS 1, MQTT 3.1.1 |
+| Published / acked | 50 / 51 over 2+ hours, `dropped` 0, no reboot |
+| `GET /api/mqtt` | HTTP 200 in 0.17 s (crashed the board before the 8 kB stack fix) |
+| Frame rate during the run | 19.7 fps idle, matching the 2026-09-01 baseline |
+| Host tests | 588 passed; the 5 known-red Windows UTF-8 SSID cases unchanged |
+
+M1 and M2 have effectively passed over TCP. Still to record: the TLS repeat of the
+same, and **M3/M9** — `fps`, `ms_detect`, `ms_eye` with the broker dead and during
+TLS reconnect attempts, which are the safety argument for the whole feature.

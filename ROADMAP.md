@@ -58,11 +58,16 @@ Build and scientifically evaluate an affordable retrofit driver-drowsiness warni
 - [x] Alert playback moved off the capture loop onto its own FreeRTOS task
 - [x] Reason-specific tone patterns, so the alert path is testable before speech exists
 - [x] Beginner setup tutorial with generated wiring diagrams (`docs/tutorials/hardware-setup/`)
-- [ ] **First build**: `idf.py build` has never been run; the firmware is uncompiled
-- [ ] First flash: confirm 8 MB PSRAM, camera init, SoftAP up, preview in a browser,
-      boot chime
-- [ ] Measure the real eye-model latency on hardware (budget uses an estimate)
-- [ ] Wire ESP-DL `human_face_detect` call sites in `model_adapter.cpp`
+- [x] **First build**: clean against ESP-IDF v5.5.5, locally and in CI
+- [x] First flash (2026-08-23): 8 MB PSRAM, camera init, SoftAP up, preview in a
+      browser, boot chime — all confirmed in one boot
+- [x] Measure the real eye-model latency on hardware: ~16-18 ms per eye, one eye
+      per frame (the estimate it replaced was 6x low)
+- [x] Wire ESP-DL `human_face_detect` call sites in `model_adapter.cpp` — detecting
+      at score 1.00 on hardware since 2026-08-23
+- [x] MQTT alerting verified against a real broker (2026-09-05): online over TCP,
+      50 alerts published and acked, no reboot — TLS/WSS and the M3/M9 fps
+      measurements still open (PROJECT_STATE gap 13)
 - [ ] Pin ESP-IDF + ESP-DL + ESP-PPQ versions from `dependencies.lock`
 - [ ] Implement exact `.espdl` model adapter against pinned release
 - [ ] Validate the I2S audio GPIO map (38/39/40) on the bench
