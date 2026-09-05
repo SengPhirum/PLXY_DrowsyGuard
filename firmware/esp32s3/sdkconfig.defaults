@@ -83,7 +83,7 @@ CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
 # once the Wi-Fi stack is allowed into PSRAM. Setting the derived
 # CONFIG_ESP_WIFI_TX_BUFFER_TYPE directly does nothing - it is computed from the
 # choice - so the knob that actually matters is the static count below.
-# Was 24, for the MJPEG smoothness reason above. Dropped to 12 because these are
+# Was 24, for the MJPEG smoothness reason above. Dropped to 8 because these are
 # internal DMA buffers at ~1600 B each and the board had 6.6 kB of internal heap
 # left at idle - at which point the SoftAP could no longer allocate the per-station
 # state to accept a client, and every association failed with "m f auth" /
@@ -110,8 +110,10 @@ CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=y
 CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
 
 # Two HTTP servers (control on :80, stream on :81), each with a handful of
-# sockets, plus the DHCP server for the SoftAP.
-CONFIG_LWIP_MAX_SOCKETS=16
+# sockets, plus the DHCP server for the SoftAP - and one more for the MQTT client,
+# which holds a socket whenever it is connected. (This was briefly set in two
+# places, 16 here and 20 in the MQTT section; one definition, the larger one.)
+CONFIG_LWIP_MAX_SOCKETS=20
 # 65534 was the largest number the field takes, chosen when the constraint was
 # thought to be MJPEG smoothness. It is a cap on how much lwIP may queue per
 # connection, and on this board that ceiling is reachable: with a viewer streaming,
@@ -164,6 +166,25 @@ CONFIG_MQTT_TRANSPORT_WEBSOCKET_SECURE=y
 # in; the default protocol is still 3.1.1, which every broker speaks.
 CONFIG_MQTT_PROTOCOL_5=y
 
+# esp-mqtt's client task is where DNS, the TCP connect and the ENTIRE TLS handshake
+# run, at priority 5 - and with core selection off it is created with no affinity.
+# Landing on core 0 puts a second or more of mbedtls arithmetic above app_main
+# (priority 1), which freezes capture and inference for the duration of every
+# handshake - and our own backoff repeats that handshake for as long as a broker is
+# unreachable, so a dead broker read as a detector that periodically hangs. Pinned
+# to core 1 it shares the core with the web servers (also priority 5) and the
+# publisher task, and costs the detector nothing. This is the same rule every other
+# network task in this firmware already follows: web_server.cpp pins both httpd
+# servers and the event writer to core 1 for the same reason.
+CONFIG_MQTT_TASK_CORE_SELECTION_ENABLED=y
+CONFIG_MQTT_USE_CORE_1=y
+
+# Frees the broker's certificate chain once the handshake has verified it, ~4 kB of
+# heap per live TLS connection that was previously held for the whole session.
+# Nothing here reads the peer certificate after connect: esp-mqtt does not, and the
+# bundle's verification callback runs during the handshake, before the free.
+CONFIG_MBEDTLS_SSL_KEEP_PEER_CERTIFICATE=n
+
 # The outbox is esp-mqtt's own QoS 1 retransmission buffer, underneath our
 # 16-event MqttOutbox. 8 kB is roughly twenty alert payloads in flight, which is
 # more than the 16 our own buffer will ever hand over at once.
@@ -176,10 +197,6 @@ CONFIG_MQTT_CUSTOM_OUTBOX=n
 # switched off, which is how "TLS" quietly becomes "encrypted to somebody".
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
-
-# One more socket than before: the MQTT client holds one whenever it is connected,
-# on top of the two HTTP servers and the DHCP server.
-CONFIG_LWIP_MAX_SOCKETS=20
 
 # SNTP is not enabled and the payload says so. There is no RTC on this board, so a
 # device that has never reached a time server publishes "ts":"" and

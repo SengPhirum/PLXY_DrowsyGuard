@@ -1,6 +1,6 @@
 # Project State
 
-Last updated: 2026-09-02
+Last updated: 2026-09-04
 Status: Scaffold and live dashboard complete. Detection reworked from whole-face
 classification to multi-cue behaviour analysis (PERCLOS + long blinks + yawn + nod)
 after the face CNN was found to key on driver identity. The
@@ -272,6 +272,20 @@ hardware** - see gap 14.
 
    One further thing is untested by construction rather than by omission: NVS
    behaviour on a partition that is genuinely full.
+
+   **Audited 2026-09-04, before the first hardware run.** Five defects found and
+   fixed, all on the reconnect/failure paths a bench test never exercises: the
+   esp-mqtt client task was the only network task not pinned to core 1, so a TLS
+   handshake could preempt the capture loop on core 0 for its full duration on
+   every backoff retry (the "freeze"); an alert queued mid-handshake woke the
+   connect-wait early and tore the half-connected client down, so a burst of
+   alerts could keep the client from ever connecting; the dedup ring recorded ids
+   before delivery, so a failed enqueue's retry was dropped as its own duplicate;
+   the outbox could commit an event evicted-and-replaced between peek and commit,
+   losing the replacement unsent; and the CONNACK never woke the publisher, adding
+   a silent 8 s before every flush. The two data-structure races are host-tested
+   (`test_mqtt_config.py`, 162 cases); the core-placement and burst claims are
+   DEPLOYMENT.md tests M9-M13, which join M1-M8 as the hardware gate.
 
 14. **Wi-Fi provisioning has not been exercised on hardware.** As of 2026-09-02 it
    compiles and links against ESP-IDF v5.5.5 with the real xtensa toolchain, and the

@@ -304,6 +304,14 @@ class MqttDedup {
     // True when this id has been seen before (and the ring is left unchanged).
     // False when it is new, in which case it is recorded.
     bool seen_or_add(const char *event_id);
+    // The two halves of seen_or_add(), split because the publisher must not record
+    // an id it has not delivered yet: recording before esp_mqtt_client_enqueue()
+    // meant a failed enqueue's retry matched its own first attempt in this ring and
+    // was dropped as a "duplicate" without ever being published. The publisher asks
+    // first and marks only after the transport accepted the message; a "yes" from
+    // already_published() is counted in suppressed(), same as seen_or_add().
+    bool already_published(const char *event_id);
+    void mark_published(const char *event_id);   // idempotent
     int size() const { return count_; }
     int capacity() const { return MQTT_DEDUP_SLOTS; }
     uint32_t suppressed() const { return suppressed_; }
@@ -342,6 +350,13 @@ class MqttOutbox {
     // with the same event_id rather than losing it. commit() removes it.
     bool peek(MqttAlertEvent *out) const;
     void commit();
+    // commit(), but only when the head is still the event the caller just handled,
+    // identified by its seq. Between a peek and a commit the producer can push into
+    // a full ring and evict that same head; a plain commit would then remove the
+    // event that replaced it - one that was never published - and lose it without
+    // it ever being counted. False means the head had already been evicted and
+    // nothing was removed.
+    bool commit_if_seq(uint32_t seq);
     bool pop(MqttAlertEvent *out);
 
     int depth() const { return count_; }

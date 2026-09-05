@@ -1,5 +1,84 @@
 # Changelog
 
+## 2026-09-04 - the MQTT client stops being able to freeze the detector
+
+An audit of the MQTT runtime ahead of its first hardware run against a broker
+(gap 13) found one mechanism that stalls the capture loop outright, one that keeps
+the client from ever connecting under load, two that silently lose an alert, and an
+eight-second delay on every reconnect. All five are fixed; none changes the API, the
+payload schema, the NVS format, a topic, or any behaviour a subscriber can see.
+
+### The freeze: the TLS handshake could run on the inference core
+
+esp-mqtt's client task - where DNS, the TCP connect and the **entire TLS handshake**
+run - is created at priority 5 with **no core affinity** by default. When the
+scheduler placed it on core 0, a second or more of mbedtls arithmetic sat above
+`app_main` (priority 1), and the capture loop froze for the duration of every
+handshake. Worse, the reconnect backoff *repeats* that handshake for as long as a
+broker is unreachable, so a dead broker read as a detector that periodically hangs
+forever. Every other network task in this firmware was already pinned to core 1
+(both httpd servers, the event writer, the publisher task); the one that does the
+most CPU-bound work was the one left floating. `CONFIG_MQTT_TASK_CORE_SELECTION_ENABLED`
++ `CONFIG_MQTT_USE_CORE_1` pin it with the rest. DEPLOYMENT.md gained test M9, which
+measures `fps` *during* connection attempts rather than between them.
+
+### The connect abort: an alert mid-handshake tore the client down
+
+`mqtt_publish_alert()` notifies the publisher task for every queued alert, and the
+publisher's "wait for the CONNACK" was a single 8 s `ulTaskNotifyTake`. An alert
+arriving mid-handshake woke it early; the code read "still not connected", destroyed
+the half-connected client and went to backoff. Under a burst of alerts - the one load
+pattern this feature exists for - the client could never finish connecting. The wait
+is now a loop over the connection state with a deadline, the event handler notifies
+on CONNECTED/DISCONNECTED (which also removes a silent 8 s before every post-connect
+flush - test M12), and a reconfigure breaks the wait instead of queueing behind it.
+
+### Two ways to lose an alert without a counter moving
+
+* **De-duplication recorded ids it had not delivered.** `seen_or_add()` put the
+  event id into the ring *before* `esp_mqtt_client_enqueue()` ran, so when the
+  enqueue failed (client busy, outbox full) the retry matched its own first attempt
+  and was committed as a "duplicate" - dropped, unsent, uncounted. The ring now has
+  the two halves the publisher actually needs: `already_published()` asks,
+  `mark_published()` records only after the transport accepted the message.
+  `seen_or_add()` survives, expressed on the two.
+* **The outbox could commit an event it never published.** Between the publisher's
+  peek and its commit, the capture loop can push into the full ring and evict that
+  same head; the commit then removed whatever replaced it - an event nobody had
+  sent. `commit_if_seq()` removes the head only if it is still the event the
+  publisher just handled. Both are pure `mqtt_config.cpp` changes, and both have the
+  race written out as host tests (`test_mqtt_config.py` is 162 cases now, five new).
+
+### Smaller
+
+* The publisher task's stack goes 5120 → 6144: `client_stop()`'s goodbye publish
+  runs `mbedtls_ssl_write` on that stack, on top of ~1 kB of topic+body locals, and
+  a publisher stack overflow is a panic.
+* The esp-mqtt event handler no longer reads `s_live` (the publisher task's private
+  config copy) for its log line, and no longer reads `s_error` outside its lock -
+  both were benign-looking cross-task races.
+* `CONFIG_MBEDTLS_SSL_KEEP_PEER_CERTIFICATE=n`: the broker's certificate chain is
+  freed once the handshake has verified it, ~4 kB of heap back per live TLS
+  connection. Nothing reads the peer certificate after connect.
+* `CONFIG_LWIP_MAX_SOCKETS` was defined twice in `sdkconfig.defaults` (16, then 20);
+  one definition now, at 20. A stale comment still describing the Wi-Fi TX buffer
+  count as 12 (it is 8) is fixed.
+
+### Measured
+
+IDF v5.5.5, `sdkconfig` regenerated from the updated defaults (so the delta includes
+that regeneration, not only the code):
+
+|  | before (2026-09-02 build) | after |
+| --- | --- | --- |
+| app image | 3 560 496 B | 3 574 928 B (+14.4 kB, 43 % of the partition free) |
+| static D/IRAM | — | 235 575 B used, 106 185 B free (68.9 %) |
+| host tests | 158 passed | 588 passed, 5 failed — the same five UTF-8-SSID cases that fail on this Windows harness before the change (codepage artefact, not firmware) |
+
+The runtime numbers this change is actually about - `fps` during a TLS reconnect
+(M9), flush latency after a CONNACK (M12), heap over a soak (M13) - need a broker
+and the board, and are the first thing to record when gap 13's hardware run happens.
+
 ## 2026-09-02 - the board stops rebooting when you join it, and the sneeze feature is gone
 
 Two things, found in that order: the device rebooted the moment anything associated
