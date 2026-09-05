@@ -102,6 +102,7 @@ theme:
 extra_css:
   - stylesheets/extra.css
   - stylesheets/fleet.css
+  - stylesheets/assistant.css
 
 # Loaded on every page, and that is the cheapest correct option rather than a
 # compromise. The alternative - a <script src> in the installer page's body - does
@@ -114,6 +115,12 @@ extra_javascript:
   # The fleet monitor, on the same terms and for the same reason: both scripts return
   # immediately when their page's elements are absent, which is every page but one.
   - assets/js/fleet.js
+  # The documentation assistant: instant answers from a built-in index, and an
+  # opt-in browser-local model (WebLLM on WebGPU, transformers.js on WASM).
+  # Nothing typed into it leaves the browser, nothing is downloaded until the
+  # reader clicks Enable Local AI, and it never mounts on the fleet page - that
+  # page's no-third-party-script guarantee stays intact.
+  - assets/js/assistant.js
 
 plugins:
   - search
