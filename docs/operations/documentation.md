@@ -228,3 +228,40 @@ repository.
 
 Open a pull request and the same checks run again in CI; merge to `main` and it
 publishes itself.
+
+## The documentation assistant
+
+Every page carries a floating **Ask the docs** button (except the fleet monitor —
+see below). It answers in two tiers:
+
+- **Instant answers** need no network and no model: a keyword index over a set of
+  curated topic summaries in `docs/assets/js/assistant.js`, each quoting the page
+  it links to. This is what everyone gets by default, and it is the whole feature
+  on a browser that cannot run a model.
+- **Local AI** is opt-in, per browser, behind an explicit *Enable Local AI* click.
+  It downloads an open-weights model into the browser cache and runs it on the
+  reader's own hardware — Llama 3.2 1B (~880 MB) through [WebLLM] on a desktop
+  with WebGPU, SmolLM2 135M (~184 MB) through [transformers.js] on WebGPU-capable
+  phones or plain WebAssembly. Generated answers are grounded on the same topic
+  summaries the instant tier quotes.
+
+[WebLLM]: https://github.com/mlc-ai/web-llm
+[transformers.js]: https://github.com/huggingface/transformers.js
+
+Three properties are deliberate and worth preserving when editing it:
+
+1. **Nothing typed into it leaves the browser.** There is no chat backend, no API
+   key and no telemetry; the only network activity is the one-time, opt-in model
+   download from a public CDN. That mirrors the device's own privacy stance.
+2. **No `innerHTML`**, the same rule `fleet.js` follows: user questions and model
+   output are rendered through `textContent`, so a prompt-injected tag in a
+   generated answer lands as harmless text.
+3. **It never mounts on the fleet monitor page.** That page's guarantee is that no
+   third-party script can change what it does, and an assistant that can import a
+   CDN module on click would break that guarantee by existing there. The script
+   checks for `#fleet-app` and absents itself, including across
+   `navigation.instant` page changes.
+
+When a page's content changes materially, update the matching entry in the
+`KNOWLEDGE` array — the assistant answers from those summaries, not from the
+rendered pages, so a stale entry means a confidently outdated answer.

@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-09-05 - the documentation answers questions itself, privately
+
+Every docs page now carries an **Ask the docs** assistant (ported from the
+KNetraHub documentation assistant), in two tiers:
+
+* **Instant answers**, the default: a keyword index over curated topic summaries
+  in `docs/assets/js/assistant.js`, each linking to the page it quotes. No
+  network, no model, works in every browser.
+* **Local AI**, opt-in per browser behind an *Enable Local AI* click: Llama 3.2 1B
+  through WebLLM on desktop WebGPU (~880 MB, cached), SmolLM2 135M through
+  transformers.js on mobile WebGPU or plain WebAssembly (~184 MB). Answers are
+  generated on the reader's own hardware, grounded on the same summaries.
+
+Nothing typed into it leaves the browser - there is no backend, no key and no
+telemetry, which mirrors the device's own privacy stance. The widget follows the
+site's standing rules: no `innerHTML` (model output is rendered as text, so a
+prompt-injected tag lands harmless), namespaced CSS, and **it never mounts on the
+fleet monitor page**, whose no-third-party-script guarantee would otherwise be one
+click away from broken. `tests/test_docs_assistant.py` pins all of that, including
+the one thing `mkdocs --strict` cannot see: that every documentation link inside
+the knowledge index points at a page that exists.
+
+Also: the header's repository link is now the GitHub icon alone - the repo name
+and star count it used to carry crowded the header on a phone for information the
+icon's link already carries.
+
 ## 2026-09-05 - saving MQTT settings no longer reboots the board
 
 First hardware contact for the whole MQTT path (gap 13), and it found what host
